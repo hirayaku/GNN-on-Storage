@@ -458,6 +458,7 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='ogbn-products')
+    argparser.add_argument('--rootdir', type=str, default='dataset')
     argparser.add_argument('--num-epochs', type=int, default=10)
     argparser.add_argument('--num-hidden', type=int, default=256)
     argparser.add_argument('--num-layers', type=int, default=3)
@@ -486,7 +487,7 @@ if __name__ == '__main__':
     # load graph
     if '.dgl' not in args.dataset:
         print('load graph from OGB.')
-        data = DglNodePropPredDataset(name=args.dataset)
+        data = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
         splitted_idx = data.get_idx_split()
         train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
         graph, labels = data[0]

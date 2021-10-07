@@ -9,7 +9,7 @@ import time
 import argparse
 import tqdm
 
-from load_graph import load_reddit, inductive_split
+from load_graph import load_reddit, load_ogb, inductive_split
 
 class SAGE(nn.Module):
     def __init__(self,
@@ -187,6 +187,7 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='reddit')
+    argparser.add_argument('--rootdir', type=str, default='dataset')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=16)
     argparser.add_argument('--num-layers', type=int, default=2)
@@ -214,6 +215,8 @@ if __name__ == '__main__':
 
     if args.dataset == 'reddit':
         g, n_classes = load_reddit()
+    elif args.dataset.startswith('ogbn'):
+        g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
     else:
         raise Exception('unknown dataset')
 

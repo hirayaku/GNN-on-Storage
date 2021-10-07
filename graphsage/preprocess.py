@@ -26,6 +26,13 @@ if __name__ == "__main__":
 
     print('load graph from OGB.')
     data = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
+    keySet = {'train', 'valid', 'test'}
+    try:
+        splitted_idx = data.get_idx_split()
+        assert(set(splitted_idx.keys()) == keySet)
+    except:
+        print("No train/val/test idx in dataset " + args.dataset)
+        raise
 
     data_dir = osp.join(args.rootdir, data.dir_name)
     if args.graph_output_dir is None:
@@ -35,8 +42,8 @@ if __name__ == "__main__":
 
     graph, labels = data[0]
 
-    # feat -> npy files
-    for feat_name in graph.ndata:
+    # node feat -> npy files
+    for feat_name in set(graph.ndata.keys()):
         feat_tensor = graph.ndata[feat_name]
         feat_output_path = osp.join(args.feat_output_dir, f'feat_{feat_name}.npy')
 
@@ -45,18 +52,15 @@ if __name__ == "__main__":
         feat_mmap[:] = feat_tensor[:]
         feat_mmap.flush()
 
+        del graph.ndata[feat_name]
+    
+    # TODO: for link prediction, we also need edge feat in npy files
+
     # idx -> mask
-    keySet = {'train', 'valid', 'test'}
-    try:
-        splitted_idx = data.get_idx_split()
-        assert(set(splitted_idx.keys) == keySet)
-    except:
-        print("No train/val/test idx in dataset " + args.dataset)
-        raise
     # train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
     for key in keySet:
         idx = splitted_idx[key]
-        mask = th.zeros(graph.num_nodes(), dtype=bool)
+        mask = th.zeros(graph.num_nodes(), dtype=th.bool)
         mask[idx] = True
         graph.ndata[f'{key}_mask'] = mask
 
@@ -64,5 +68,7 @@ if __name__ == "__main__":
 
     graph_output_path = osp.join(args.graph_output_dir, 'graph.dql')
     print(f'save graph to {graph_output_path}')
+    # TODO: the size of edge data could be comparable to node features
+    #       separate nodes with edges
     save_graphs(graph_output_path, [graph])
 

@@ -1,0 +1,52 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "GNS-papers-mmap",
+            "type": "python",
+            "request": "launch",
+            "program": "graphsage/GNS_sampling_prob.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "-1",
+                "--dataset", "ogbn-papers100M",
+                "--rootdir", "/mnt/md0/graphs",
+                "--feat-mmap"
+            ],
+            "env": {
+                "PYTHONPATH": "custom-dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+            }
+        },
+        {
+            "name": "GNS-papers",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "-1",
+                "--dataset", "ogbn-papers100M",
+                "--rootdir", "/mnt/md0/graphs"
+            ],
+            "env": {
+                "PYTHONPATH": "custom-dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+            }
+        },
+        {
+            "name": "GNS-products-mmap",
+            "type": "python",
+            "request": "launch",
+            "program": "graphsage/GNS_sampling_prob.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "-1",
+                "--dataset", "ogbn-products",
+                "--rootdir", "/mnt/md0/graphs",
+                "--feat-mmap"
+            ],
+            "env": {
+                "PYTHONPATH": "custom-dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+            }
+        }
+    ]
+}

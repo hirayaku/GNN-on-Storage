@@ -33,6 +33,6 @@ case "$1" in
     ;;
     *)
         printf "PYTHONPATH=$PYTHONPATH\n"
-        printf "Usage:\n\t$0 {origin|custom|clear}\n"
+        printf "Usage:\n\tsource env.sh {origin|custom|clear}\n"
     ;;
 esac

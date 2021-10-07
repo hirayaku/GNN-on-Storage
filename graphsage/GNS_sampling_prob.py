@@ -5,22 +5,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.multiprocessing as mp
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, dataset
 import dgl.function as fn
 import dgl.nn.pytorch as dglnn
 import time
 import math
 import argparse
 from _thread import start_new_thread
-from functools import wraps
-from dgl.data import RedditDataset
 import tqdm
-import traceback
 from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
 import json
 import matplotlib.pyplot as plt
 from pyinstrument import Profiler
 import sklearn.metrics as skm
+import os
+import utils
 
 epsilon = 1 - math.log(2)
 
@@ -265,29 +264,33 @@ class CachedData:
         self.cached_locs = th.ones(num_nodes, dtype=th.int32, device=device) * len(buffer_nodes)
         self.cached_locs[buffer_nodes] = th.arange(len(buffer_nodes), dtype=th.int32, device=device)
         # Let's construct the cache. The last row in the cache doesn't contain valid data.
-        self.cache_data = th.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=node_data.dtype, device=device)
-        self.cache_data[:len(buffer_nodes)] = node_data[buffer_nodes].to(device)
+        # self.cache_data = th.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=node_data.dtype, device=device)
+        # self.cache_data[:len(buffer_nodes)] = node_data[buffer_nodes].to(device)
+        # NOTE: If node_data comes from memmap, we need to convert from numpy array to pytorch tensor
+        self.cache_data = th.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=utils.to_torch_dtype(node_data.dtype), device=device)
+        # TODO: not optimal, if node_data is a torch.tensor itself
+        self.cache_data[:len(buffer_nodes)] = utils.to_torch_tensor(node_data[buffer_nodes]).to(device)
         self.invalid_loc = len(buffer_nodes)
         self.node_data = node_data
 
     def __getitem__(self, nids):
         locs = self.cached_locs[nids].long()
         data = self.cache_data[locs]
-        out_cache_nids = nids[locs == self.invalid_loc]
-        data[locs == self.invalid_loc] = self.node_data[out_cache_nids].to(self.cache_data.device)
+        cache_miss_nids = nids[locs == self.invalid_loc]
+        data[locs == self.invalid_loc] = utils.to_torch_tensor(self.node_data[cache_miss_nids]).to(self.cache_data.device)
         return data
 
 
 #### Entry point
 def run(args, device, data):
     # added by jialin, additional paramenters
-    train_nid, val_nid, test_nid, in_feats, labels, n_classes, g = data
+    train_nid, val_nid, test_nid, in_feats, labels, n_classes, g, feats = data
     number_of_nodes = g.number_of_nodes()
     in_degree_all_nodes = g.in_degrees()
 
     print('get cache sampling probability')
-    if 'prob' not in g.ndata:
-        prob = np.divide(in_degree_all_nodes, sum(in_degree_all_nodes))
+    if 'prob' not in g.ndata: 
+        prob = th.divide(in_degree_all_nodes, th.sum(in_degree_all_nodes))
     else:
         prob = g.ndata['prob'].numpy()
 
@@ -303,7 +306,7 @@ def run(args, device, data):
     #prob = np.squeeze(prob.numpy())
 
     print('create the model')
-    avd = int(sum(in_degree_all_nodes)//number_of_nodes)
+    avd = int(th.sum(in_degree_all_nodes)//number_of_nodes)
     in_degree_all_nodes = in_degree_all_nodes.to(device)
     # Define model and optimizer
     # added by jialin, additional paramenters
@@ -335,7 +338,7 @@ def run(args, device, data):
     if args.buffer_size != 0:
         min_fanout[0] = 0
         max_fanout[0] = 10
-    feats = g.ndata['feat']
+    # feats = g.ndata['feat']
     buffer_nodes = None
     print('start training')
     for epoch in range(args.num_epochs):
@@ -477,6 +480,8 @@ if __name__ == '__main__':
     argparser.add_argument('--buffer-size', type=float, default=0.01)
     argparser.add_argument('--buffer_rs-every', type=int, default=1)
     argparser.add_argument('--IS', type=int, default=1)
+    argparser.add_argument('--feat-mmap', action='store_true',
+                            help='enable mmap of node features and load from graph.dgl')
     args = argparser.parse_args()
 
     print(f'DGL version {dgl.__version__} from {dgl.__path__}')
@@ -486,40 +491,63 @@ if __name__ == '__main__':
         device = th.device('cpu')
 
     # load graph
-    if '.dgl' not in args.dataset:
-        print('load graph from OGB.')
-        data = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
-        splitted_idx = data.get_idx_split()
-        train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
-        graph, labels = data[0]
-        graph.create_formats_()
+    if (args.feat_mmap):
+        dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
+        graph_path = os.path.join(dataset_path, 'graph.dgl')
+        feat_path = os.path.join(dataset_path, 'feat_feat.npy')
+        print('load a prepared graph and mmap features')
+        (graph,), _ = dgl.load_graphs(graph_path)
+        print('create csc')
+        graph = graph.formats('csc')
+        labels = graph.ndata['label']
+        train_idx = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
+        val_idx = th.nonzero(graph.ndata['valid_mask'], as_tuple=True)[0]
+        test_idx = th.nonzero(graph.ndata['test_mask'], as_tuple=True)[0]
         n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
+        # mmap
+        feats = np.lib.format.open_memmap(feat_path, mode='r')
+        in_feats = feats.shape[1]
     else:
-        print('load a prepared graph')
-        data = dgl.load_graphs(args.dataset)[0]
-        graph = data[0]
-        graph = graph.formats(['csr', 'csc'])
-        print('create csr and csc')
-        if 'oag' in args.dataset:
-            labels = graph.ndata['field']
-            graph.ndata['feat'] = graph.ndata['emb']
-            label_sum = labels.sum(1)
-            valid_labal_idx = th.nonzero(label_sum > 0, as_tuple=True)[0]
-            train_size = int(len(valid_labal_idx) * 0.43)
-            val_size = int(len(valid_labal_idx) * 0.05)
-            test_size = len(valid_labal_idx) - train_size - val_size
-            train_idx, val_idx, test_idx = valid_labal_idx[th.randperm(len(valid_labal_idx))].split([train_size, val_size, test_size])
-            n_classes = labels.shape[1]
-        else:
-            labels = graph.ndata['label']
-            train_idx = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
-            val_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
-            test_idx = th.nonzero(graph.ndata['test_mask'], as_tuple=True)[0]
+        if '.dgl' not in args.dataset:
+            print('load graph from OGB.')
+            data = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
+            splitted_idx = data.get_idx_split()
+            train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
+            graph, labels = data[0]
+            # graph.create_formats_()
+            print('create csc')
+            graph = graph.formats('csc')
             n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
+        else:
+            print('load a prepared graph')
+            data = dgl.load_graphs(args.dataset)[0]
+            graph = data[0]
+            # graph = graph.formats(['csr', 'csc'])
+            # print('create csr and csc')
+            print('create csc')
+            graph = graph.formats('csc')
+            if 'oag' in args.dataset:
+                labels = graph.ndata['field']
+                graph.ndata['feat'] = graph.ndata['emb']
+                label_sum = labels.sum(1)
+                valid_labal_idx = th.nonzero(label_sum > 0, as_tuple=True)[0]
+                train_size = int(len(valid_labal_idx) * 0.43)
+                val_size = int(len(valid_labal_idx) * 0.05)
+                test_size = len(valid_labal_idx) - train_size - val_size
+                train_idx, val_idx, test_idx = valid_labal_idx[th.randperm(len(valid_labal_idx))].split([train_size, val_size, test_size])
+                n_classes = labels.shape[1]
+            else:
+                labels = graph.ndata['label']
+                train_idx = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
+                val_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
+                test_idx = th.nonzero(graph.ndata['test_mask'], as_tuple=True)[0]
+                n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
 
-    in_feats = graph.ndata['feat'].shape[1]
+        feats = graph.ndata['feat']
+        in_feats = graph.ndata['feat'].shape[1]
+
     # Pack data
-    data = train_idx, val_idx, test_idx, in_feats, labels, n_classes, graph
+    data = train_idx, val_idx, test_idx, in_feats, labels, n_classes, graph, feats
     print('|V|: {}, |E|: {}, #train: {}, #val: {}, #test: {}, #classes: {}'.format(
         graph.number_of_nodes(), graph.number_of_edges(), len(train_idx), len(val_idx), len(test_idx),
         n_classes))

@@ -1,3 +1,6 @@
-[submodule "dgl"]
+[submodule "custom-dgl"]
+	path = custom-dgl
+	url = https://github.com/zheng-da/dgl.git
+[submodule "dgl-v0.6"]
 	path = dgl
 	url = https://github.com/zheng-da/dgl.git

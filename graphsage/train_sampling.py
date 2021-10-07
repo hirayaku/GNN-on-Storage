@@ -8,6 +8,8 @@ import dgl.nn.pytorch as dglnn
 import time
 import argparse
 import tqdm
+from sklearn.metrics import f1_score
+from pyinstrument import Profiler
 
 from load_graph import load_reddit, load_ogb, inductive_split
 
@@ -89,6 +91,9 @@ def compute_acc(pred, labels):
     labels = labels.long()
     return (th.argmax(pred, dim=1) == labels).float().sum() / len(pred)
 
+def compute_f1(pred, labels):
+    return f1_score(labels, th.argmax(pred, dim=1), average='micro')
+
 def evaluate(model, g, nfeat, labels, val_nid, device):
     """
     Evaluate the model on the validation set specified by ``val_nid``.
@@ -102,6 +107,7 @@ def evaluate(model, g, nfeat, labels, val_nid, device):
     with th.no_grad():
         pred = model.inference(g, nfeat, device)
     model.train()
+    # return compute_f1(pred[val_nid], labels[val_nid])
     return compute_acc(pred[val_nid], labels[val_nid].to(pred.device))
 
 def load_subtensor(nfeat, labels, seeds, input_nodes, device):
@@ -144,6 +150,8 @@ def run(args, device, data):
     avg = 0
     iter_tput = []
     for epoch in range(args.num_epochs):
+        profiler = Profiler()
+        profiler.start()
         tic = time.time()
 
         # Loop over the dataloader to sample the computation dependency graph as a list of
@@ -169,9 +177,11 @@ def run(args, device, data):
                 print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
                     epoch, step, loss.item(), acc.item(), np.mean(iter_tput[3:]), gpu_mem_alloc))
             tic_step = time.time()
-
         toc = time.time()
         print('Epoch Time(s): {:.4f}'.format(toc - tic))
+        profiler.stop()
+        print(profiler.output_text(unicode=True, color=True))
+
         if epoch >= 5:
             avg += toc - tic
         if epoch % args.eval_every == 0 and epoch != 0:
@@ -207,6 +217,8 @@ if __name__ == '__main__':
                                 "be undesired if they cannot fit in GPU memory at once. "
                                 "This flag disables that.")
     args = argparser.parse_args()
+
+    print(f'DGL version {dgl.__version__} from {dgl.__path__}')
 
     if args.gpu >= 0:
         device = th.device('cuda:%d' % args.gpu)

@@ -479,6 +479,7 @@ if __name__ == '__main__':
     argparser.add_argument('--IS', type=int, default=1)
     args = argparser.parse_args()
 
+    print(f'DGL version {dgl.__version__} from {dgl.__path__}')
     if args.gpu >= 0:
         device = th.device('cuda:%d' % args.gpu)
     else:

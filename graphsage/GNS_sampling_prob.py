@@ -233,7 +233,7 @@ def load_subtensor(feats, labels, seeds, input_nodes, device):
     """
     Copys features and labels of a set of nodes onto GPU.
     """
-    batch_inputs = feats[input_nodes].to(device)
+    batch_inputs = utils.to_torch_tensor(feats[input_nodes]).to(device)
     batch_labels = labels[seeds].to(device)
     return batch_inputs, batch_labels
 
@@ -351,6 +351,7 @@ def run(args, device, data):
                 num_sample_nodes = int(args.buffer_size * num_nodes)
                 buffer_nodes = np.random.choice(num_nodes, num_sample_nodes, replace=False, p=prob)
                 cached_data = CachedData(feats, buffer_nodes, device)
+                print("GNS cache generated")
             sampler = dgl.dataloading.MultiLayerNeighborSampler(min_fanout, max_fanout, buffer_nodes, args.buffer_size, g)
             dataloader = dgl.dataloading.NodeDataLoader(
                 g,

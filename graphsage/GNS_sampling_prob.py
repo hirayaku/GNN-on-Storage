@@ -278,6 +278,7 @@ class CachedData:
         data = self.cache_data[locs]
         cache_miss_nids = nids[locs == self.invalid_loc]
         data[locs == self.invalid_loc] = utils.to_torch_tensor(self.node_data[cache_miss_nids]).to(self.cache_data.device)
+        print(f'cache misses/accesses = {cache_miss_nids.shape[0]}/{nids.shape[0]}')
         return data
 
 
@@ -288,22 +289,26 @@ def run(args, device, data):
     number_of_nodes = g.number_of_nodes()
     in_degree_all_nodes = g.in_degrees()
 
-    print('get cache sampling probability')
     if 'prob' not in g.ndata: 
-        prob = th.divide(in_degree_all_nodes, th.sum(in_degree_all_nodes))
+        if train_nid.shape[0] > number_of_nodes * 0.05:
+            print('cache sampling strategy: degree')
+            prob = th.divide(in_degree_all_nodes, th.sum(in_degree_all_nodes))
+        else:
+            print('cache sampling strategy: random-walk')
+            prob = th.zeros(number_of_nodes, 1)
+            prob[train_nid] = 1 / len(train_nid)
+            deg = g.in_degrees()
+            deg[deg==0] = 1
+            deg = deg.reshape(number_of_nodes, 1)
+            for _ in range(args.num_layers):
+                g.ndata['p'] = prob / deg
+                g.update_all(fn.copy_u('p', 'm'), fn.sum('m', 'p'))
+                prob = g.ndata['p'] + prob
+                prob = prob / th.sum(prob)
+            prob = np.squeeze(prob.numpy())
     else:
-        prob = g.ndata['prob'].numpy()
-
-    # Init
-    #prob = th.zeros(number_of_nodes, 1)
-    #prob[train_nid] = 1 / len(train_nid)
-    #deg = g.in_degrees().reshape(number_of_nodes, 1)
-    #for _ in range(args.num_layers):
-    #    g.ndata['p'] = prob / deg
-    #    g.update_all(fn.copy_u('p', 'm'), fn.sum('m', 'p'))
-    #    prob = g.ndata['p'] + prob
-    #    prob = prob / th.sum(prob)
-    #prob = np.squeeze(prob.numpy())
+        print('cache sampling strategy: existing')
+        prob = g.ndata['prob']
 
     print('create the model')
     avd = int(th.sum(in_degree_all_nodes)//number_of_nodes)
@@ -395,6 +400,8 @@ def run(args, device, data):
                     A[A==0]=1
   
             # Load the input features as well as output labels
+            if args.buffer_size == 0:
+                print(f'#input_nodes = {input_nodes.shape[0]}')
             batch_inputs, batch_labels = load_subtensor(cached_data if args.buffer_size > 0 else feats,
                                                         labels, seeds, input_nodes, device)
             batch_labels = batch_labels.float() if multilabel else batch_labels.long()

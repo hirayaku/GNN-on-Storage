@@ -499,7 +499,7 @@ if __name__ == '__main__':
         device = th.device('cpu')
 
     # load graph
-    if (args.feat_mmap):
+    if args.feat_mmap:
         dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         graph_path = os.path.join(dataset_path, 'graph.dgl')
         feat_path = os.path.join(dataset_path, 'feat_feat.npy')

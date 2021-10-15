@@ -23,8 +23,12 @@ class Logger(object):
     def write(self, s):
         with open(self.path, 'a') as f:
             f.write(str(s))
-        print(s)
+        # print(s)
         return
+
+    def writeln(self, s):
+        self.write(s)
+        self.write('\n')
 
 def arg_list(labels):
     hist, indexes, inverse, counts = np.unique(
@@ -48,10 +52,11 @@ def calc_f1(y_true, y_pred, multitask):
     return f1_score(y_true, y_pred, average="micro"), \
         f1_score(y_true, y_pred, average="macro")
 
-def evaluate(model, g, labels, mask, multitask=False):
+def evaluate(model, g, feat, labels, mask, multitask=False):
     model.eval()
     with torch.no_grad():
-        logits = model(g)
+        # FIXME: only when feat-mmap, use model(g, feat)
+        logits = model(g, feat)
         logits = logits[mask]
         labels = labels[mask]
         f1_mic, f1_mac = calc_f1(labels.cpu().numpy(),
@@ -60,10 +65,34 @@ def evaluate(model, g, labels, mask, multitask=False):
 
 def load_data(args):
     '''Wraps the dgl's load_data utility to handle ppi special case'''
-    DataType = namedtuple('Dataset', ['num_classes', 'g'])
+    DataType = namedtuple('Dataset', ['num_classes', 'g', 'features'])
+
+    if args.feat_mmap:
+        dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
+        graph_path = os.path.join(dataset_path, 'graph.dgl')
+        feat_path = os.path.join(dataset_path, 'feat_feat.npy')
+
+        print('load a prepared graph and mmap features')
+        (graph,), _ = dgl.load_graphs(graph_path)
+        if "valid_mask" in graph.ndata and "val_mask" not in graph.ndata:
+            graph.ndata['val_mask'] = graph.ndata['valid_mask']
+            del graph.ndata['valid_mask']
+        graph.ndata['train_mask'] = graph.ndata['train_mask'] > 0
+        graph.ndata['test_mask'] = graph.ndata['test_mask'] > 0
+        graph.ndata['val_mask'] = graph.ndata['val_mask'] > 0
+        graph.ndata['label'] = graph.ndata['label'].reshape(-1) # to 1-D array
+        # print('create csc')
+        # graph = graph.formats('csc')
+        labels = graph.ndata['label']
+        num_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
+        # mmap
+        feats = np.lib.format.open_memmap(feat_path, mode='r')
+        data = DataType(g=graph, num_classes=num_classes, features=feats)
+        return data
+
     if args.dataset != 'ppi':
         dataset = _load_data(args)
-        data = DataType(g=dataset[0], num_classes=dataset.num_classes)
+        data = DataType(g=dataset[0], num_classes=dataset.num_classes, features=dataset[0].ndata['feat'])
         return data
     train_dataset = PPIDataset('train')
     train_graph = dgl.batch([train_dataset[i] for i in range(len(train_dataset))], edge_attrs=None, node_attrs=None)
@@ -92,5 +121,5 @@ def load_data(args):
     G.ndata['val_mask'] = torch.tensor(val_mask, dtype=torch.bool)
     G.ndata['test_mask'] = torch.tensor(test_mask, dtype=torch.bool)
 
-    data = DataType(g=G, num_classes=train_dataset.num_labels)
+    data = DataType(g=G, num_classes=train_dataset.num_labels, features=G.ndata['feat'])
     return data

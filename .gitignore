@@ -2,5 +2,8 @@
 **/tags
 **/settings.json
 **/__pycache__
+
 graphsage/results
+cluster_gcn/log
+cluster_gcn/datasets
 

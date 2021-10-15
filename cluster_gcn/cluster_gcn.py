@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import dgl
-from dgl.data import register_data_args
+from dgl.data.utils import get_download_dir
 
 from modules import GraphSAGE
 from sampler import ClusterIter
@@ -34,19 +34,20 @@ def main(args):
     val_mask = g.ndata['val_mask']
     test_mask = g.ndata['test_mask']
     labels = g.ndata['label']
+    feats = data.features
 
-    train_nid = np.nonzero(train_mask.data.numpy())[0].astype(np.int64)
+    # train_nid = np.nonzero(train_mask.data.numpy())[0].astype(np.int64)
+    train_nid = torch.nonzero(train_mask, as_tuple=True)[0]
 
     # Normalize features
-    if args.normalize:
-        feats = g.ndata['feat']
+    if args.normalize and not args.feat_mmap:
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
         features = scaler.transform(feats.data.numpy())
-        g.ndata['feat'] = torch.FloatTensor(features)
+        feats = torch.FloatTensor(features)
 
-    in_feats = g.ndata['feat'].shape[1]
+    in_feats = feats.shape[1]
     n_classes = data.num_classes
     n_edges = g.number_of_edges()
 
@@ -72,6 +73,11 @@ def main(args):
     # metis only support int64 graph
     g = g.long()
 
+    # FIXME:
+    # nodes in `train_nid` is used to induce a subgraph from the full graph `g`
+    # it works well when training nodes consist of a large portion of all nodes
+    # however, when len(train_nid) << g.num_nodes(), a significant amount of edges
+    # are dropped - i.e. missing information
     cluster_iterator = ClusterIter(
         args.dataset, g, args.psize, args.batch_size, train_nid, use_pp=args.use_pp)
 
@@ -86,7 +92,7 @@ def main(args):
         g = g.int().to(args.gpu)
 
     print('labels shape:', g.ndata['label'].shape)
-    print("features shape, ", g.ndata['feat'].shape)
+    print("features shape, ", feats.shape)
 
     model = GraphSAGE(in_feats,
                       args.n_hidden,
@@ -102,7 +108,7 @@ def main(args):
     # logger and so on
     log_dir = save_log_dir(args)
     logger = Logger(os.path.join(log_dir, 'loggings'))
-    logger.write(args)
+    logger.writeln(args)
 
     # Loss function
     if multitask:
@@ -132,7 +138,7 @@ def main(args):
                 cluster = cluster.to(torch.cuda.current_device())
             model.train()
             # forward
-            pred = model(cluster)
+            pred = model(cluster, feats if args.feat_mmap else None)
             batch_labels = cluster.ndata['label']
             batch_train_mask = cluster.ndata['train_mask']
             loss = loss_f(pred[batch_train_mask],
@@ -145,36 +151,40 @@ def main(args):
             # Choose your log freq dynamically when you want more info within one epoch
             if j % args.log_every == 0:
                 print(f"epoch:{epoch}/{args.n_epochs}, Iteration {j}/"
-                      f"{len(cluster_iterator)}:training loss", loss.item())
+                      f"{len(cluster_iterator)}: training loss", "{:.4f}".format(loss.item()))
         print("current memory:",
               torch.cuda.memory_allocated(device=pred.device) / 1024 / 1024)
 
         # evaluate
         if epoch % args.val_every == 0:
             val_f1_mic, val_f1_mac = evaluate(
-                model, g, labels, val_mask, multitask)
+                model, g, feats, labels, val_mask, multitask)
             print(
-                "Val F1-mic{:.4f}, Val F1-mac{:.4f}". format(val_f1_mic, val_f1_mac))
+                "Val F1-mic {:.4f}, Val F1-mac {:.4f}". format(val_f1_mic, val_f1_mac))
             if val_f1_mic > best_f1:
                 best_f1 = val_f1_mic
-                print('new best val f1:', best_f1)
+                print('new best val f1-micro: {:.4f}'.format(best_f1))
                 torch.save(model.state_dict(), os.path.join(
                     log_dir, 'best_model.pkl'))
 
     end_time = time.time()
-    print(f'training using time {start_time-end_time}')
+    print(f'training using time {end_time-start_time}')
 
     # test
     if args.use_val:
         model.load_state_dict(torch.load(os.path.join(
             log_dir, 'best_model.pkl')))
     test_f1_mic, test_f1_mac = evaluate(
-        model, g, labels, test_mask, multitask)
+        model, g, feats, labels, test_mask, multitask)
     print("Test F1-mic{:.4f}, Test F1-mac{:.4f}". format(test_f1_mic, test_f1_mac))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN')
-    register_data_args(parser)
+    parser.add_argument("--dataset", type=str, default="reddit-self-loop",
+                        help="dataset name")
+    parser.add_argument("--rootdir", type=str, default=get_download_dir(),
+                        help="directory to read dataset from")
+    parser.add_argument("--feat-mmap", action='store_true', help="mmap dataset features")
     parser.add_argument("--dropout", type=float, default=0.5,
                         help="dropout probability")
     parser.add_argument("--gpu", type=int, default=-1,

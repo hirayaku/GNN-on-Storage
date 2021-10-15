@@ -39,6 +39,7 @@ class ClusterIter(object):
 
         self.psize = psize
         self.batch_size = batch_size
+        print("getting partitioned graph...")
         # cache the partitions of known datasets&partition number
         if dn:
             fn = os.path.join('./datasets/', dn + '_{}.npy'.format(psize))

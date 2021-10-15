@@ -89,8 +89,11 @@ class GraphSAGE(nn.Module):
         self.layers.append(GraphSAGELayer(n_hidden, n_classes, activation=None,
                                         dropout=dropout, use_pp=False, use_lynorm=False))
 
-    def forward(self, g):
-        h = g.ndata['feat']
+    def forward(self, g, feats=None):
+        if feats is None:
+            h = g.ndata['feat']
+        else:
+            h = torch.tensor(feats[g.nodes()])
         for layer in self.layers:
             h = layer(g, h)
         return h

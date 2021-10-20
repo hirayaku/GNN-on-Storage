@@ -44,12 +44,12 @@ def main(args):
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
-        features = scaler.transform(feats.data.numpy())
-        feats = torch.FloatTensor(features)
+        feats = scaler.transform(feats.data.numpy())
 
     in_feats = feats.shape[1]
     n_classes = data.num_classes
     n_edges = g.number_of_edges()
+    n_nodes = g.number_of_nodes()
 
     n_train_samples = train_mask.int().sum().item()
     n_val_samples = val_mask.int().sum().item()
@@ -58,13 +58,13 @@ def main(args):
     print("""----Data statistics------'
     #Edges %d
     #Classes %d
-    #Train samples %d
-    #Val samples %d
-    #Test samples %d""" %
+    #Train samples %d (%.2f%%)
+    #Val samples %d (%.2f%%)
+    #Test samples %d (%.2f%%)""" %
             (n_edges, n_classes,
-            n_train_samples,
-            n_val_samples,
-            n_test_samples))
+            n_train_samples, n_train_samples / n_nodes * 100,
+            n_val_samples, n_val_samples / n_nodes * 100,
+            n_test_samples, n_test_samples / n_nodes * 100))
     # create GCN model
     if args.self_loop and not args.dataset.startswith('reddit'):
         g = dgl.remove_self_loop(g)

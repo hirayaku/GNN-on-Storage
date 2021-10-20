@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [[ "$1" =~ "-h" ]]; then
+if [[ "$1" =~ "-h" || $# == 0 ]]; then
     printf "Usage:\n\t$0 [cap] [user] [group]\n"
     exit 0
 fi

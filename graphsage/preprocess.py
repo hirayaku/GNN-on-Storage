@@ -1,12 +1,8 @@
 #!/usr/bin/python3
 
-import dgl
 import numpy as np
-import torch as th
 from os import path as osp
 import argparse
-from ogb.nodeproppred import DglNodePropPredDataset
-from dgl.data.utils import save_graphs
 
 if __name__ == "__main__":
     '''
@@ -23,6 +19,11 @@ if __name__ == "__main__":
     # parser.add_argument('--graph-as-homogeneous', action='store_true', help='Store the graph as DGL homogeneous graph.')
     parser.add_argument('--feat-output-dir', type=str, help='Directory to store features')
     args = parser.parse_args()
+
+    import torch as th
+    import dgl
+    from dgl.data.utils import save_graphs
+    from ogb.nodeproppred import DglNodePropPredDataset
 
     print('load graph from OGB.')
     data = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
@@ -45,11 +46,16 @@ if __name__ == "__main__":
     # node feat -> npy files
     for feat_name in set(graph.ndata.keys()):
         feat_tensor = graph.ndata[feat_name]
-        feat_output_path = osp.join(args.feat_output_dir, f'feat_{feat_name}.npy')
+        feat_output_path = osp.join(args.feat_output_dir, f'{feat_name}.feat')
+        shape_output_path = osp.join(args.feat_output_dir, f'{feat_name}.shape')
 
         print(f'save feature[{feat_name}] to {feat_output_path}')
-        feat_mmap = np.lib.format.open_memmap(feat_output_path, mode='w+', dtype='float32',
-                                              shape=tuple(feat_tensor.shape)) # shape must be tuple!
+        shape_mmap = np.memmap(shape_output_path, mode='w+', dtype='int64',
+                               shape=(len(feat_tensor.shape),))
+        shape_mmap[:] = np.array(feat_tensor.shape)
+        shape_mmap.flush()
+        feat_mmap = np.memmap(feat_output_path, mode='w+', dtype='float32',
+                              shape=tuple(feat_tensor.shape)) # shape must be tuple
         feat_mmap[:] = feat_tensor[:]
         feat_mmap.flush()
 

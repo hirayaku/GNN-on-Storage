@@ -18,6 +18,33 @@
             }
         },
         {
+            "name": "cluster-graphsage-reddit",
+            "type": "python",
+            "request": "launch",
+            "program": "cluster_gcn/cluster_graphsage.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "-1",
+                "--dataset", "reddit-self-loop",
+                "--lr", "1e-2",
+                "--weight-decay", "0.0",
+                // psize = 1500 (default)
+                // batch_clusters = 20 (default)
+                "--batch-nodes", "500",
+                "--n-epochs", "30",
+                "--n-hidden", "256",
+                "--n-layers", "2",
+                "--log-every", "100",
+                "--self-loop",
+                "--note", "sampling-self-loop-loop-reddit-ly3-h256-pp-p1500-20-debug",
+                "--dropout", "0.2",
+                "--use-val", "--normalize"
+            ],
+            "env": {
+                "PYTHONPATH": "dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+            }
+        },
+        {
             "name": "GNS-papers",
             "type": "python",
             "request": "launch",

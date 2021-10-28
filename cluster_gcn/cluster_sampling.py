@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 import random
+from pyinstrument import Profiler
 
 import numpy as np
 import networkx as nx
@@ -16,6 +17,13 @@ from modules import GraphSAGE
 from sampler import ClusterIter
 from utils import Logger, evaluate, calc_f1, save_log_dir, load_data, to_torch_tensor
 
+def load_subtensor(nfeat, labels, seeds, input_nodes, device):
+    """
+    Extracts features and labels for a subset of nodes
+    """
+    batch_inputs = nfeat[input_nodes].to(device)
+    batch_labels = labels[seeds].to(device)
+    return batch_inputs, batch_labels
 
 def main(args):
     torch.manual_seed(args.rnd_seed)
@@ -80,7 +88,7 @@ def main(args):
     # however, when len(train_nid) << g.num_nodes(), a significant amount of edges
     # are dropped - i.e. missing information
     cluster_iterator = ClusterIter(
-        args.dataset, g, args.psize, args.batch_size, train_nid, use_pp=args.use_pp)
+        args.dataset, g, args.psize, args.batch_clusters, train_nid, use_pp=args.use_pp)
 
     # set device for dataset tensors
     if args.gpu < 0:
@@ -93,16 +101,16 @@ def main(args):
         g = g.int().to(args.gpu)
 
     print("labels shape:   ", g.ndata['label'].shape)
-    print("features shape: ", feats.shape)
+    print("features shape, ", feats.shape)
 
     model = GraphSAGE(in_feats,
-                     args.n_hidden,
-                     n_classes,
-                     args.n_layers,
-                     F.relu,
-                     args.dropout,
-                     args.use_pp,
-                     full_batch=True)
+                      args.n_hidden,
+                      n_classes,
+                      args.n_layers,
+                      F.relu,
+                      args.dropout,
+                      args.use_pp,
+                      full_batch=False)
 
     if cuda:
         model.cuda()
@@ -132,47 +140,76 @@ def main(args):
               torch.cuda.memory_allocated(device=train_nid.device) / 1024 / 1024)
     start_time = time.time()
     best_f1 = -1
+    device = train_nid.device
 
     for epoch in range(args.n_epochs):
-        # in PPI case, `log_every` is chosen to log one time per epoch. 
-        # Choose your log freq dynamically when you want more info within one epoch
-        log_iter = lambda j: j != 0 and (j % args.log_every == 0 or j+1 == len(cluster_iterator))
-        # iter_start = time.time()
+        profiler = Profiler()
+        profiler.start()
         for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:
                 cluster = cluster.to(torch.cuda.current_device())
             cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
-            # feature_done = time.time()
-            # print("cluster preparation: {:.2f}".format(feature_done-iter_start))
+            cluster_labels = cluster.ndata['label']
+
+            # GraphSAGE sampler
+            sampler = dgl.dataloading.MultiLayerNeighborSampler(
+                [int(fanout) for fanout in args.fan_out.split(',')])
+            dataloader = dgl.dataloading.NodeDataLoader(
+                cluster,
+                cluster.nodes(),
+                sampler,
+                batch_size=args.batch_nodes,
+                shuffle=True,
+                drop_last=False,
+                num_workers=args.num_workers)
+
+            steps = len(dataloader)
+            log_iter =  j != 0 and (j % args.log_every == 0 or j+1==len(cluster_iterator))
 
             model.train()
-            # forward
-            pred = model(cluster, cluster_feats)
-            batch_labels = cluster.ndata['label']
-            batch_train_mask = cluster.ndata['train_mask']
-            loss = loss_f(pred[batch_train_mask],
-                          batch_labels[batch_train_mask])
+            if log_iter:
+                iter_start = time.time()
+            for step, (input_nodes, train_nodes, blocks) in enumerate(dataloader):
+                if log_iter:
+                    enumerate_done = time.time()
+                    print("MFG sampling: {:.2f}".format(enumerate_done-iter_start))
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Load the input features as well as output labels
+                batch_inputs, batch_labels = load_subtensor(cluster.ndata['feat'], cluster.ndata['label'],
+                                                            train_nodes, input_nodes, device)
+                blocks = [block.int().to(device) for block in blocks]
 
-            # iter_start = time.time()
-            # print("cluster computation: {:.2f}".format(iter_start-feature_done))
-            if log_iter(j):
-                f1_mic, f1_mac = calc_f1(batch_labels.detach().numpy(),
-                                         pred.detach().numpy(), multitask=False)
-                epoch_msg = (f"epoch:{epoch}/{args.n_epochs}, "
-                             f"iteration {j+1}/{len(cluster_iterator)}"
-                             ": training loss {:.4f}, F1-mic {:.4f}, F1-mac {:.4f}".format(loss.item(), f1_mic, f1_mac)
-                             )
-                logger.writeln(epoch_msg)
-                print(epoch_msg)
+                if log_iter:
+                    sampling_done = time.time()
+                    print("MFG features: {:.2f}".format(sampling_done-enumerate_done))
 
-        if cuda:
-            print("current memory:",
-                torch.cuda.memory_allocated(device=pred.device) / 1024 / 1024)
+                # Compute loss and prediction
+                batch_pred = model(blocks, batch_inputs)
+                loss = loss_f(batch_pred, batch_labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                if log_iter:
+                    iter_start = time.time()
+                    print("MFG computation: {:.2f}".format(iter_start-sampling_done))
+                    f1_mic, f1_mac = calc_f1(batch_labels.detach().numpy(),
+                                            batch_pred.detach().numpy(), multitask=False)
+                    iter_msg = (f"epoch:{epoch}/{args.n_epochs}, "
+                                f"iteration:{j+1}/{len(cluster_iterator)}, "
+                                f"step:{step+1}/{steps}"
+                                ": training loss {:.4f}, F1-mic {:.4f}, F1-mac {:.4f}".format(loss.item(), f1_mic, f1_mac)
+                                )
+                    logger.writeln(iter_msg)
+                    print(iter_msg)
+
+            if cuda:
+                print("current memory:",
+                    torch.cuda.memory_allocated(device=batch_pred.device) / 1024 / 1024)
+
+        profiler.stop()
+        print(profiler.output_text(unicode=True, color=True))
 
         # evaluate
         if epoch % args.val_every == 0:
@@ -207,6 +244,7 @@ if __name__ == '__main__':
                         help="dataset name")
     parser.add_argument("--rootdir", type=str, default=get_download_dir(),
                         help="directory to read dataset from")
+    # mmap features or not
     parser.add_argument("--feat-mmap", action='store_true', help="mmap dataset features")
     parser.add_argument("--dropout", type=float, default=0.5,
                         help="dropout probability")
@@ -214,20 +252,25 @@ if __name__ == '__main__':
                         help="gpu")
     parser.add_argument("--lr", type=float, default=3e-2,
                         help="learning rate")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="Number of sampling processes")
     parser.add_argument("--n-epochs", type=int, default=200,
                         help="number of training epochs")
     parser.add_argument("--log-every", type=int, default=100,
                         help="the frequency to save model")
-    parser.add_argument("--batch-size", type=int, default=20,
-                        help="batch size")
+    parser.add_argument("--batch-nodes", type=int, default=1000,
+                        help="number of training nodes in a minibatch")
+    parser.add_argument("--batch-clusters", type=int, default=20,
+                        help="number of clusters sampled per round")
     parser.add_argument("--psize", type=int, default=1500,
                         help="partition number")
     parser.add_argument("--test-batch-size", type=int, default=1000,
                         help="test batch size")
     parser.add_argument("--n-hidden", type=int, default=16,
-                        help="number of hidden gcn units")
-    parser.add_argument("--n-layers", type=int, default=1,
-                        help="number of hidden gcn layers")
+                        help="number of hidden units")
+    parser.add_argument("--n-layers", type=int, default=3,
+                        help="number of hidden layers")
+    parser.add_argument("--fan-out", type=str, default="5,10,15")
     parser.add_argument("--val-every", type=int, default=1,
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--rnd-seed", type=int, default=3,

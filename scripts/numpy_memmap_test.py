@@ -46,14 +46,15 @@ for i in range(args.rounds):
 
 print("retrieving features...")
 
-traffic = 0
 profiler = Profiler()
 profiler.start()
 start = time.time()
 
+traffic = 4 * args.rounds * args.nids * feats.shape[1]
+
 for nids in all_nids:
+    #  traffic += 4 * features.shape[0] * features.shape[1]
     features = feats[nids]
-    traffic += 4 * features.shape[0] * features.shape[1]
 
 end = time.time()
 

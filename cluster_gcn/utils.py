@@ -55,8 +55,7 @@ def calc_f1(y_true, y_pred, multitask):
 def evaluate(model, g, feat, labels, mask, multitask=False):
     model.eval()
     with torch.no_grad():
-        # FIXME: only when feat-mmap, use model(g, feat)
-        logits = model(g, feat)
+        logits = model.inference(g, feat)
         logits = logits[mask]
         labels = labels[mask]
         f1_mic, f1_mac = calc_f1(labels.cpu().numpy(),
@@ -70,7 +69,8 @@ def load_data(args):
     if args.feat_mmap:
         dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         graph_path = os.path.join(dataset_path, 'graph.dgl')
-        feat_path = os.path.join(dataset_path, 'feat_feat.npy')
+        shape_path = os.path.join(dataset_path, 'feat.shape')
+        feat_path = os.path.join(dataset_path, 'feat.feat')
 
         print('load a prepared graph and mmap features')
         (graph,), _ = dgl.load_graphs(graph_path)
@@ -86,7 +86,8 @@ def load_data(args):
         labels = graph.ndata['label']
         num_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
         # mmap
-        feats = np.lib.format.open_memmap(feat_path, mode='r')
+        shape = np.memmap(shape_path, mode='r', dtype='int64')
+        feats = np.memmap(feat_path, mode='r', dtype="float32", shape=tuple(shape))
         data = DataType(g=graph, num_classes=num_classes, features=feats)
         return data
 
@@ -123,3 +124,9 @@ def load_data(args):
 
     data = DataType(g=G, num_classes=train_dataset.num_labels, features=G.ndata['feat'])
     return data
+
+def to_torch_tensor(data):
+    if isinstance(data, torch.Tensor):
+        return data
+    else:
+        return torch.tensor(data)

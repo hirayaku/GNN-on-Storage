@@ -1,8 +1,8 @@
 import math
 
-import dgl.function as fn
 import torch
 import torch.nn as nn
+import dgl.function as fn
 
 class GraphSAGELayer(nn.Module):
     def __init__(self,
@@ -39,11 +39,18 @@ class GraphSAGELayer(nn.Module):
         g = g.local_var()
         if not self.use_pp or not self.training:
             norm = self.get_norm(g)
-            g.ndata['h'] = h
-            g.update_all(fn.copy_src(src='h', out='m'),
-                         fn.sum(msg='m', out='h'))
-            ah = g.ndata.pop('h')
-            h = self.concat(h, ah, norm)
+            if g.is_block:
+                g.srcdata['h'] = h
+                g.update_all(fn.copy_src(src='h', out='m'),
+                            fn.sum(msg='m', out='h'))
+                ah = g.dstdata.pop('h')
+                h = self.concat(h[:g.num_dst_nodes()], ah, norm)
+            else:
+                g.ndata['h'] = h
+                g.update_all(fn.copy_src(src='h', out='m'),
+                            fn.sum(msg='m', out='h'))
+                ah = g.ndata.pop('h')
+                h = self.concat(h, ah, norm)
 
         if self.dropout:
             h = self.dropout(h)
@@ -73,7 +80,8 @@ class GraphSAGE(nn.Module):
                  n_layers,
                  activation,
                  dropout,
-                 use_pp):
+                 use_pp,
+                 full_batch=True):
         super(GraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
 
@@ -89,11 +97,21 @@ class GraphSAGE(nn.Module):
         self.layers.append(GraphSAGELayer(n_hidden, n_classes, activation=None,
                                         dropout=dropout, use_pp=False, use_lynorm=False))
 
-    def forward(self, g, feats=None):
-        if feats is None:
-            h = g.ndata['feat']
+        self.full_batch = full_batch
+
+    def forward(self, g, h):
+        if self.full_batch:
+            for layer in self.layers:
+                h = layer(g, h)
+            return h
         else:
-            h = torch.tensor(feats[g.nodes()])
+            blocks = g
+            for _, (layer, block) in enumerate(zip(self.layers, blocks)):
+                h = layer(block, h)
+            return h
+    
+    def inference(self, g, feats):
+        h = feats
         for layer in self.layers:
             h = layer(g, h)
         return h

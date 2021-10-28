@@ -18,7 +18,7 @@ import json
 import matplotlib.pyplot as plt
 from pyinstrument import Profiler
 import sklearn.metrics as skm
-import os
+import sys, os, mmap, ctypes
 import utils
 
 epsilon = 1 - math.log(2)
@@ -171,10 +171,10 @@ class FindBestEvaluator:
         model.train()
         return compute_acc(pred[val_nid], labels[val_nid]), compute_acc(pred[test_nid], labels[test_nid])
 
-    def sample_evaluate(self, model, g, labels, val_nid, test_nid, batch_size, fanout, device):
+    def sample_evaluate(self, model, g, feats, labels, val_nid, test_nid, batch_size, fanout, device):
         model.eval()
         multilabel = len(labels.shape) > 1 and labels.shape[-1] > 1
-        feats = g.ndata['feat']
+        # feats = g.ndata['feat']
 
         val_accs = []
         sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout, fanout, None, 0, g)
@@ -217,10 +217,10 @@ class FindBestEvaluator:
         model.train()
         return np.mean(val_accs), np.mean(test_accs)
 
-    def __call__(self, model, g, labels, val_nid, test_nid, batch_size, device):
+    def __call__(self, model, g, feats, labels, val_nid, test_nid, batch_size, device):
         start = time.time()
         if isinstance(self.fanout, list) and self.fanout[0] > 0:
-            val_acc, test_acc = self.sample_evaluate(model, g, labels, val_nid, test_nid, batch_size, self.fanout, device)
+            val_acc, test_acc = self.sample_evaluate(model, g, feats, labels, val_nid, test_nid, batch_size, self.fanout, device)
         else:
             val_acc, test_acc = self.full_evaluate(model, g, labels, val_nid, test_nid, batch_size, device)
 
@@ -268,7 +268,6 @@ class CachedData:
         # self.cache_data[:len(buffer_nodes)] = node_data[buffer_nodes].to(device)
         # NOTE: If node_data comes from memmap, we need to convert from numpy array to pytorch tensor
         self.cache_data = th.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=utils.to_torch_dtype(node_data.dtype), device=device)
-        # TODO: not optimal, if node_data is a torch.tensor itself
         self.cache_data[:len(buffer_nodes)] = utils.to_torch_tensor(node_data[buffer_nodes]).to(device)
         self.invalid_loc = len(buffer_nodes)
         self.node_data = node_data
@@ -278,7 +277,7 @@ class CachedData:
         data = self.cache_data[locs]
         cache_miss_nids = nids[locs == self.invalid_loc]
         data[locs == self.invalid_loc] = utils.to_torch_tensor(self.node_data[cache_miss_nids]).to(self.cache_data.device)
-        print(f'cache misses/accesses = {cache_miss_nids.shape[0]}/{nids.shape[0]}')
+        # print(f'cache misses/accesses = {cache_miss_nids.shape[0]}/{nids.shape[0]}')
         return data
 
 
@@ -383,6 +382,7 @@ def run(args, device, data):
             if args.buffer_size != 0 and args.IS == 1:
                 fanouts = [int(fanout) for fanout in args.fan_out.split(',')]
                 batchsize = blocks[-1].num_dst_nodes()
+                # A: importance sampling coefficient
                 A = th.ones(batchsize, 1, dtype=th.float32, device=device) * (batchsize/number_of_nodes)/args.buffer_size
                 for layer, block in reversed(list(enumerate(blocks))):
                     if layer ==0:
@@ -399,9 +399,10 @@ def run(args, device, data):
                     A[A>1/(avd*args.buffer_size)]=1/(avd*args.buffer_size)
                     A[A==0]=1
   
+            # if args.buffer_size == 0:
+            #     print(f'#input_nodes = {input_nodes.shape[0]}')
+
             # Load the input features as well as output labels
-            if args.buffer_size == 0:
-                print(f'#input_nodes = {input_nodes.shape[0]}')
             batch_inputs, batch_labels = load_subtensor(cached_data if args.buffer_size > 0 else feats,
                                                         labels, seeds, input_nodes, device)
             batch_labels = batch_labels.float() if multilabel else batch_labels.long()
@@ -421,7 +422,7 @@ def run(args, device, data):
                 gpu_mem_alloc = th.cuda.max_memory_allocated() / 1000000 if th.cuda.is_available() else 0
                 print(
                     'Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MiB'.format(
-                        epoch, step, loss.item(), acc, np.mean(iter_tput[3:]), gpu_mem_alloc))
+                        epoch, step, loss.item(), acc, np.mean(iter_tput[-3:]), gpu_mem_alloc))
         profiler.stop()
         print(profiler.output_text(unicode=True, color=True))
 
@@ -433,7 +434,7 @@ def run(args, device, data):
         if epoch >= 5:
             avg += toc - tic
         if epoch % args.eval_every == 0 and epoch != 0:
-            evaluate(model, g, labels, val_nid, test_nid, args.eval_batch_size, device)
+            evaluate(model, g, feats, labels, val_nid, test_nid, args.eval_batch_size, device)
 
     print('Avg epoch time: {}'.format(avg / (epoch - 4)))
     epochs = range(args.num_epochs)
@@ -489,7 +490,9 @@ if __name__ == '__main__':
     argparser.add_argument('--buffer_rs-every', type=int, default=1)
     argparser.add_argument('--IS', type=int, default=1)
     argparser.add_argument('--feat-mmap', action='store_true',
-                            help='enable mmap of node features and load from graph.dgl')
+                           help='enable mmap of node features and load from graph.dgl')
+    argparser.add_argument('--no-madvise', action="store_true",
+                           help="no madvise on mmaped featurs")
     args = argparser.parse_args()
 
     print(f'DGL version {dgl.__version__} from {dgl.__path__}')
@@ -502,7 +505,8 @@ if __name__ == '__main__':
     if args.feat_mmap:
         dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         graph_path = os.path.join(dataset_path, 'graph.dgl')
-        feat_path = os.path.join(dataset_path, 'feat_feat.npy')
+        feat_path = os.path.join(dataset_path, 'feat.feat')
+        shape_path = os.path.join(dataset_path, 'feat.shape')
         print('load a prepared graph and mmap features')
         (graph,), _ = dgl.load_graphs(graph_path)
         print('create csc')
@@ -513,8 +517,23 @@ if __name__ == '__main__':
         test_idx = th.nonzero(graph.ndata['test_mask'], as_tuple=True)[0]
         n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
         # mmap
-        feats = np.lib.format.open_memmap(feat_path, mode='r')
+        shape = np.memmap(shape_path, mode='r', dtype='int64')
+        feats = np.memmap(feat_path, mode='r', dtype="float32", shape=tuple(shape))
         in_feats = feats.shape[1]
+        if not args.no_madvise:
+            print('madvise MADV_RANDOM')
+            try:
+                feats.madvise(mmap.MADV_RANDOM)
+            except AttributeError:
+                # in python<3.8 mmap doesn't provide madvise
+                # https://github.com/numpy/numpy/issues/13172
+                madvise = ctypes.CDLL('libc.so.6', use_errno=True).madvise
+                madvise.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+                madvise.restype = ctypes.c_int
+                if madvise(feats.ctypes.data, feats.size * feats.dtype.itemsize, 1) != 0:
+                    errno = ctypes.get_errno()
+                    print(f"madvise failed with error {errno}: {os.strerror(errno)}")
+                    sys.exit(errno)
     else:
         if '.dgl' not in args.dataset:
             print('load graph from OGB.')

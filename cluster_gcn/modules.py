@@ -51,6 +51,9 @@ class GraphSAGELayer(nn.Module):
                             fn.sum(msg='m', out='h'))
                 ah = g.ndata.pop('h')
                 h = self.concat(h, ah, norm)
+        elif g.is_block:
+            # features pre-aggregated, only need to fetch features on block.dstnodes
+            h = h[:g.num_dst_nodes()]
 
         if self.dropout:
             h = self.dropout(h)
@@ -89,7 +92,7 @@ class GraphSAGE(nn.Module):
         self.layers.append(GraphSAGELayer(in_feats, n_hidden, activation=activation,
                                         dropout=dropout, use_pp=use_pp, use_lynorm=True))
         # hidden layers
-        for i in range(n_layers - 1):
+        for _ in range(1, n_layers - 1):
             self.layers.append(
                 GraphSAGELayer(n_hidden, n_hidden, activation=activation, dropout=dropout,
                              use_pp=False, use_lynorm=True))
@@ -101,17 +104,14 @@ class GraphSAGE(nn.Module):
 
     def forward(self, g, h):
         if self.full_batch:
-            for layer in self.layers:
-                h = layer(g, h)
-            return h
+            return self.inference(g, h)
         else:
             blocks = g
             for _, (layer, block) in enumerate(zip(self.layers, blocks)):
                 h = layer(block, h)
             return h
     
-    def inference(self, g, feats):
-        h = feats
+    def inference(self, g, h):
         for layer in self.layers:
             h = layer(g, h)
         return h

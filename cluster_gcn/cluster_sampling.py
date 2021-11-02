@@ -53,6 +53,7 @@ def main(args):
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
+        # FIXME: g.ndata['feat'] not set to feats
         feats = to_torch_tensor(scaler.transform(feats.data.numpy()))
 
     in_feats = feats.shape[1]
@@ -74,6 +75,9 @@ def main(args):
             n_train_samples, n_train_samples / n_nodes * 100,
             n_val_samples, n_val_samples / n_nodes * 100,
             n_test_samples, n_test_samples / n_nodes * 100))
+    print("    labels shape   ", g.ndata['label'].shape)
+    print("    features shape ", feats.shape)
+
     # create GCN model
     if args.self_loop and not args.dataset.startswith('reddit'):
         g = dgl.remove_self_loop(g)
@@ -99,9 +103,6 @@ def main(args):
         val_mask = val_mask.cuda()
         test_mask = test_mask.cuda()
         g = g.int().to(args.gpu)
-
-    print("labels shape:   ", g.ndata['label'].shape)
-    print("features shape, ", feats.shape)
 
     model = GraphSAGE(in_feats,
                       args.n_hidden,
@@ -154,7 +155,7 @@ def main(args):
 
             # GraphSAGE sampler
             sampler = dgl.dataloading.MultiLayerNeighborSampler(
-                [int(fanout) for fanout in args.fan_out.split(',')])
+                [int(fanout) for fanout in args.fan_out.split(',')][:args.n_layers])
             dataloader = dgl.dataloading.NodeDataLoader(
                 cluster,
                 cluster.nodes(),
@@ -176,7 +177,7 @@ def main(args):
                     print("MFG sampling: {:.2f}".format(enumerate_done-iter_start))
 
                 # Load the input features as well as output labels
-                batch_inputs, batch_labels = load_subtensor(cluster.ndata['feat'], cluster.ndata['label'],
+                batch_inputs, batch_labels = load_subtensor(cluster_feats, cluster_labels,
                                                             train_nodes, input_nodes, device)
                 blocks = [block.int().to(device) for block in blocks]
 

@@ -45,6 +45,7 @@ def main(args):
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
+        # FIXME: g.ndata['feat'] not set to feats
         feats = to_torch_tensor(scaler.transform(feats.data.numpy()))
 
     in_feats = feats.shape[1]
@@ -137,14 +138,11 @@ def main(args):
         # in PPI case, `log_every` is chosen to log one time per epoch. 
         # Choose your log freq dynamically when you want more info within one epoch
         log_iter = lambda j: j != 0 and (j % args.log_every == 0 or j+1 == len(cluster_iterator))
-        # iter_start = time.time()
         for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:
                 cluster = cluster.to(torch.cuda.current_device())
             cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
-            # feature_done = time.time()
-            # print("cluster preparation: {:.2f}".format(feature_done-iter_start))
 
             model.train()
             # forward
@@ -158,8 +156,6 @@ def main(args):
             loss.backward()
             optimizer.step()
 
-            # iter_start = time.time()
-            # print("cluster computation: {:.2f}".format(iter_start-feature_done))
             if log_iter(j):
                 f1_mic, f1_mac = calc_f1(batch_labels.detach().numpy(),
                                          pred.detach().numpy(), multitask=False)
@@ -227,7 +223,7 @@ if __name__ == '__main__':
     parser.add_argument("--n-hidden", type=int, default=16,
                         help="number of hidden gcn units")
     parser.add_argument("--n-layers", type=int, default=1,
-                        help="number of hidden gcn layers")
+                        help="number of gcn layers")
     parser.add_argument("--val-every", type=int, default=1,
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--rnd-seed", type=int, default=3,

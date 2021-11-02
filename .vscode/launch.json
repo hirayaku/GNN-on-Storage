@@ -21,7 +21,8 @@
             "name": "cluster-sampling-reddit",
             "type": "python",
             "request": "launch",
-            "program": "cluster_gcn/cluster_sampling.py",
+            "cwd": "cluster_gcn",
+            "program": "cluster_sampling.py",
             "console": "integratedTerminal",
             "args": [
                 "--gpu", "-1",
@@ -30,7 +31,7 @@
                 "--weight-decay", "0.0",
                 "--psize", "1500",
                 "--batch-clusters", "20",
-                "--batch-nodes", "500",
+                "--batch-nodes", "520",
                 "--n-epochs", "30",
                 "--n-hidden", "256",
                 "--n-layers", "3",
@@ -38,11 +39,40 @@
                 "--dropout", "0.2",
                 "--log-every", "100",
                 "--self-loop",
-                "--note", "sampling-self-loop-loop-reddit-ly3-h256-pp-p1500-20-debug",
+                "--note", "sampling-self-loop-reddit-debug",
                 "--use-val", "--normalize"
             ],
             "env": {
-                "PYTHONPATH": "dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+                "PYTHONPATH": "${workspaceFolder}/dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
+            }
+        },
+        {
+            "name": "cluster-cache-reddit",
+            "type": "python",
+            "request": "launch",
+            "cwd": "cluster_gcn",
+            "program": "cluster_cache_sampling.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "-1",
+                "--dataset", "reddit-self-loop",
+                "--lr", "1e-2",
+                "--weight-decay", "0.0",
+                "--psize", "1500",
+                "--batch-clusters", "20",
+                "--batch-nodes", "520",
+                "--n-epochs", "30",
+                "--n-hidden", "256",
+                "--n-layers", "3",
+                "--fan-out", "5,10,15",
+                "--dropout", "0.2",
+                "--log-every", "100",
+                "--self-loop",
+                "--note", "cache-self-loop-reddit-debug",
+                "--use-val", "--normalize"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/custom-dgl/python/lib/python3.6/site-packages/dgl-0.6-py3.6-linux-x86_64.egg:"
             }
         },
         {

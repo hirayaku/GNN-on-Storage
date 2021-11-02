@@ -22,12 +22,12 @@ class Logger(object):
 
     def write(self, s):
         with open(self.path, 'a') as f:
+            print(str(s))
             f.write(str(s))
-        # print(s)
-        return
 
     def writeln(self, s):
         with open(self.path, 'a') as f:
+            print(str(s))
             f.write(str(s))
             f.write('\n')
 
@@ -131,3 +131,26 @@ def to_torch_tensor(data):
         return data
     else:
         return torch.tensor(data)
+
+def to_torch_dtype(datatype):
+    numpy_to_torch_dtype_dict = {
+        np.bool       : torch.bool,
+        np.uint8      : torch.uint8,
+        np.int8       : torch.int8,
+        np.int16      : torch.int16,
+        np.int32      : torch.int32,
+        np.int64      : torch.int64,
+        np.float16    : torch.float16,
+        np.float32    : torch.float32,
+        np.float64    : torch.float64,
+        np.complex64  : torch.complex64,
+        np.complex128 : torch.complex128
+    }
+    if isinstance(datatype, np.dtype):
+        for key in numpy_to_torch_dtype_dict:
+            if key == datatype:
+                return numpy_to_torch_dtype_dict[key]
+    elif isinstance(datatype, torch.dtype):
+        return datatype
+
+    raise Exception(f'Datatype is neither numpy or torch dtype: {datatype}')

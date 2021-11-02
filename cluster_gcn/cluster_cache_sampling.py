@@ -5,7 +5,6 @@ import random
 from pyinstrument import Profiler
 
 import numpy as np
-import networkx as nx
 import sklearn.preprocessing
 import torch
 import torch.nn as nn
@@ -15,7 +14,7 @@ from dgl.data.utils import get_download_dir
 
 from modules import GraphSAGE
 from sampler import ClusterIter
-from utils import Logger, evaluate, calc_f1, save_log_dir, load_data, to_torch_tensor
+from utils import Logger, evaluate, calc_f1, save_log_dir, load_data, to_torch_tensor, to_torch_dtype
 
 def load_subtensor(nfeat, labels, seeds, input_nodes, device):
     """
@@ -24,6 +23,43 @@ def load_subtensor(nfeat, labels, seeds, input_nodes, device):
     batch_inputs = nfeat[input_nodes].to(device)
     batch_labels = labels[seeds].to(device)
     return batch_inputs, batch_labels
+
+class CachedData:
+    '''Cache part of the data
+    This class caches a small portion of the data and uses the cached data
+    to accelerate the data movement to GPU.
+    Parameters
+    ----------
+    node_data : tensor
+        The actual node data we want to move to GPU.
+    buffer_nodes : tensor
+        The node IDs that we like to cache in GPU.
+    device : device
+        The device where we store cached data.
+    '''
+    def __init__(self, node_data, buffer_nodes, device):
+        num_nodes = node_data.shape[0]
+        # Let's construct a vector that stores the location of the cached data.
+        # If a node is cached, the corresponding element in the vector stores the location in the cache.
+        # If a node is not cached, the element points to the end of the cache.
+        self.cached_locs = torch.ones(num_nodes, dtype=torch.int32, device=device) * len(buffer_nodes)
+        self.cached_locs[buffer_nodes] = torch.arange(len(buffer_nodes), dtype=torch.int32, device=device)
+        # Let's construct the cache. The last row in the cache doesn't contain valid data.
+        # self.cache_data = th.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=node_data.dtype, device=device)
+        # self.cache_data[:len(buffer_nodes)] = node_data[buffer_nodes].to(device)
+        # NOTE: If node_data comes from memmap, we need to convert from numpy array to pytorch tensor
+        self.cache_data = torch.zeros(len(buffer_nodes) + 1, node_data.shape[1], dtype=to_torch_dtype(node_data.dtype), device=device)
+        self.cache_data[:len(buffer_nodes)] = to_torch_tensor(node_data[buffer_nodes]).to(device)
+        self.invalid_loc = len(buffer_nodes)
+        self.node_data = node_data
+
+    def __getitem__(self, nids):
+        locs = self.cached_locs[nids].long()
+        data = self.cache_data[locs]
+        cache_miss_nids = nids[locs == self.invalid_loc]
+        data[locs == self.invalid_loc] = to_torch_tensor(self.node_data[cache_miss_nids]).to(self.cache_data.device)
+        # print(f'cache misses/accesses = {cache_miss_nids.shape[0]}/{nids.shape[0]}')
+        return data
 
 def main(args):
     torch.manual_seed(args.rnd_seed)
@@ -53,7 +89,6 @@ def main(args):
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
-        # FIXME: g.ndata['feat'] not set to feats
         feats = to_torch_tensor(scaler.transform(feats.data.numpy()))
 
     in_feats = feats.shape[1]
@@ -85,14 +120,10 @@ def main(args):
         print("adding self-loop edges")
     # metis only support int64 graph
     g = g.long()
+    train_g = g.subgraph(torch.nonzero(train_mask, as_tuple=True)[0])
 
-    # FIXME:
-    # nodes in `train_nid` is used to induce a subgraph from the full graph `g`
-    # it works well when training nodes consist of a large portion of all nodes
-    # however, when len(train_nid) << g.num_nodes(), a significant amount of edges
-    # are dropped - i.e. missing information
     cluster_iterator = ClusterIter(
-        args.dataset, g, args.psize, args.batch_clusters, train_nid, use_pp=args.use_pp)
+        args.dataset, train_g, args.psize, args.batch_clusters, train_g.nodes(), use_pp=args.use_pp, return_nodes=True)
 
     # set device for dataset tensors
     if args.gpu < 0:
@@ -139,9 +170,16 @@ def main(args):
         train_nid = torch.from_numpy(train_nid).cuda()
         print("current memory after model before training",
               torch.cuda.memory_allocated(device=train_nid.device) / 1024 / 1024)
-    start_time = time.time()
-    best_f1 = -1
+
+    fanout= [int(fanout) for fanout in args.fan_out.split(',')]
+    min_fanout = [f for f in fanout]
+    max_fanout = [f for f in fanout]
+    # We want to keep all nodes in the cache in the input layer.
+    min_fanout[0] = 0
+    max_fanout[0] = 10
     device = train_nid.device
+    best_f1 = -1
+    start_time = time.time()
 
     for epoch in range(args.n_epochs):
         if args.profile:
@@ -150,21 +188,25 @@ def main(args):
         for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:
-                cluster = cluster.to(torch.cuda.current_device())
-            cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
-            cluster_labels = cluster.ndata['label']
+                cluster = cluster.to(device)
+            # cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
+            # cluster_labels = cluster.ndata['label']
 
-            # GraphSAGE sampler
+            # make the cluster our sampling cache
+            buffer_nodes = cluster
+            buffer_size = cluster.size
+            # cached_data = CachedData(feats, buffer_nodes, device)
+            # print("cluster as sampling cache")
             sampler = dgl.dataloading.MultiLayerNeighborSampler(
-                [int(fanout) for fanout in args.fan_out.split(',')][:args.n_layers])
+                min_fanout, max_fanout, buffer_nodes, buffer_size, train_g)
             dataloader = dgl.dataloading.NodeDataLoader(
-                cluster,
-                cluster.nodes(),
+                train_g,
+                buffer_nodes,
                 sampler,
                 batch_size=args.batch_nodes,
                 shuffle=True,
                 drop_last=False,
-                num_workers=0) # TODO: nonzero num_works brings huge slowdown, why?
+                num_workers=0)
 
             steps = len(dataloader)
             log_iter =  j != 0 and (j % args.log_every == 0 or j+1==len(cluster_iterator))
@@ -172,7 +214,7 @@ def main(args):
             model.train()
             for step, (input_nodes, train_nodes, blocks) in enumerate(dataloader):
                 # Load the input features as well as output labels
-                batch_inputs, batch_labels = load_subtensor(cluster_feats, cluster_labels,
+                batch_inputs, batch_labels = load_subtensor(feats, labels, 
                                                             train_nodes, input_nodes, device)
                 blocks = [block.int().to(device) for block in blocks]
 

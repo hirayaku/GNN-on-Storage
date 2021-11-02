@@ -11,7 +11,7 @@ class ClusterIter(object):
     '''The partition sampler given a DGLGraph and partition number.
     The metis is used as the graph partition backend.
     '''
-    def __init__(self, dn, g, psize, batch_clusters, seed_nid, use_pp=True):
+    def __init__(self, dn, g, psize, batch_clusters, seed_nid, use_pp=True, return_nodes=False):
         """Initialize the sampler.
 
         Paramters
@@ -53,7 +53,11 @@ class ClusterIter(object):
             self.par_li = get_partition_list(self.g, psize)
         self.max = int((psize) // batch_clusters)
         random.shuffle(self.par_li)
-        self.get_fn = get_subgraph
+
+        if not return_nodes:
+            self.get_fn = lambda par_arr, i, psize, batch_size: get_subgraph(self.g, par_arr, i, psize, batch_size)
+        else:
+            self.get_fn = get_partition_nodes
 
     def precalc(self, g):
         norm = self.get_norm(g)
@@ -83,8 +87,7 @@ class ClusterIter(object):
 
     def __next__(self):
         if self.n < self.max:
-            result = self.get_fn(self.g, self.par_li, self.n,
-                                 self.psize, self.batch_clusters)
+            result = self.get_fn(self.par_li, self.n, self.psize, self.batch_clusters)
             self.n += 1
             return result
         else:

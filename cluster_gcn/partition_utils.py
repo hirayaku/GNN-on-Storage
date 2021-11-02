@@ -1,5 +1,3 @@
-from time import time
-
 import numpy as np
 
 from utils import arg_list
@@ -17,9 +15,10 @@ def get_partition_list(g, psize):
         graphs.append(nids)
     return graphs
 
-def get_subgraph(g, par_arr, i, psize, batch_size):
+def get_partition_nodes(par_arr, i, psize, batch_size):
     par_batch_ind_arr = [par_arr[s] for s in range(
         i * batch_size, (i + 1) * batch_size) if s < psize]
-    g1 = g.subgraph(np.concatenate(
-        par_batch_ind_arr).reshape(-1).astype(np.int64))
-    return g1
+    return np.concatenate(par_batch_ind_arr).reshape(-1).astype(np.int64)
+
+def get_subgraph(g, par_arr, i, psize, batch_size):
+    return g.subgraph(get_partition_nodes(par_arr, i, psize, batch_size))

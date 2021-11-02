@@ -144,8 +144,9 @@ def main(args):
     device = train_nid.device
 
     for epoch in range(args.n_epochs):
-        profiler = Profiler()
-        profiler.start()
+        if args.profile:
+            profiler = Profiler()
+            profiler.start()
         for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:
@@ -163,27 +164,17 @@ def main(args):
                 batch_size=args.batch_nodes,
                 shuffle=True,
                 drop_last=False,
-                num_workers=args.num_workers)
+                num_workers=0) # TODO: nonzero num_works brings huge slowdown, why?
 
             steps = len(dataloader)
             log_iter =  j != 0 and (j % args.log_every == 0 or j+1==len(cluster_iterator))
 
             model.train()
-            if log_iter:
-                iter_start = time.time()
             for step, (input_nodes, train_nodes, blocks) in enumerate(dataloader):
-                if log_iter:
-                    enumerate_done = time.time()
-                    print("MFG sampling: {:.2f}".format(enumerate_done-iter_start))
-
                 # Load the input features as well as output labels
                 batch_inputs, batch_labels = load_subtensor(cluster_feats, cluster_labels,
                                                             train_nodes, input_nodes, device)
                 blocks = [block.int().to(device) for block in blocks]
-
-                if log_iter:
-                    sampling_done = time.time()
-                    print("MFG features: {:.2f}".format(sampling_done-enumerate_done))
 
                 # Compute loss and prediction
                 batch_pred = model(blocks, batch_inputs)
@@ -193,8 +184,6 @@ def main(args):
                 optimizer.step()
 
                 if log_iter:
-                    iter_start = time.time()
-                    print("MFG computation: {:.2f}".format(iter_start-sampling_done))
                     f1_mic, f1_mac = calc_f1(batch_labels.detach().numpy(),
                                             batch_pred.detach().numpy(), multitask=False)
                     iter_msg = (f"epoch:{epoch}/{args.n_epochs}, "
@@ -209,8 +198,9 @@ def main(args):
                 print("current memory:",
                     torch.cuda.memory_allocated(device=batch_pred.device) / 1024 / 1024)
 
-        profiler.stop()
-        print(profiler.output_text(unicode=True, color=True))
+        if args.profile:
+            profiler.stop()
+            print(profiler.output_text(unicode=True, color=True))
 
         # evaluate
         if epoch % args.val_every == 0:
@@ -253,8 +243,6 @@ if __name__ == '__main__':
                         help="gpu")
     parser.add_argument("--lr", type=float, default=3e-2,
                         help="learning rate")
-    parser.add_argument("--num-workers", type=int, default=4,
-                        help="Number of sampling processes")
     parser.add_argument("--n-epochs", type=int, default=200,
                         help="number of training epochs")
     parser.add_argument("--log-every", type=int, default=100,
@@ -288,6 +276,8 @@ if __name__ == '__main__':
                         help="Weight for L2 loss")
     parser.add_argument("--note", type=str, default='none',
                         help="note for log dir")
+    parser.add_argument("--profile", action='store_true',
+                        help="Enable profiling of training process")
 
     args = parser.parse_args()
 

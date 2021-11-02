@@ -27,8 +27,9 @@ class Logger(object):
         return
 
     def writeln(self, s):
-        self.write(s)
-        self.write('\n')
+        with open(self.path, 'a') as f:
+            f.write(str(s))
+            f.write('\n')
 
 def arg_list(labels):
     hist, indexes, inverse, counts = np.unique(

@@ -1,17 +1,19 @@
 import numpy as np
 
-from utils import arg_list
-
 from dgl.transform import metis_partition
 from dgl import backend as F
 import dgl
 
-def get_partition_list(g, psize):
-    p_gs = metis_partition(g, psize)
+def get_partition_list(g, psize, mask=None):
+    '''
+    return a list of clusters; each item in the list is a graph nid array belonging to cluster i
+    '''
+    p_gs = metis_partition(g, psize, balance_ntypes=mask)
     graphs = []
     for k, val in p_gs.items():
         nids = val.ndata[dgl.NID]
-        nids = F.asnumpy(nids)
+        # NOTE: keep nids in ascending order
+        nids = np.sort(F.asnumpy(nids))
         graphs.append(nids)
     return graphs
 

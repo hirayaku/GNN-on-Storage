@@ -7,15 +7,16 @@ import argparse
 if __name__ == "__main__":
     '''
     Preprocessor for the ogbn-papers100M dataset:
-    after preprocessing, two files are generated
+    after preprocessing, three files are generated
     - .dgl file with graph structure (coo format), masks, and labels
-    - .npy files storing all node features
+    - .feat file storing node features
+    - .shape file storing the shape of node feature numpy array
     '''
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', type=str, default='ogbn-papers100M', help='Dataset name')
     parser.add_argument('--rootdir', type=str, default='.', help='Directory to download the OGB dataset')
     parser.add_argument('--graph-output-dir', type=str, help='Directory to store the graph with train/test/val masks')
-    parser.add_argument('--graph-formats', type=str, default='csc', help='Graph format (coo, csr or csc)')
+    parser.add_argument('--graph-formats', type=str, default='', help='Graph format (coo, csr or csc)')
     # parser.add_argument('--graph-as-homogeneous', action='store_true', help='Store the graph as DGL homogeneous graph.')
     parser.add_argument('--feat-output-dir', type=str, help='Directory to store features')
     args = parser.parse_args()
@@ -63,8 +64,10 @@ if __name__ == "__main__":
     
     # TODO: for link prediction, we also need edge feat in npy files
     # TODO: heterogeneous graph with multiple types?
+    # TODO: the size of edge data could be comparable to node features; separate nodes with edges
 
-    graph = graph.formats(args.graph_formats.split(','))
+    if args.graph_formats != "":
+        graph = graph.formats(args.graph_formats.split(','))
     # idx -> mask
     # train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
     for key in keySet:
@@ -77,7 +80,5 @@ if __name__ == "__main__":
 
     graph_output_path = osp.join(args.graph_output_dir, 'graph.dgl')
     print(f'save graph to {graph_output_path}')
-    # TODO: the size of edge data could be comparable to node features
-    #       separate nodes with edges
     save_graphs(graph_output_path, [graph])
 

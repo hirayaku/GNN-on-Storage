@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from dgl.data import PPIDataset
 from dgl.data import load_data as _load_data
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 
 class Logger(object):
     '''A custom logger to log stdout to a logging file.'''
@@ -53,6 +53,14 @@ def calc_f1(y_true, y_pred, multitask):
     return f1_score(y_true, y_pred, average="micro"), \
         f1_score(y_true, y_pred, average="macro")
 
+def calc_acc(y_true, y_pred, multitask):
+    if multitask:
+        y_pred[y_pred > 0] = 1
+        y_pred[y_pred <= 0] = 0
+    else:
+        y_pred = np.argmax(y_pred, axis=1)
+    return accuracy_score(y_true, y_pred)
+
 def evaluate(model, g, feat, labels, mask, multitask=False):
     model.eval()
     with torch.no_grad():
@@ -82,8 +90,6 @@ def load_data(args):
         graph.ndata['test_mask'] = graph.ndata['test_mask'] > 0
         graph.ndata['val_mask'] = graph.ndata['val_mask'] > 0
         graph.ndata['label'] = graph.ndata['label'].reshape(-1) # to 1-D array
-        # print('create csc')
-        # graph = graph.formats('csc')
         labels = graph.ndata['label']
         num_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
         # mmap
@@ -130,7 +136,7 @@ def to_torch_tensor(data):
     if isinstance(data, torch.Tensor):
         return data
     else:
-        return torch.tensor(data)
+        return torch.from_numpy(data)
 
 def to_torch_dtype(datatype):
     numpy_to_torch_dtype_dict = {

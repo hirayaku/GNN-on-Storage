@@ -14,6 +14,7 @@ from dgl.data.utils import get_download_dir
 
 from modules import GraphSAGE
 from sampler import ClusterIter
+import utils
 from utils import Logger, evaluate, calc_f1, save_log_dir, load_data, to_torch_tensor, to_torch_dtype
 
 def load_subtensor(nfeat, labels, seeds, input_nodes, device):
@@ -298,7 +299,7 @@ if __name__ == '__main__':
     parser.add_argument("--n-hidden", type=int, default=16,
                         help="number of hidden units")
     parser.add_argument("--n-layers", type=int, default=3,
-                        help="number of hidden layers")
+                        help="number of layers")
     parser.add_argument("--fan-out", type=str, default="5,10,15")
     parser.add_argument("--val-every", type=int, default=1,
                         help="number of epoch of doing inference on validation")

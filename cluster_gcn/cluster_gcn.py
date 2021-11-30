@@ -1,10 +1,10 @@
 import argparse
-import os
+import os, sys
 import time
 import random
+from pyinstrument import Profiler
 
 import numpy as np
-import networkx as nx
 import sklearn.preprocessing
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ import dgl
 from dgl.data.utils import get_download_dir
 
 from modules import GraphSAGE
-from sampler import ClusterIter
+from sampler import ClusterIter, ClusterFeatIter
 from utils import Logger, evaluate, calc_f1, save_log_dir, load_data, to_torch_tensor
 
 
@@ -45,7 +45,6 @@ def main(args):
         train_feats = feats[train_mask]
         scaler = sklearn.preprocessing.StandardScaler()
         scaler.fit(train_feats.data.numpy())
-        # FIXME: g.ndata['feat'] not set to feats
         feats = to_torch_tensor(scaler.transform(feats.data.numpy()))
 
     in_feats = feats.shape[1]
@@ -75,13 +74,7 @@ def main(args):
     # metis only support int64 graph
     g = g.long()
 
-    # FIXME:
-    # nodes in `train_nid` is used to induce a subgraph from the full graph `g`
-    # it works well when training nodes consist of a large portion of all nodes
-    # however, when len(train_nid) << g.num_nodes(), a significant amount of edges
-    # are dropped - i.e. missing information
-    cluster_iterator = ClusterIter(
-        args.dataset, g, args.psize, args.batch_size, train_nid, use_pp=args.use_pp)
+    cluster_iterator = ClusterFeatIter(args, g, feats)
 
     # set device for dataset tensors
     if args.gpu < 0:
@@ -103,7 +96,7 @@ def main(args):
                      F.relu,
                      args.dropout,
                      args.use_pp,
-                     full_batch=True)
+                     full_batch=False)
 
     if cuda:
         model.cuda()
@@ -138,42 +131,58 @@ def main(args):
         # in PPI case, `log_every` is chosen to log one time per epoch. 
         # Choose your log freq dynamically when you want more info within one epoch
         log_iter = lambda j: j != 0 and (j % args.log_every == 0 or j+1 == len(cluster_iterator))
-        for j, cluster in enumerate(cluster_iterator):
+        iter_start = time.time()
+        for j, (cluster, cluster_feats) in enumerate(cluster_iterator):
+        # for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:
                 cluster = cluster.to(torch.cuda.current_device())
-            cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
+            # cluster_feats = to_torch_tensor(feats[cluster.nodes()]) if args.feat_mmap else cluster.ndata['feat']
+            iter_done = time.time()
+
+            seed_nodes = torch.nonzero(cluster.ndata['train_mask'], as_tuple=True)[0]
+            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(args.n_layers)
+            blocks = sampler.sample_blocks(cluster, seed_nodes)
+            input_feats = cluster_feats[blocks[0].srcnodes()]
+
+            # print(f"iter: {iter_done - iter_start}")
 
             model.train()
             # forward
-            pred = model(cluster, cluster_feats)
+            # pred = model(cluster, cluster_feats)
+            pred = model(blocks, input_feats)
             batch_labels = cluster.ndata['label']
             batch_train_mask = cluster.ndata['train_mask']
-            loss = loss_f(pred[batch_train_mask],
-                          batch_labels[batch_train_mask])
+            loss = loss_f(pred,
+                          batch_labels[batch_train_mask].long())
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            train_done = time.time()
+            # print(f"train: {train_done - iter_done}")
+            # print(f"input_nodes = {blocks[0].num_nodes()}, train_nodes = {blocks[-1].num_nodes()}")
+
             if log_iter(j):
-                f1_mic, f1_mac = calc_f1(batch_labels.detach().numpy(),
+                f1_mic, f1_mac = calc_f1(batch_labels[batch_train_mask].detach().numpy(),
                                          pred.detach().numpy(), multitask=False)
                 epoch_msg = (f"epoch:{epoch}/{args.n_epochs}, "
                              f"iteration {j+1}/{len(cluster_iterator)}"
                              ": training loss {:.4f}, F1-mic {:.4f}, F1-mac {:.4f}".format(loss.item(), f1_mic, f1_mac)
                              )
                 logger.writeln(epoch_msg)
-                print(epoch_msg)
+            
+            iter_start = time.time()
 
         if cuda:
-            print("current memory:",
+            print("current cuda memory:",
                 torch.cuda.memory_allocated(device=pred.device) / 1024 / 1024)
 
         # evaluate
         if epoch % args.val_every == 0:
             val_f1_mic, val_f1_mac = evaluate(
-                model, g, feats, labels, val_mask, multitask)
+                model, g, torch.tensor(feats), labels, val_mask, multitask)
             if val_f1_mic > best_f1:
                 best_f1 = val_f1_mic
                 print('new best val f1-micro: {:.4f}'.format(best_f1))
@@ -182,7 +191,6 @@ def main(args):
             val_msg = "Val F1-mic: {:.4f}, Val F1-mac: {:.4f}\n".format(val_f1_mic, val_f1_mac)
             val_msg += "-"*80
             logger.writeln(val_msg)
-            print(val_msg)
 
     end_time = time.time()
     print(f'training using time {end_time-start_time}')
@@ -195,7 +203,6 @@ def main(args):
         model, g, feats, labels, test_mask, multitask)
     test_msg = "Test F1-mic {:.4f}, Test F1-mac {:.4f}". format(test_f1_mic, test_f1_mac)
     logger.writeln(test_msg)
-    print(test_msg)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN')
@@ -214,8 +221,8 @@ if __name__ == '__main__':
                         help="number of training epochs")
     parser.add_argument("--log-every", type=int, default=100,
                         help="the frequency to save model")
-    parser.add_argument("--batch-size", type=int, default=20,
-                        help="batch size")
+    parser.add_argument("--batch-clusters", type=int, default=20,
+                        help="batch size (number of clustes per minibatch)")
     parser.add_argument("--psize", type=int, default=1500,
                         help="partition number")
     parser.add_argument("--test-batch-size", type=int, default=1000,

@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from dgl.data import PPIDataset
 from dgl.data import load_data as _load_data
+from ogb.nodeproppred import DglNodePropPredDataset
+
 from sklearn.metrics import f1_score, accuracy_score
 
 class Logger(object):
@@ -98,10 +100,32 @@ def load_data(args):
         data = DataType(g=graph, num_classes=num_classes, features=feats)
         return data
 
+    elif args.dataset.startswith("ogbn"):
+        dataset = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
+        split_idx = dataset.get_idx_split()
+        train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
+        graph, labels = dataset[0] # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
+
+        graph.ndata['label'] = labels[:graph.num_nodes()].reshape(-1)
+        train_mask = torch.zeros(graph.num_nodes(), dtype=torch.bool)
+        train_mask[train_idx] = True
+        graph.ndata['train_mask'] = train_mask
+        val_mask = torch.zeros(graph.num_nodes(), dtype=torch.bool)
+        val_mask[valid_idx] = True
+        graph.ndata['val_mask'] = val_mask
+        test_mask = torch.zeros(graph.num_nodes(), dtype=torch.bool)
+        test_mask[test_idx] = True
+        graph.ndata['test_mask'] = test_mask
+        n_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
+        data = DataType(g=graph, num_classes=n_classes, features=graph.ndata['feat'])
+        return data
+
+    # datasets used in the original ClusterGCN paper
     if args.dataset != 'ppi':
         dataset = _load_data(args)
         data = DataType(g=dataset[0], num_classes=dataset.num_classes, features=dataset[0].ndata['feat'])
         return data
+
     train_dataset = PPIDataset('train')
     train_graph = dgl.batch([train_dataset[i] for i in range(len(train_dataset))], edge_attrs=None, node_attrs=None)
     val_dataset = PPIDataset('valid')

@@ -62,7 +62,6 @@ if __name__ == "__main__":
 
         del graph.ndata[feat_name]
     
-    # TODO: for link prediction, we also need edge feat in npy files
     # TODO: heterogeneous graph with multiple types?
     # TODO: the size of edge data could be comparable to node features; separate nodes with edges
 

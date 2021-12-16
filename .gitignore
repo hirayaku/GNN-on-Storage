@@ -1,6 +1,7 @@
 **.swp
 **/tags
-**/settings.json
+.vscode/settings.json
+.vscode/c_cpp_properties.json
 **/__pycache__
 
 **/results

@@ -27,7 +27,7 @@
             "args": [
                 "--gpu", "-1",
                 "--rootdir", "/mnt/md0/graphs",
-                "--dataset", "ogbn-papers100M",
+                "--dataset", "ogbn-products",
                 "--feat-mmap",
                 "--lr", "1e-2",
                 "--weight-decay", "0.0",

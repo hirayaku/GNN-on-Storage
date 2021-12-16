@@ -2,7 +2,7 @@
 
 SCRIPTS_DIR=$(dirname ${BASH_SOURCE[0]})
 ORIGIN_DGL=$(realpath "$(find ${SCRIPTS_DIR}/../dgl/python -type d -name dgl*.egg)")
-CUSTOM_DGL=$(realpath "$(find ${SCRIPTS_DIR}/../custom-dgl/python -type d -name dgl*.egg)")
+CUSTOM_DGL=$(realpath "$(find ${SCRIPTS_DIR}/../dgl-GNS/python -type d -name dgl*.egg)")
 
 case "$1" in
     orig*|offi*)

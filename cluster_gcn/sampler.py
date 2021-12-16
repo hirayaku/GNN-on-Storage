@@ -1,12 +1,13 @@
 import os, time
 import random
-from itertools import chain
 
-import dgl.function as fn
+import numpy as np
+from numpy.core.fromnumeric import partition
 import torch
-from utils import *
+import dgl.function as fn
 
-from partition_utils import *
+import utils
+import partition_utils
 
 
 class ClusterIter(object):
@@ -21,18 +22,14 @@ class ClusterIter(object):
 
         Paramters
         ---------
-        dn : str
-            The dataset name.
+        args : argparse.Namespace
+            Parsed arguments acquired from the command line
         g  : DGLGraph
             The full graph of dataset
-        psize: int
-            The partition number
-        batch_clusters: int
-            The number of partitions in one batch
         seed_nid: np.ndarray
             The training nodes ids, used to extract the training graph
-        use_pp: bool
-            Whether to use precompute of AX
+        return_nodes: bool
+            Whether to return node IDs or the induced subgraph
         """
         self.dataset_dir = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         self.partition_dir = os.path.join(self.dataset_dir, 'partition')
@@ -55,17 +52,17 @@ class ClusterIter(object):
                 self.par_li = np.load(fn, allow_pickle=True)
             else:
                 os.makedirs(self.partition_dir, exist_ok=True)
-                self.par_li = get_partition_list(self.g, self.psize)
+                self.par_li = partition_utils.get_partition_list(self.g, self.psize)
                 np.save(fn, self.par_li)
         else:
-            self.par_li = get_partition_list(self.g, self.psize)
+            self.par_li = partition_utils.get_partition_list(self.g, self.psize)
         self.max = int((self.psize) // self.batch_clusters)
         random.shuffle(self.par_li)
 
         if not return_nodes:
-            self.get_fn = lambda par_arr, i, psize, batch_size: get_subgraph(self.g, par_arr, i, psize, batch_size)
+            self.get_fn = lambda par_arr, i, psize, batch_size: partition_utils.get_subgraph(self.g, par_arr, i, psize, batch_size)
         else:
-            self.get_fn = get_partition_nodes
+            self.get_fn = partition_utils.get_partition_nodes
 
     def precalc(self, g):
         norm = self.get_norm(g)
@@ -110,24 +107,9 @@ class ClusterFeatIter(object):
     nodes and feats each time.
     '''
     def __init__(self, args, g, feats, return_nodes=False):
-        """Initialize the sampler.
-
-        Paramters
-        ---------
-        dn : str
-            The dataset name.
-        g  : DGLGraph
-            The full graph of dataset
-        psize: int
-            The partition number
-        batch_clusters: int
-            The number of partitions in one batch
-        use_pp: bool
-            Whether to use precompute of AX
-        """
         self.dataset_dir = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         self.partition_dir = os.path.join(self.dataset_dir, 'partition')
-        assert (not self.use_pp), "ClusterFeatIter doesn't support pre-aggregation"
+        assert (not args.use_pp), "ClusterFeatIter doesn't support pre-aggregation"
 
         # self.g = g.subgraph(seed_nid)
         self.g = g
@@ -135,40 +117,34 @@ class ClusterFeatIter(object):
         self.batch_clusters = args.batch_clusters
 
         print("getting partitioned graph...")
+        new_partition = False
         # cache the partitions of known datasets&partition number
         fn = os.path.join(self.partition_dir, args.dataset + '_par_{}.npy'.format(self.psize))
         if os.path.exists(fn):
             self.par_li = np.load(fn, allow_pickle=True)
         else:
             os.makedirs(self.partition_dir, exist_ok=True)
-            self.par_li = get_partition_list(self.g, self.psize, self.g.ndata['train_mask'])
+            self.par_li = partition_utils.get_partition_list(
+                self.g, self.psize, self.g.ndata['train_mask'])
             # self.par_li = get_partition_list(self.g, self.psize)
             np.save(fn, self.par_li)
+            new_partition = True
         self.par_id = torch.arange(0, self.psize)
-        self.par_li = [to_torch_tensor(par) for par in self.par_li]
-
-        # self.par_id = torch.arange(0, self.psize)
-        # par_size = g.num_nodes() // self.psize;
-        # par_nids = [id.item() * par_size for id in self.par_id]
-        # par_nids.append(g.num_nodes())
-        # nodes = g.nodes()
-        # self.par_li = [nodes[par_nids[i]:par_nids[i+1]] for i in range(len(par_nids)-1)]
+        self.par_li = [utils.to_torch_tensor(par) for par in self.par_li]
 
         # calculate the starting offsets for features in each partition
         self.par_offsets = torch.cumsum(torch.tensor([0] + [len(par) for par in self.par_li]), dim=0)
         assert self.par_offsets[-1] == feats.shape[0]
 
         print("shuffling the node features...")
-        '''
         # reshuffle the node features
-        cluster_feat_path = os.path.join(self.dataset_dir, f"feat.cluster{args.psize}")
-        if os.path.exists(cluster_feat_path):
+        cluster_feat_path = os.path.join(self.partition_dir, f"feat.cluster{args.psize}")
+        if not new_partition and os.path.exists(cluster_feat_path):
             self.cluster_feats = np.memmap(cluster_feat_path, mode='r', dtype='float32',
                                            shape=tuple(feats.shape))
         else:
             self.cluster_feats = self.shuffle_features(feats, cluster_feat_path)
-        '''
-        self.cluster_feats = feats;
+        # self.cluster_feats = feats;
 
         self.max = int(self.psize // self.batch_clusters)
 
@@ -188,7 +164,7 @@ class ClusterFeatIter(object):
         '''
         # creates nid -> feat_offsets map, sorted by nid
         feat_offsets = torch.arange(0, feats.shape[0])
-        
+
         par_array = torch.cat(self.par_li)
         nid_to_feat = torch.stack((par_array, feat_offsets))
         nid_to_feat = nid_to_feat[:, nid_to_feat[0].argsort()]
@@ -209,17 +185,12 @@ class ClusterFeatIter(object):
         return torch.cat(par_batch_nids), torch.cat(par_feats)
 
     def get_subgraph(self, i):
-        part_start = time.time()
         nids, feats = self.get_partition(i)
-        part_end = time.time()
-        # print(f"iter::get_partition: {part_end - part_start}")
 
-        # NOTE: the induced subgraph will keep the order of nids
-        # therefore we don't need to shuffle feats
+        # NOTE: nodes in the induced subgraph will keep the order of nids
+        # therefore we don't need to reorder feats
         subgraph = self.g.subgraph(nids)
 
-        subgraph_end = time.time()
-        # print(f"iter::get_subgraph: {subgraph_end - part_end}")
         return subgraph, feats
 
     def shuffle_iter(self):
@@ -236,7 +207,7 @@ class ClusterFeatIter(object):
         if self.n < self.max:
             result = self.get_fn(self.n)
             self.n += 1
-            return result
+            return result        # self.par_id = torch.arange(0, self.psize)
         else:
             self.shuffle_iter()
             raise StopIteration

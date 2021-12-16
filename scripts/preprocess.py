@@ -16,9 +16,10 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='ogbn-papers100M', help='Dataset name')
     parser.add_argument('--rootdir', type=str, default='.', help='Directory to download the OGB dataset')
     parser.add_argument('--graph-output-dir', type=str, help='Directory to store the graph with train/test/val masks')
-    parser.add_argument('--graph-formats', type=str, default='', help='Graph format (coo, csr or csc)')
-    # parser.add_argument('--graph-as-homogeneous', action='store_true', help='Store the graph as DGL homogeneous graph.')
     parser.add_argument('--feat-output-dir', type=str, help='Directory to store features')
+    parser.add_argument('--graph-formats', type=str, default='', help='Graph format (coo, csr or csc)')
+    parser.add_argument('--to-bidirected', action='store_true', help='Make the input graph bidirected by adding an in-edge for every out-edge (only make sense when the input is a directed graph)')
+    # parser.add_argument('--graph-as-homogeneous', action='store_true', help='Store the graph as DGL homogeneous graph.')
     args = parser.parse_args()
 
     import torch as th
@@ -64,20 +65,23 @@ if __name__ == "__main__":
     
     # TODO: heterogeneous graph with multiple types?
     # TODO: the size of edge data could be comparable to node features; separate nodes with edges
+    if args.to_bidirected:
+        graph_output_path = osp.join(args.graph_output_dir, 'graph_bidirected.dgl')
+        graph = dgl.to_bidirected(graph)
+    else:
+        graph_output_path = osp.join(args.graph_output_dir, 'graph.dgl')
 
     if args.graph_formats != "":
         graph = graph.formats(args.graph_formats.split(','))
-    # idx -> mask
-    # train_idx, val_idx, test_idx = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
+
     for key in keySet:
         idx = splitted_idx[key]
+        # TODO make mask a BoolTensor
         mask = th.zeros(graph.num_nodes(), dtype=th.bool)
         mask[idx] = True
         graph.ndata[f'{key}_mask'] = mask
 
     graph.ndata['label'] = labels[:graph.num_nodes()]
-
-    graph_output_path = osp.join(args.graph_output_dir, 'graph.dgl')
     print(f'save graph to {graph_output_path}')
     save_graphs(graph_output_path, [graph])
 

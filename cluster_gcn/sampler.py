@@ -17,7 +17,7 @@ class ClusterIter(object):
     The sampler either returns a subgraph induced by a batch of
     clusters (default), or the node IDs in the batch (return_nodes=True)
     '''
-    def __init__(self, args, g, seed_nid, return_nodes=False):
+    def __init__(self, args, g, seed_nid, balance_ntypes=None, return_nodes=False):
         """Initialize the sampler.
 
         Paramters
@@ -34,8 +34,17 @@ class ClusterIter(object):
         self.dataset_dir = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         self.partition_dir = os.path.join(self.dataset_dir, 'partition')
         self.use_pp = args.use_pp
-        # use full graph or only the training graph
-        self.g = g  # g.subgraph(seed_nid)
+        self.g = g if args.semi_supervised else g.subgraph(seed_nid)
+        if args.cluster_method == "METIS":
+            self.partition_func = lambda g, psize: \
+                partition_utils.get_partition_list(g, psize, balance_ntypes)
+            print("ClusterIter: METIS node partitioning")
+        elif args.cluster_method == "New":
+            self.partition_func = partition_utils.get_edge_partition_list
+            print("ClusterIter: new partitioning method")
+        else:
+            self.partition_func = partition_utils.get_rand_partition_list
+            print("ClusterIter: random node partitioning")
 
         # precalc the aggregated features from training graph only
         if self.use_pp:
@@ -47,15 +56,26 @@ class ClusterIter(object):
         print("getting partitioned graph...")
         # cache the partitions of known datasets&partition number
         if args.dataset:
-            fn = os.path.join(self.partition_dir, args.dataset + f'_par_{self.psize}.npy')
+            if not args.balance_train:
+                args.cluster_method += "-imb"
+            fn = os.path.join(self.partition_dir,
+                f'{args.dataset}_{args.cluster_method}_p{self.psize}.npy')
             if os.path.exists(fn):
-                self.par_li = np.load(fn, allow_pickle=True)
+                par_li = np.load(fn, allow_pickle=True)
+                self.par_li = [utils.to_torch_tensor(par) for par in par_li]
             else:
                 os.makedirs(self.partition_dir, exist_ok=True)
-                self.par_li = partition_utils.get_partition_list(self.g, self.psize)
-                np.save(fn, self.par_li)
+                self.par_li = self.partition_func(self.g, self.psize)
+                np.save(fn, [par.numpy() for par in self.par_li])
         else:
-            self.par_li = partition_utils.get_partition_list(self.g, self.psize)
+            self.par_li = self.partition_func(self.g, self.psize)
+        
+        # get the count of appearances for each node
+        replicates = torch.zeros(g.num_nodes())
+        for par in self.par_li:
+            replicates[par] += 1
+        g.ndata["count"] = replicates
+
         self.max = int((self.psize) // self.batch_clusters)
         random.shuffle(self.par_li)
 
@@ -121,16 +141,15 @@ class ClusterFeatIter(object):
         # cache the partitions of known datasets&partition number
         fn = os.path.join(self.partition_dir, args.dataset + '_par_{}.npy'.format(self.psize))
         if os.path.exists(fn):
-            self.par_li = np.load(fn, allow_pickle=True)
+            par_li = np.load(fn, allow_pickle=True)
+            self.par_li = [utils.to_torch_tensor(par) for par in par_li]
         else:
             os.makedirs(self.partition_dir, exist_ok=True)
             self.par_li = partition_utils.get_partition_list(
                 self.g, self.psize, self.g.ndata['train_mask'])
-            # self.par_li = get_partition_list(self.g, self.psize)
-            np.save(fn, self.par_li)
+            np.save(fn, [par.numpy() for par in self.par_li])
             new_partition = True
         self.par_id = torch.arange(0, self.psize)
-        self.par_li = [utils.to_torch_tensor(par) for par in self.par_li]
 
         # calculate the starting offsets for features in each partition
         self.par_offsets = torch.cumsum(torch.tensor([0] + [len(par) for par in self.par_li]), dim=0)

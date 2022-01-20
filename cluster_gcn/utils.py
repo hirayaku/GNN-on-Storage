@@ -4,6 +4,7 @@ from functools import namedtuple
 import dgl
 import numpy as np
 import torch
+import torch.nn as nn
 from dgl.data import PPIDataset
 from dgl.data import load_data as _load_data
 from ogb.nodeproppred import DglNodePropPredDataset
@@ -64,6 +65,7 @@ def calc_acc(y_true, y_pred, multitask):
     return accuracy_score(y_true, y_pred)
 
 def evaluate(model, g, feat, labels, mask, multitask=False):
+    loss_f = nn.CrossEntropyLoss()
     model.eval()
     with torch.no_grad():
         logits = model.inference(g, feat)
@@ -71,7 +73,7 @@ def evaluate(model, g, feat, labels, mask, multitask=False):
         labels = labels[mask]
         f1_mic, f1_mac = calc_f1(labels.cpu().numpy(),
                                  logits.cpu().numpy(), multitask)
-        return f1_mic, f1_mac
+        return f1_mic, f1_mac, loss_f(logits, labels)
 
 def load_data(args):
     '''Wraps the dgl's load_data utility to handle ppi special case'''

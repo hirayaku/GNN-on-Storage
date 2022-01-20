@@ -2,7 +2,7 @@ import argparse
 import os, sys
 import time
 import random
-from numpy.core.numeric import full
+import tqdm
 from pyinstrument import Profiler
 
 import numpy as np
@@ -132,7 +132,7 @@ def main(args):
         # in PPI case, `log_every` is chosen to log one time per epoch. 
         # Choose your log freq dynamically when you want more info within one epoch
         log_iter = lambda j: j != 0 and (j % args.log_every == 0 or j+1 == len(cluster_iterator))
-        for j, (cluster, cluster_feats) in enumerate(cluster_iterator):
+        for j, (cluster, cluster_feats) in enumerate(tqdm.tqdm(cluster_iterator)):
         # for j, cluster in enumerate(cluster_iterator):
             # sync with upper level training graph
             if cuda:

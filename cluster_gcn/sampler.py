@@ -2,7 +2,6 @@ import os, time
 import random
 
 import numpy as np
-from numpy.core.fromnumeric import partition
 import torch
 import dgl.function as fn
 
@@ -13,76 +12,22 @@ import partition_utils
 class ClusterIter(object):
     '''
     The partition sampler given a DGLGraph and partition number.
-    The metis is used as the graph partition backend.
+    The metis/other partitioners is used as the graph partition backend.
     The sampler either returns a subgraph induced by a batch of
-    clusters (default), or the node IDs in the batch (return_nodes=True)
+    clusters
     '''
-    def __init__(self, args, g, seed_nid, balance_ntypes=None, return_nodes=False):
-        """Initialize the sampler.
+    def __init__(self, g, psize, isize, partitions, replacement):
+        self.g = g # if not args.full_supervised else g.subgraph(seed_nid)
+        self.psize = psize
+        self.isize = isize
+        self.par_list = partitions 
 
-        Paramters
-        ---------
-        args : argparse.Namespace
-            Parsed arguments acquired from the command line
-        g  : DGLGraph
-            The full graph of dataset
-        seed_nid: np.ndarray
-            The training nodes ids, used to extract the training graph
-        return_nodes: bool
-            Whether to return node IDs or the induced subgraph
-        """
-        self.dataset_dir = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
-        self.partition_dir = os.path.join(self.dataset_dir, 'partition')
-        self.use_pp = args.use_pp
-        self.g = g if args.semi_supervised else g.subgraph(seed_nid)
-        if args.cluster_method == "METIS":
-            self.partition_func = lambda g, psize: \
-                partition_utils.get_partition_list(g, psize, balance_ntypes)
-            print("ClusterIter: METIS node partitioning")
-        elif args.cluster_method == "New":
-            self.partition_func = partition_utils.get_edge_partition_list
-            print("ClusterIter: new partitioning method")
-        else:
-            self.partition_func = partition_utils.get_rand_partition_list
-            print("ClusterIter: random node partitioning")
+        # depends on replacement policy
+        if replacement == "ClusterGCN":
+            self.get_fn = lambda par_list, i, psize, batch_size: partition_utils.get_subgraph(self.g, par_list, i, psize, batch_size)
 
-        # precalc the aggregated features from training graph only
-        if self.use_pp:
-            self.precalc(self.g)
-            print('precalculating')
-
-        self.psize = args.psize
-        self.batch_clusters = args.batch_clusters
-        print("getting partitioned graph...")
-        # cache the partitions of known datasets&partition number
-        if args.dataset:
-            if not args.balance_train:
-                args.cluster_method += "-imb"
-            fn = os.path.join(self.partition_dir,
-                f'{args.dataset}_{args.cluster_method}_p{self.psize}.npy')
-            if os.path.exists(fn):
-                par_li = np.load(fn, allow_pickle=True)
-                self.par_li = [utils.to_torch_tensor(par) for par in par_li]
-            else:
-                os.makedirs(self.partition_dir, exist_ok=True)
-                self.par_li = self.partition_func(self.g, self.psize)
-                np.save(fn, [par.numpy() for par in self.par_li])
-        else:
-            self.par_li = self.partition_func(self.g, self.psize)
-        
-        # get the count of appearances for each node
-        replicates = torch.zeros(g.num_nodes())
-        for par in self.par_li:
-            replicates[par] += 1
-        g.ndata["count"] = replicates
-
-        self.max = int((self.psize) // self.batch_clusters)
-        random.shuffle(self.par_li)
-
-        if not return_nodes:
-            self.get_fn = lambda par_arr, i, psize, batch_size: partition_utils.get_subgraph(self.g, par_arr, i, psize, batch_size)
-        else:
-            self.get_fn = partition_utils.get_partition_nodes
+        self.max = int((self.psize) // self.isize)
+        random.shuffle(self.par_list)
 
     def precalc(self, g):
         norm = self.get_norm(g)
@@ -112,11 +57,11 @@ class ClusterIter(object):
 
     def __next__(self):
         if self.n < self.max:
-            result = self.get_fn(self.par_li, self.n, self.psize, self.batch_clusters)
+            result = self.get_fn(self.par_list, self.n, self.psize, self.isize)
             self.n += 1
             return result
         else:
-            random.shuffle(self.par_li)
+            random.shuffle(self.par_list)
             raise StopIteration
 
 class ClusterFeatIter(object):
@@ -129,12 +74,11 @@ class ClusterFeatIter(object):
     def __init__(self, args, g, feats, return_nodes=False):
         self.dataset_dir = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
         self.partition_dir = os.path.join(self.dataset_dir, 'partition')
-        assert (not args.use_pp), "ClusterFeatIter doesn't support pre-aggregation"
 
         # self.g = g.subgraph(seed_nid)
         self.g = g
         self.psize = args.psize
-        self.batch_clusters = args.batch_clusters
+        self.isize = args.isize
 
         print("getting partitioned graph...")
         new_partition = False
@@ -165,7 +109,7 @@ class ClusterFeatIter(object):
             self.cluster_feats = self.shuffle_features(feats, cluster_feat_path)
         # self.cluster_feats = feats;
 
-        self.max = int(self.psize // self.batch_clusters)
+        self.max = int(self.psize // self.isize)
 
         if not return_nodes:
             self.get_fn = self.get_subgraph
@@ -196,7 +140,7 @@ class ClusterFeatIter(object):
 
     def get_partition(self, i):
         par_batch_ids = [self.par_id[s] for s in range(
-            i * self.batch_clusters, (i + 1) * self.batch_clusters) if s < self.psize]
+            i * self.isize, (i + 1) * self.isize) if s < self.psize]
         par_batch_nids = [self.par_li[s] for s in par_batch_ids]
         # read features from mmap cluster_feats
         par_feats = [torch.tensor(self.cluster_feats[self.par_offsets[s]:self.par_offsets[s+1],:])

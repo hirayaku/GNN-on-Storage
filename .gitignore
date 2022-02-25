@@ -5,6 +5,8 @@
 **/__pycache__
 
 **/results
+**/runs
+**/runs-archive
 **/log
 **/log-archive
 **/datasets

@@ -64,17 +64,6 @@ def calc_acc(y_true, y_pred, multitask):
         y_pred = np.argmax(y_pred, axis=1)
     return accuracy_score(y_true, y_pred)
 
-def evaluate(model, g, feat, labels, mask, multitask=False):
-    loss_f = nn.CrossEntropyLoss()
-    model.eval()
-    with torch.no_grad():
-        logits = model.inference(g, feat)
-        logits = logits[mask]
-        labels = labels[mask]
-        f1_mic, f1_mac = calc_f1(labels.cpu().numpy(),
-                                 logits.cpu().numpy(), multitask)
-        return f1_mic, f1_mac, loss_f(logits, labels)
-
 def load_data(args):
     '''Wraps the dgl's load_data utility to handle ppi special case'''
     DataType = namedtuple('Dataset', ['num_classes', 'g', 'features'])
@@ -102,13 +91,37 @@ def load_data(args):
         data = DataType(g=graph, num_classes=num_classes, features=feats)
         return data
 
-    elif args.dataset.startswith("ogbn"):
-        dataset = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
-        split_idx = dataset.get_idx_split()
-        train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
-        graph, labels = dataset[0] # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
+    elif "ogbn" in args.dataset or "oag-paper" in args.dataset:
+        if args.dataset.startswith("ogbn"):
+            dataset = DglNodePropPredDataset(name=args.dataset, root=args.rootdir)
+            split_idx = dataset.get_idx_split()
+            train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
+            graph, labels = dataset[0] # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
+            if args.dataset not in {"ogbn-products", "ogbn-proteins"}:
+                print(f"{args.dataset} transformed into a bidirected graph")
+                graph = dgl.to_bidirected(graph, copy_ndata=True)
 
-        graph.ndata['label'] = labels[:graph.num_nodes()].reshape(-1)
+            graph.ndata['label'] = labels[:graph.num_nodes()].reshape(-1)
+            n_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
+        else:
+            assert('oag-paper' in args.dataset)
+            dataset_path = os.path.join(args.rootdir, args.dataset.replace('-', '_'))
+            dgl_path = os.path.join(dataset_path, 'dataset.dgl')
+            data = dgl.load_graphs(dgl_path)[0]
+            graph = data[0]
+            print('create csc')
+            graph = graph.formats('csc')
+            labels = graph.ndata['field']
+            graph.ndata['feat'] = graph.ndata['emb']
+            label_sum = labels.sum(1)
+            valid_label_idx = torch.nonzero(label_sum > 0, as_tuple=True)[0]
+            # train_size = int(len(valid_label_idx) * 0.43) # modify the training set size
+            train_size = int(len(valid_label_idx) * 0.10)
+            val_size = int(len(valid_label_idx) * 0.05)
+            test_size = len(valid_label_idx) - train_size - val_size
+            train_idx, valid_idx, test_idx = valid_label_idx[torch.randperm(len(valid_label_idx))].split([train_size, val_size, test_size])
+            n_classes = labels.shape[1]
+
         train_mask = torch.zeros(graph.num_nodes(), dtype=torch.bool)
         train_mask[train_idx] = True
         graph.ndata['train_mask'] = train_mask
@@ -118,7 +131,6 @@ def load_data(args):
         test_mask = torch.zeros(graph.num_nodes(), dtype=torch.bool)
         test_mask[test_idx] = True
         graph.ndata['test_mask'] = test_mask
-        n_classes = len(torch.unique(labels[torch.logical_not(torch.isnan(labels))]))
         data = DataType(g=graph, num_classes=n_classes, features=graph.ndata['feat'])
         return data
 

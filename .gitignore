@@ -4,6 +4,7 @@
 .vscode/c_cpp_properties.json
 **/__pycache__
 
+**/build
 **/results
 **/runs
 **/runs-archive

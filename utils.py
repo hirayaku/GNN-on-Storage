@@ -36,11 +36,12 @@ class DiskTensor(np.memmap):
                 print(f"madvise failed with error {errno}: {os.strerror(errno)}")
                 sys.exit(errno)
 
-def memmap(path, random=False, **kwargs):
+def memmap(path, random=False, dtype=np.int8, mode='r+', offset=0, shape=None, order='C'):
     '''
     memmap binary files, can be tuned for random accesses
     '''
-    data = DiskTensor(path, **kwargs)
+    data = DiskTensor(path, dtype=dtype, mode=mode, offset=offset,
+        shape=tuple(shape), order=order)
     if random:
         data.madvise_random()
     return data

@@ -7,12 +7,13 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <c10/util/Logging.h>
-#include <c10/util/ArrayRef.h>
+#include <sys/mman.h>
+#include <torch/torch.h>
 
 namespace gnnos {
 
-static const char *TMPDIR = "/mnt/md0/tmp";
+extern std::string TMPDIR;
+extern int IO_THREADS;
 
 class Store {
 public:
@@ -54,39 +55,83 @@ private:
     Store(const char *path, int fd, bool is_tmp): path_(path), fd_(fd), is_tmp_(is_tmp) {}
 };
 
-// class MmapStore: public Store
+// TODO
+class MmapStore {
+public:
+    using Handle = std::shared_ptr<MmapStore>;
+
+    MmapStore(const MmapStore &) = delete;
+    MmapStore(MmapStore &&) = delete;
+    virtual ~MmapStore() {
+        if (!is_tmp_)
+            CHECK_EQ(fsync(fd_), 0) << "Fail to fsync " << path_ << ": " << strerror(errno);
+        CHECK_EQ(close(fd_), 0) << "Fail to close " << path_ << ": " << strerror(errno);
+        LOG(WARNING) << "Close Store at " << path_ << "(fd=" << fd_ << ")";
+    }
+
+    ssize_t pread(void *buf, size_t nbytes, off_t offset) const {
+        memcpy(buf, ptr_ + offset, nbytes);
+        return nbytes;
+    }
+
+    ssize_t pwrite(const void *buf, size_t nbytes, off_t offset) const {
+        memcpy(ptr_ + offset, buf, nbytes);
+        return nbytes;
+    }
+
+    int alloc(size_t offset, size_t len) {
+        if (ptr_ != NULL)
+            munmap(ptr_, length_);
+        posix_fallocate(fd_, offset, len);
+        ptr_ = (char *)mmap(0, length_, PROT_READ, MAP_SHARED, fd_, 0);
+        return 0;
+    }
+
+    long size() const;
+
+    int persist(const std::string &path);
+
+    const std::string &path() const { return path_; }
+
+    static Handle Open(const char *path, int flags);
+private:
+    std::string path_;
+    int fd_;
+    char *ptr_;
+    long length_;
+    bool is_tmp_;
+
+    MmapStore(const char *path, int fd, bool is_tmp): path_(path), fd_(fd), is_tmp_(is_tmp) {}
+};
+
+c10::ScalarType default_dtype(int itemsize);
 
 template <typename T>
 using SmallVector = c10::SmallVector<T, 4>;
-template <typename T>
-std::ostream& operator<<(std::ostream& out, const SmallVector<T> &vector) {
-    out << c10::ArrayRef<T>{vector};
-    return out;
-}
 
 class TensorInfo {
     std::string path_;
-    SmallVector<size_t> shape_;
-    size_t itemsize_ = 4;
-    size_t offset_ = 0;
+    SmallVector<long> shape_;
+    int itemsize_ = 4;
+    long offset_ = 0;
 public:
     const std::string &path() const { return path_; }
-    SmallVector<size_t> shape() const { return shape_; }
-    size_t itemsize() const { return itemsize_; }
-    size_t offset() const { return offset_; }
+    const c10::IntArrayRef shape() const { return shape_; }
+    int itemsize() const { return itemsize_; }
+    long offset() const { return offset_; }
     TensorInfo &path(std::string path) {
         path_ = std::move(path);
         return *this;
     }
-    TensorInfo &shape(SmallVector<size_t> new_shape) {
-        shape_ = std::move(new_shape);
+    TensorInfo &shape(c10::IntArrayRef new_shape) {
+        shape_ = new_shape;
         return *this;
     }
-    TensorInfo &itemsize(size_t new_size) {
+    TensorInfo &itemsize(int new_size) {
         itemsize_ = new_size;
         return *this;
     }
-    TensorInfo &offset(size_t new_offset) {
+    TensorInfo &offset(long new_offset) {
         offset_ = new_offset;
         return *this;
     }
@@ -115,35 +160,42 @@ public:
     static TensorStore
     CreateTemp(TensorInfo option = TensorOptions());
 
+    // read TensorStore into a torch Tensor
+    torch::Tensor tensor() const;
+    // torch::Tensor &TensorStore::tensor_out(torch::Tensor &out) const;
+
     // copy the tensor to another
     void copy_to(TensorStore &);
+    void save_to(std::string path) {
+        CHECK_GE(hdl->persist(path), 0) << strerror(errno);
+    }
 
-    // [start, end) is dim-0 range
-    TensorStore slice(size_t start, size_t end) const {
+    // slice TensorStore[start, end) at dim=0
+    TensorStore slice(long start, long end) const {
         return TensorStore(*this, std::make_pair(start, end));
     }
-    TensorStore slice(size_t end) const { return this->slice(0, end); }
+    TensorStore slice(long end) const { return this->slice(0, end); }
 
-    TensorStore &reshape(const SmallVector<size_t> &new_shape);
+    TensorStore &reshape(c10::IntArrayRef new_shape);
     TensorStore &flatten() { return this->reshape({numel()}); }
 
     // constant methods
-    SmallVector<size_t> shape() const { return shape_; }
-    size_t numel() const { return size_; }
-    size_t itemsize() const { return itemsize_; }
+    const c10::IntArrayRef shape() const { return shape_; }
+    long numel() const { return size_; }
+    int itemsize() const { return itemsize_; }
     TensorInfo metadata() const {
         return TensorOptions(hdl->path()).shape(shape_)
             .itemsize(itemsize_).offset(seek_set);
     }
 
     // store-flavored read/write
-    inline ssize_t pread(void *buf, size_t nbytes, size_t offset) const {
-        CHECK_LE(offset + nbytes, size_ * itemsize_) <<
+    inline ssize_t pread(void *buf, size_t nbytes, long offset) const {
+        CHECK_LE(offset + (long)nbytes, size_ * itemsize_) <<
             "TensorStore::pread out of bound";
         return hdl->pread(buf, nbytes, this->seek_set + offset);
     }
-    inline ssize_t pwrite(const void *buf, size_t nbytes, size_t offset) const {
-        CHECK_LE(offset + nbytes, size_ * itemsize_) <<
+    inline ssize_t pwrite(const void *buf, size_t nbytes, long offset) const {
+        CHECK_LE(offset + (long)nbytes, size_ * itemsize_) <<
             "TensorStore::pwrite out of bound";
         return hdl->pwrite(buf, nbytes, this->seek_set + offset);
     }
@@ -195,29 +247,30 @@ public:
     template <typename T>
     Accessor<T> accessor() && = delete;
 
-    // TODO: random access
-    // template <typename FT>
-    // std::vector<FT> gather(const std::vector<size_t> &indices);
-    // template <typename FT>
-    // bool scatter(const std::vector<FT> &data, const std::vector<size_t> &indices);
-    // void shuffle(const std::vector<size_t>& shuffle_indices);
-
 protected:
     Store::Handle hdl;
     // shape_ and size_ are counts of items
-    SmallVector<size_t> shape_;
-    size_t size_ = 0;
-    size_t itemsize_ = 0;
+    SmallVector<long> shape_;
+    long size_ = 0;
+    // TODO: consider changing itemsize to torch::dtype
+    int itemsize_ = 0;
     // seek_* are byte offsets
-    size_t seek_set = 0;
+    long seek_set = 0;
 
     // create from another TensorStore by slicing dim-0 range
-    TensorStore(const TensorStore &other, std::pair<size_t, size_t> range);
+    TensorStore(const TensorStore &other, std::pair<long, long> range);
     // create from an existing store handle
-    TensorStore(Store::Handle hdl, SmallVector<size_t> shape, size_t itemsize, size_t offset);
+    TensorStore(Store::Handle hdl, c10::IntArrayRef shape, int itemsize, long offset);
 };
 
+// TODO: unify GatherSlices and ShuffleStore into a single "gather" function
 
-}
+// Gather store slices into a torch Tensor
+torch::Tensor GatherSlices(TensorStore &store, std::vector<std::pair<long, long>> ranges);
+
+// Shuffle Store[shuffled[i]] -> Store[i]
+void ShuffleStore(TensorStore &, const TensorStore &, const torch::Tensor &);
+
+}   // namespace gnnos
 
 #endif

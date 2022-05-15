@@ -1,11 +1,13 @@
 **.swp
 **/tags
-.vscode/settings.json
-.vscode/c_cpp_properties.json
-**/__pycache__
+.vscode
 
+**/__pycache__
+**/dist
 **/build
-**/results
+**/*.egg-info
+
+**/traces
 **/runs
 **/runs-archive
 **/log

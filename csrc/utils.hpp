@@ -1,5 +1,4 @@
-#ifndef GNNOS_UTILS_HPP_
-#define GNNOS_UTILS_HPP_
+#pragma once
 
 #include <tuple>
 #include <iostream>
@@ -24,7 +23,18 @@ inline torch::Tensor vector_to_tensor(const std::vector<scalar_t>& vec,
   return tensor;
 }
 
-namespace gnnos {
+template <typename scalar_t>
+class tensor_iter {
+public:
+    tensor_iter(torch::Tensor &t)
+    : ptr(t.data_ptr<scalar_t>()), size(t.numel())
+    {}
+    scalar_t *begin() const { return ptr; }
+    scalar_t *end() const { return ptr + size; }
+public:
+    scalar_t *ptr;
+    long size;
+};
 
 template<typename Type, unsigned N, unsigned Last>
 struct tuple_printer {
@@ -50,7 +60,3 @@ std::ostream& operator<<(std::ostream& out, const std::tuple<Types...>& value) {
     out << ")";
     return out;
 }
-
-}
-
-#endif

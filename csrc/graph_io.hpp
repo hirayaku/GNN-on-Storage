@@ -37,10 +37,7 @@ public:
     {}
 
     COOStore clone(std::string path, bool fill=true);
-
-    COOStore slice(size_t start, size_t end) const {
-        return COOStore(*this, std::make_pair(start, end));
-    }
+    COOStore slice(size_t start, size_t end) const;
     COOStore slice(size_t end) const { return this->slice(0, end); }
 
     long num_nodes() const { return num_nodes_; }
@@ -91,59 +88,20 @@ public:
 protected:
     TensorStore src_store_, dst_store_;
     long num_nodes_, num_edges_;
-
-    // create from another COOStore by slicing edge ids
-    COOStore(const COOStore &other, std::pair<size_t, size_t> range)
-        : COOStore(other.src_store_.slice(range.first, range.second),
-                   other.dst_store_.slice(range.first, range.second),
-                   other.num_nodes_)
-    {}
 };
 
-class BCOOStore: public COOStore {
-public:
-    BCOOStore() = default;
-    // build a BCOOStore on top of COOStore
-    // edge_pos represents the edge blocks from COO partitioning
-    BCOOStore(COOStore coo, std::vector<long> edge_pos,
-              const torch::Tensor &assigns, int psize)
-        : COOStore(std::move(coo)), edge_pos_(std::move(edge_pos))
-        , clusters_(psize), psize_(psize)
-    {
-        CHECK_EQ(coo.num_nodes(), assigns.numel()) << "BCOOStore: invalid assignments";
-        auto assigns_vec = assigns.accessor<int, 1>();
-        for (long i = 0; i < assigns_vec.size(0); ++i) {
-            // nodes within each cluster are sorted by ID
-            clusters_.at(assigns_vec[i]).push_back(i);
-        }
-    }
+struct CSRStore {
+    CSRStore() = default;
+    CSRStore(const CSRStore &) = default;
+    CSRStore(CSRStore &&) = default;
 
-    // partition by the src node
-    static BCOOStore PartitionFrom1D(const COOStore &, const torch::Tensor &, int psize);
-    // partition by (src, dst)
-    static BCOOStore PartitionFrom2D(const COOStore &, const torch::Tensor &, int psize);
+    static CSRStore NewFrom(const COOStore &);
 
-    // constant methods
-    int psize() const { return psize_; }
-    std::vector<long> edge_pos() const { return edge_pos_; }
+    long num_nodes() const { return ptr_store.numel() - 1; }
+    long num_edges() const { return idx_store.numel(); }
 
-    // return an edge block as a COOStore
-    COOStore coo_block(int blkid);
-    // return a subgraph induced by the specified vertex clusters 
-    COOArrays cluster_subgraph(const std::vector<int> &cluster_ids);
-
-private:
-    std::vector<long> edge_pos_;
-    std::vector<int> assigns_; // TODO: add or not?
-    std::vector<std::vector<long>> clusters_;
-    int psize_;
-};
-
-
-class CSRStore {
-};
-
-class BCSRStore {
+    TensorStore ptr_store;
+    TensorStore idx_store;
 };
 
 

@@ -116,12 +116,12 @@ void testCOOStorePartition1D() {
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
-    auto assigns = random_assignment(coo, psize);
-    auto dcoo = BCOOStore::PartitionFrom1D(coo, assigns, psize);
+    auto partition = random_partition(coo, psize);
+    auto dcoo = BCOOStore::PartitionFrom1D(coo, partition);
 
     // check BCOOStore consistency
     LOG(WARNING) << "Check BCOOStore";
-    auto assigns_vec = assigns.accessor<int, 1>();
+    const auto assigns_vec = partition.assignments().accessor<int, 1>();
     for (int i = 0; i < psize; ++i) {
         auto block = dcoo.coo_block(i);
         auto accessor = block.accessor<long>();
@@ -137,12 +137,12 @@ void testCOOStorePartition2D() {
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
-    auto assigns = random_assignment(coo, psize);
-    auto dcoo = BCOOStore::PartitionFrom2D(coo, assigns, psize);
+    auto partition = random_partition(coo, psize);
+    auto dcoo = BCOOStore::PartitionFrom2D(coo, partition);
 
     // check BCOOStore consistency
     LOG(WARNING) << "Check BCOOStore";
-    auto assigns_vec = assigns.accessor<int, 1>();
+    const auto assigns_vec = partition.assignments().accessor<int, 1>();
     for (int i = 0; i < psize; ++i) {
         for (int j = 0; j < psize; ++j) {
             int from = i, to = j;
@@ -157,6 +157,13 @@ void testCOOStorePartition2D() {
     }
 }
 
+void testCSRStore() {
+    LOG(WARNING) << "testCSRStore";
+    auto tensor = TensorStore::OpenForRead(products_options);
+    auto coo = COOStore(tensor.flatten(), 2449029);
+    auto csr = CSRStore::NewFrom(coo);
+}
+
 void getTorchInfo() {
     std::cout << "CUDA available: " << (torch::cuda::is_available() ? "yes": "no") << '\n';
     std::cout << torch::get_parallel_info();
@@ -167,6 +174,7 @@ void testTorchTensor() {
     std::cout << tensor << std::endl;
     // assert foo is 2-dimensional and holds floats.
     auto foo_a = tensor.accessor<float,2>();
+    auto foo_b = tensor.data_ptr();
     float trace = 0;
 
     for(int i = 0; i < foo_a.size(0); i++) {
@@ -197,8 +205,9 @@ int main() {
     // testCOOStoreCreateTemp();
     // testCOOStoreClone();
     // testCOOStoreTraverse();
-    testCOOStorePartition1D();
+    // testCOOStorePartition1D();
     // testCOOStorePartition2D();
+    testCSRStore();
 
     return 0;
 }

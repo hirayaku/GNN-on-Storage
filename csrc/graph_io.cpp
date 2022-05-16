@@ -8,17 +8,11 @@
 
 namespace gnnos {
 
-/*
-COOStore COOStore::CreateFrom(const char *path, const std::vector<size_t> &shape,
-    size_t itemsize, size_t offset, size_t num_nodes, int flags)
-{
-    CHECK_EQ(shape.size(), 2) << "COOStore: expect shape array to have a size of 2";
-    CHECK_EQ(shape[0], 2) << "COOStore: expect shape[0] to be 2";
-    auto num_edges = shape[1];
-    TensorStore blob = TensorStore::CreateFrom(path, {2*num_edges}, itemsize, offset, flags);
-    return COOStore(blob.slice(0, num_edges), blob.slice(num_edges, 2 * num_edges), num_nodes, num_edges);
+// COOStore methods
+
+COOArrays COOStore::tensor() const {
+    return {src_store_.tensor(), dst_store_.tensor()};
 }
-*/
 
 COOStore COOStore::clone(std::string path, bool fill) {
     size_t src_nbytes = src_store_.numel() * src_store_.itemsize();
@@ -33,7 +27,7 @@ COOStore COOStore::clone(std::string path, bool fill) {
     return COOStore(new_src_store, new_dst_store, num_nodes());
 }
 
-COOStore COOStore::slice(size_t start, size_t end) const {
+COOStore COOStore::slice(long start, long end) const {
     return COOStore(
         this->src_store_.slice(start, end),
         this->dst_store_.slice(start, end),
@@ -70,7 +64,7 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
         }
     }
     CHECK_EQ(torch::sum(d_counts_).item<long>(), coo.num_edges());
-    LOG(WARNING) << "Counting complete";
+    LOG(INFO) << "Counting complete";
     // ptr_store.save_to(TMPDIR + std::string("csr_ptr"));
 
     // compute rowptr array
@@ -105,17 +99,36 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
             idx_accessor.put(dst_id, idx_pos);
         }
     }
-    #ifndef NDEBUG
     for (int i = 0; i < num_nodes; ++i) {
         CHECK_EQ(ptr_current[i], ptr_tensor_[i+1].item<long>());
     }
-    #endif
-    LOG(WARNING) << "CSR complete";
+    LOG(INFO) << "CSR complete";
     }
 
     // idx_store.save_to(TMPDIR + std::string("csr_idx"));
     return {std::move(ptr_store), std::move(idx_store)};
 
+}
+
+
+// CSRStore methods
+
+CSRArrays CSRStore::tensor() const {
+    return {ptr_store.tensor(), idx_store.tensor()};
+}
+
+torch::Tensor CSRStore::out_neighbors(long nid) {
+    long start, end;
+    // better dynamic dispatch?
+    if (ptr_store.itemsize() == 4) {
+        start = ptr_store.at(nid).item<int>();
+        end = ptr_store.at(nid+1).item<int>();
+    } else {
+        start = ptr_store.at(nid).item<long>();
+        end = ptr_store.at(nid+1).item<long>();
+    }
+
+    return idx_store.slice(start, end).tensor();
 }
 
 }

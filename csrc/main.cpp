@@ -14,7 +14,7 @@ TensorOptions("/mnt/md0/graphs/ogbn_products/serialize/edge_index")
     .itemsize(8);
 
 void testCOOStore() {
-    LOG(WARNING) << "testCOOStore";
+    LOG(INFO) << "testCOOStore";
 
     auto tensor = TensorStore::OpenForRead(products_options);
 
@@ -23,37 +23,27 @@ void testCOOStore() {
         tensor.slice(1, 2).flatten(),
         2449029
     );
-    gnnos::COOStore coo2(
-        tensor.flatten(),
-        2449029
-    );
+
+    gnnos::COOStore coo2 = coo.slice(0, 10);
     std::vector<int64_t> src, dst;
-    std::tie(src, dst) = coo2.accessor<int64_t>().slice(0, 10);
+    std::tie(src, dst) = coo.accessor<int64_t>().slice(0, 10);
     for (int i = 0; i < 10; ++i) {
         std::cout << std::make_pair(src[i], dst[i]) << "\n";
     }
 
     // exception here
-    // coo.accessor<int64_t>().slice_put(edges.first.data(), edges.second.data(), 0, 10);
-
+    coo.accessor<int64_t>().slice_put(src.data(), dst.data(), 0, 10);
 }
 
 void testCOOStoreOpen() {
-    LOG(WARNING) << "testCOOStoreOpen";
+    LOG(INFO) << "testCOOStoreOpen";
+    auto graph = TensorStore::OpenForRead(products_options);
     // exception here
-    // TensorStore::OpenForRead(
-    //     "/mnt/md0/graphs/ogbn_products/serialize/edge_index",
-    //     TensorStore::option().shape({2, 123718280}).itemsize(8)
-    // );
-    // exception here
-    // TensorStore::Open(
-    //     "edge_index",
-    //     TensorStore::option().shape({2, 123718280}).itemsize(8)
-    // );
+    TensorStore::Open(graph.metadata().path("edge_index"));
 }
 
 void testCOOStoreCreateTemp() {
-    LOG(WARNING) << "testCOOStoreCreate";
+    LOG(INFO) << "testCOOStoreCreate";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto new_tensor = gnnos::TensorStore::CreateTemp(
         tensor.metadata().path("/mnt/md0/graphs/ogbn_products").offset(16)
@@ -80,15 +70,15 @@ void testCOOStoreCreateTemp() {
 }
 
 void testCOOStoreClone() {
-    LOG(WARNING) << "testCOOStoreClone";
+    LOG(INFO) << "testCOOStoreClone";
     auto tensor = TensorStore::OpenForRead(products_options);
-    LOG(WARNING) << tensor.metadata();
+    LOG(INFO) << tensor.metadata();
     auto coo = COOStore(tensor.flatten(), 2449029);
     {
-        LOG(WARNING) << "start clone";
+        LOG(INFO) << "start clone";
         auto coo_clone = coo.clone("edge_index", false);
-        LOG(WARNING) << coo_clone.metadata();
-        LOG(WARNING) << "finish clone";
+        LOG(INFO) << coo_clone.metadata();
+        LOG(INFO) << "finish clone";
     }
 
     auto tensor_clone = TensorStore::OpenForRead(
@@ -102,7 +92,7 @@ void testCOOStoreClone() {
 void testCOOStoreTraverse(size_t edge_block=1024) {
     // when edge_block == 1, IO bandwidth reduced to 1~2 MTEPS
     // when edge_block == 4096, IO bandwidth ~100 MTEPS
-    LOG(WARNING) << "testCOOStoreClone";
+    LOG(INFO) << "testCOOStoreClone";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     auto edges = coo.accessor<int64_t>();
@@ -112,7 +102,7 @@ void testCOOStoreTraverse(size_t edge_block=1024) {
 }
 
 void testCOOStorePartition1D() {
-    LOG(WARNING) << "testCOOStorePartition";
+    LOG(INFO) << "testCOOStorePartition";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
@@ -120,7 +110,7 @@ void testCOOStorePartition1D() {
     auto dcoo = BCOOStore::PartitionFrom1D(coo, partition);
 
     // check BCOOStore consistency
-    LOG(WARNING) << "Check BCOOStore";
+    LOG(INFO) << "Check BCOOStore";
     const auto assigns_vec = partition.assignments().accessor<int, 1>();
     for (int i = 0; i < psize; ++i) {
         auto block = dcoo.coo_block(i);
@@ -133,7 +123,7 @@ void testCOOStorePartition1D() {
 }
 
 void testCOOStorePartition2D() {
-    LOG(WARNING) << "testCOOStorePartition2D";
+    LOG(INFO) << "testCOOStorePartition2D";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
@@ -141,7 +131,7 @@ void testCOOStorePartition2D() {
     auto dcoo = BCOOStore::PartitionFrom2D(coo, partition);
 
     // check BCOOStore consistency
-    LOG(WARNING) << "Check BCOOStore";
+    LOG(INFO) << "Check BCOOStore";
     const auto assigns_vec = partition.assignments().accessor<int, 1>();
     for (int i = 0; i < psize; ++i) {
         for (int j = 0; j < psize; ++j) {
@@ -157,11 +147,67 @@ void testCOOStorePartition2D() {
     }
 }
 
-void testCSRStore() {
-    LOG(WARNING) << "testCSRStore";
+void testCOOToCSRStore() {
+    LOG(INFO) << "testCOOToCSRStore";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     auto csr = CSRStore::NewFrom(coo);
+}
+
+void testCSRStoreOpen() {
+    LOG(INFO) << "testCOOToCSRStore";
+    std::string folder = "/mnt/md0/inputs/oag-paper/";
+    std::string ptr_file = folder + "graph.vertex.bin";
+    std::string idx_file = folder + "graph.edge.bin";
+
+    long num_nodes = 15257994;
+    long num_edges = 220126508;
+    auto ptr_store = TensorStore::OpenForRead(
+        TensorOptions(ptr_file).shape({num_nodes+1}));
+    auto idx_store = TensorStore::OpenForRead(
+        TensorOptions(idx_file).shape({num_edges}));
+    CSRStore csr{ptr_store, idx_store};
+}
+
+void testCSRToBCOO() {
+    LOG(INFO) << "testCSRToBCOO";
+    auto tensor = TensorStore::OpenForRead(products_options);
+    auto coo = COOStore(tensor.flatten(), 2449029);
+    int psize = 128;
+    auto partition = random_partition(coo, psize);
+    auto dcoo = BCOOStore::PartitionFrom2D(coo, partition);
+
+    // check BCOOStore consistency
+    LOG(INFO) << "Check BCOOStore";
+    const auto assigns_vec = partition.assignments().accessor<int, 1>();
+    for (int i = 0; i < psize; ++i) {
+        for (int j = 0; j < psize; ++j) {
+            int from = i, to = j;
+            auto block = dcoo.coo_block(from * psize + to);
+            auto accessor = block.accessor<long>();
+            for (int eid = 0; eid < accessor.size(); ++eid) {
+                auto e = accessor[eid];
+                CHECK_EQ(assigns_vec[e.first], from);
+                CHECK_EQ(assigns_vec[e.second], to);
+            }
+        }
+    }
+}
+
+void testNodePartitions() {
+    LOG(INFO) << "testNodePartitions";
+    auto rand = torch::randint(10, {10}, torch::dtype(torch::kInt));
+    NodePartitions::New(10, rand);
+}
+
+void testBCOOSubgraph() {
+    LOG(INFO) << "testBCOOSubgraph";
+    auto tensor = TensorStore::OpenForRead(products_options);
+    auto coo = COOStore(tensor.flatten(), 2449029);
+    int psize = 128;
+    auto partition = random_partition(coo, psize);
+    auto bcoo = BCOOStore::PartitionFrom2D(coo, partition);
+
 }
 
 void getTorchInfo() {
@@ -198,6 +244,8 @@ void testTorchMM() {
 }
 
 int main() {
+    torch::ShowLogInfoToStderr();
+
     // getTorchInfo();
     // testTorchMM();
     // testCOOStore();
@@ -207,7 +255,10 @@ int main() {
     // testCOOStoreTraverse();
     // testCOOStorePartition1D();
     // testCOOStorePartition2D();
-    testCSRStore();
+    // testCSRStore();
+    testCSRToBCOO();
+    // testNodePartitions();
+
 
     return 0;
 }

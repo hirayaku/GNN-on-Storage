@@ -11,9 +11,20 @@ namespace gnnos {
 std::string TMPDIR = "/mnt/md0/tmp";
 int IO_THREADS = torch::get_num_threads();
 
+// Store methods
+
+Store::~Store() {
+    if (!is_tmp_ && fsync(fd_) != 0)
+        TORCH_WARN("Failed to fsync fd=", fd_, ": ", strerror(errno));
+    if (close(fd_) != 0)
+        TORCH_WARN("Failed to close fd=", fd_, ": ", strerror(errno));
+    LOG(INFO) << "Close " << path_ << " (fd=" << fd_ << ")";
+}
+
 long Store::size() const {
     struct stat statbuf;
-    CHECK_GE(fstat(this->fd_, &statbuf), 0) << "Fail to stat " << path_ << strerror(errno);
+    TORCH_CHECK(fstat(this->fd_, &statbuf) >= 0,
+        "Failed to stat " + path_ + ": ", strerror(errno));
     return statbuf.st_size;
 }
 
@@ -23,7 +34,6 @@ int Store::persist(const std::string &path) {
         is_tmp_ = false;
         char proc_name[255];
         snprintf(proc_name, sizeof(proc_name), "/proc/self/fd/%d", fd_);
-        LOG(WARNING) << proc_name;
         return linkat(AT_FDCWD, proc_name, AT_FDCWD, path.data(), AT_SYMLINK_FOLLOW);
     } else {
         return linkat(AT_FDCWD, path_.data(), AT_FDCWD, path.data(), 0);
@@ -31,18 +41,34 @@ int Store::persist(const std::string &path) {
 }
 
 Store::Handle Store::Open(const char *path, int flags) {
-    // using permission mask 0644 by default
-    int fd = open(path, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    CHECK_GE(fd, 0) << "Fail to open " << path << ": " << strerror(errno);
-    LOG(WARNING) << "Open Store at " << path << "(fd=" << fd << ")";
+    int mask = S_IRUSR | S_IRGRP | S_IROTH;
+    if (flags & O_WRONLY) mask |= S_IWUSR;
+    int fd = open(path, flags, mask);
+    TORCH_CHECK(fd >= 0, "Failed to open Store from ", path, ": ", strerror(errno));
+    LOG(INFO) << "Open " << path << " (fd=" << fd << ")";
     bool is_tmp = (flags & O_TMPFILE) != 0;
     return std::shared_ptr<Store>(new Store(path, fd, is_tmp));
 }
 
+
+// MmapStore methods
+
+MmapStore::~MmapStore() {
+    if (munmap(ptr_, length_) != 0)
+        TORCH_WARN("Failed to munmap fd=", fd_, ": ", strerror(errno));
+    if (!is_tmp_ && fsync(fd_) != 0)
+        TORCH_WARN("Failed to fsync fd=", fd_, ": ", strerror(errno));
+    if (close(fd_) != 0)
+        TORCH_WARN("Failed to close fd=", fd_, ": ", strerror(errno));
+    TORCH_WARN("Close ", path_ , " (fd=", fd_, ")");
+}
+
 MmapStore::Handle MmapStore::Open(const char *path, int flags) {
-    int fd = open(path, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    CHECK_GE(fd, 0) << "Fail to open " << path << ": " << strerror(errno);
-    LOG(WARNING) << "Open Store at " << path << "(fd=" << fd << ")";
+    int mask = S_IRUSR | S_IRGRP | S_IROTH;
+    if (flags & O_WRONLY) mask |= S_IWUSR;
+    int fd = open(path, flags, mask);
+    TORCH_CHECK(fd >= 0, "Failed to open Store from ", path);
+    LOG(INFO) << "Open " << path << " (fd=" << fd << ")";
     bool is_tmp = (flags & O_TMPFILE) != 0;
     return std::shared_ptr<MmapStore>(new MmapStore(path, fd, is_tmp));
 }
@@ -98,13 +124,13 @@ TensorStore::TensorStore(const TensorStore &other, std::pair<long, long> range)
     : TensorStore(other)
 {
     // sanity check
-    CHECK_LE(range.first, range.second);
-    CHECK_LE(range.second, shape_[0]);
+    TORCH_CHECK(range.first <= range.second, "Invalid slice arguments ", range);
+    TORCH_CHECK(range.second <= shape_[0], "Invalid slice arguments ", range);
 
+    auto row_items = other.numel() / other.shape_[0];
     shape_[0] = range.second - range.first;
-    size_ = std::accumulate(shape_.begin(), shape_.end(), 1L, std::multiplies<long>());
-    auto size_dim0 = size_ / shape_[0];
-    seek_set = other.seek_set + size_dim0 * itemsize_ * range.first;
+    size_ = row_items * shape_[0];
+    seek_set = other.seek_set + row_items * itemsize_ * range.first;
 }
 
 TensorStore TensorStore::NewFrom(TensorInfo option, int flags) {
@@ -113,7 +139,7 @@ TensorStore TensorStore::NewFrom(TensorInfo option, int flags) {
     long len = tensor.numel() * tensor.itemsize();
     if (tensor.hdl->size() < tensor.seek_set + len) {
         int rc = tensor.hdl->alloc(tensor.seek_set, len);
-        CHECK_EQ(rc, 0) << strerror(rc);
+        TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
     }
     return tensor;
 }
@@ -160,8 +186,7 @@ void TensorStore::copy_to(TensorStore &that) {
 TensorStore &TensorStore::reshape(c10::IntArrayRef new_shape) {
     auto new_size = std::accumulate(new_shape.begin(), new_shape.end(),
         1L, std::multiplies<long>());
-    CHECK_EQ(new_size, numel()) << "TensorStore::reshape: can't reshape to "
-        << c10::ArrayRef<long>(new_shape);
+    TORCH_CHECK(new_size == numel(), "Invalid reshape to ", c10::IntArrayRef(new_shape));
     this->shape_ = new_shape;
     return *this;
 }

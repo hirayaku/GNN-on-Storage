@@ -10,6 +10,7 @@
 namespace gnnos {
 
 using COOArrays = std::tuple<torch::Tensor, torch::Tensor>;
+using CSRArrays = std::tuple<torch::Tensor, torch::Tensor>;
 
 class COOStore {
 public:
@@ -21,27 +22,30 @@ public:
     // initialize from two TensorStore's
     COOStore(TensorStore src_store, TensorStore dst_store, long num_nodes)
         : src_store_(std::move(src_store)), dst_store_(std::move(dst_store))
-        , num_nodes_(num_nodes), num_edges_(src_store.numel())
+        , num_nodes_(num_nodes)
     {
-        CHECK_EQ(src_store_.shape().size(), 1) <<
-            "COOStore: expect src/dst array to be flattened";
-        CHECK_EQ(src_store_.shape(), dst_store_.shape()) <<
-            "COOStore: expect src and dst arrays to have the same shape";
+        TORCH_CHECK(src_store_.shape().size() == 1,
+            "Expect flattened src/dst arrays");
+        TORCH_CHECK(src_store_.shape() == dst_store_.shape(),
+            "Expect src/dst arrays to have the same shape");
     }
 
     // initialize by splitting a contiguous tensor
-    COOStore(TensorStore &combined, size_t num_nodes)
+    COOStore(const TensorStore &combined, size_t num_nodes)
         : COOStore(combined.slice(0, combined.numel()/2),
                    combined.slice(combined.numel()/2, combined.numel()),
                    num_nodes)
     {}
 
+    // read COOStore into COOArrays
+    COOArrays tensor() const;
+
     COOStore clone(std::string path, bool fill=true);
-    COOStore slice(size_t start, size_t end) const;
-    COOStore slice(size_t end) const { return this->slice(0, end); }
+    COOStore slice(long start, long end) const;
+    COOStore slice(long end) const { return this->slice(0, end); }
 
     long num_nodes() const { return num_nodes_; }
-    long num_edges() const { return num_edges_; }
+    long num_edges() const { return src_store_.numel(); }
     std::tuple<size_t, TensorInfo, TensorInfo> metadata() const {
         return {num_nodes_, src_store_.metadata(), dst_store_.metadata()};
     }
@@ -52,8 +56,8 @@ public:
         Accessor(const COOStore &coo)
         : src_accessor(coo.src_store_), dst_accessor(coo.dst_store_)
         {
-            CHECK_EQ(src_accessor.size(), dst_accessor.size()) <<
-                "COOStore::EdgeAccessor: expect src and dst to have the same size";
+            TORCH_CHECK(src_accessor.size() == dst_accessor.size(),
+                "Expect src and dst store to have the same size");
         }
 
         long size() const { return src_accessor.size(); }
@@ -87,7 +91,7 @@ public:
 
 protected:
     TensorStore src_store_, dst_store_;
-    long num_nodes_, num_edges_;
+    long num_nodes_;
 };
 
 struct CSRStore {
@@ -97,8 +101,17 @@ struct CSRStore {
 
     static CSRStore NewFrom(const COOStore &);
 
+    // read COOStore into COOArrays
+    CSRArrays tensor() const;
+
     long num_nodes() const { return ptr_store.numel() - 1; }
     long num_edges() const { return idx_store.numel(); }
+    std::tuple<size_t, TensorInfo, TensorInfo> metadata() const {
+        return {num_nodes(), ptr_store.metadata(), idx_store.metadata()};
+    }
+
+    torch::Tensor out_neighbors(long nid);
+    torch::Tensor in_neighbors(long nid) { return out_neighbors(nid); }
 
     TensorStore ptr_store;
     TensorStore idx_store;

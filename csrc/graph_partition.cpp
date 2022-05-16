@@ -3,6 +3,12 @@
 
 namespace gnnos {
 
+long NodePartitions::size(int idx) const {
+    auto start = obj->cluster_pos[idx].item<long>();
+    auto end = obj->cluster_pos[idx+1].item<long>();
+    return end - start;
+}
+
 torch::Tensor NodePartitions::operator[](int idx) const {
     auto start = obj->cluster_pos[idx].item<long>();
     auto end = obj->cluster_pos[idx+1].item<long>();
@@ -10,13 +16,13 @@ torch::Tensor NodePartitions::operator[](int idx) const {
 }
 
 NodePartitions NodePartitions::New(int psize, torch::Tensor assignments) {
-    auto assigns_vec = assignments.accessor<long, 1>();
+    auto assigns_vec = assignments.accessor<int, 1>();
     auto pos = torch::zeros({psize+1}, torch::dtype(torch::kLong));
     auto pos_vec = pos.accessor<long, 1>();
     for (long i = 0; i < assigns_vec.size(0); ++i) {
         pos_vec[assigns_vec[i]+1]++;
     }
-    torch::cumsum(pos, 0);
+    pos = torch::cumsum(pos, 0);
 
     // generate clusters tensor
     auto clusters = torch::empty_like(assignments, torch::dtype(torch::kLong));
@@ -77,7 +83,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
         }
     }
     CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
-    LOG(WARNING) << "Counting complete";
+    LOG(INFO) << "Counting complete";
 
     // compute pos array
     auto pos_ = torch::zeros({psize+1}, p_counts_.options());
@@ -156,12 +162,14 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
             }
         }
     }
-    }   // release src_buffers, dst_buffers
 
+    #ifndef NDEBUG
     for (int i = 0; i < psize; ++i) {
         CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
     }
-    LOG(WARNING) << "Partition complete";
+    #endif
+    LOG(INFO) << "Partition complete";
+    }   // release src_buffers, dst_buffers
 
     long *pos_data = pos_.contiguous().data_ptr<long>();
     std::vector<long> pos(pos_data, pos_data + psize + 1);
@@ -192,7 +200,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
         }
     }
     CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
-    LOG(WARNING) << "Counting complete";
+    LOG(INFO) << "Counting complete";
 
     // compute pos array
     auto pos_ = torch::zeros({psize*psize+1}, p_counts_.options());
@@ -276,7 +284,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
         CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
     }
     #endif
-    LOG(WARNING) << "Partition complete";
+    LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current
 
 
@@ -286,7 +294,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
 }
 
 COOStore BCOOStore::coo_block(int blkid) {
-    CHECK_LT(blkid, edge_pos_.size()-1);
+    TORCH_CHECK((size_t) blkid + 1 < edge_pos_.size());
     return this->slice(edge_pos_[blkid], edge_pos_[blkid+1]);
 }
 
@@ -372,7 +380,7 @@ BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &csr,
         p_counts[blkid] += degree;
     }
     CHECK_EQ(torch::sum(p_counts_).item<long>(), csr.num_edges());
-    LOG(WARNING) << "Counting complete";
+    LOG(INFO) << "Counting complete";
 
     // create CSR blocks
     std::vector<CSRStore> csr_blocks;

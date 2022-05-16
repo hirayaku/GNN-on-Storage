@@ -1,6 +1,0 @@
-[submodule "dgl-fork"]
-	path = dgl
-    url = git@github.com:chenxuhao/dgl.git
-[submodule "dgl-GNS"]
-	path = dgl-GNS
-	url = https://github.com/zheng-da/dgl.git

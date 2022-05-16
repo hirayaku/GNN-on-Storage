@@ -21,12 +21,7 @@ public:
 
     Store(const Store &) = delete;
     Store(Store &&) = delete;
-    virtual ~Store() {
-        if (!is_tmp_)
-            CHECK_EQ(fsync(fd_), 0) << "Fail to fsync " << path_ << ": " << strerror(errno);
-        CHECK_EQ(close(fd_), 0) << "Fail to close " << path_ << ": " << strerror(errno);
-        LOG(WARNING) << "Close Store at " << path_ << "(fd=" << fd_ << ")";
-    }
+    virtual ~Store();
 
     ssize_t pread(void *buf, size_t nbytes, off_t offset) const {
         return pread64(fd_, buf, nbytes, offset);
@@ -62,12 +57,7 @@ public:
 
     MmapStore(const MmapStore &) = delete;
     MmapStore(MmapStore &&) = delete;
-    virtual ~MmapStore() {
-        if (!is_tmp_)
-            CHECK_EQ(fsync(fd_), 0) << "Fail to fsync " << path_ << ": " << strerror(errno);
-        CHECK_EQ(close(fd_), 0) << "Fail to close " << path_ << ": " << strerror(errno);
-        LOG(WARNING) << "Close Store at " << path_ << "(fd=" << fd_ << ")";
-    }
+    ~MmapStore();
 
     ssize_t pread(void *buf, size_t nbytes, off_t offset) const {
         memcpy(buf, ptr_ + offset, nbytes);
@@ -96,8 +86,8 @@ public:
     static Handle Open(const char *path, int flags);
 private:
     std::string path_;
-    int fd_;
-    char *ptr_;
+    int fd_ = -1;
+    char *ptr_ = NULL;
     long length_;
     bool is_tmp_;
 
@@ -167,14 +157,20 @@ public:
     // copy the tensor to another
     void copy_to(TensorStore &);
     void save_to(std::string path) {
-        CHECK_GE(hdl->persist(path), 0) << strerror(errno);
+        TORCH_CHECK(hdl->persist(path) == 0, "Failed to save as ",
+            path, ": ", strerror(errno));
     }
 
     // slice TensorStore[start, end) at dim=0
     TensorStore slice(long start, long end) const {
         return TensorStore(*this, std::make_pair(start, end));
     }
+    // slice TensorStore[0, end) at dim=0
     TensorStore slice(long end) const { return this->slice(0, end); }
+    // read TensorStore[idx] into a torch Tensor
+    torch::Tensor at(long idx) const { return slice(idx, idx+1).tensor(); }
+    // TODO: batched random read
+    torch::Tensor gather(torch::Tensor indices /*, int dim=0*/) const;
 
     TensorStore &reshape(c10::IntArrayRef new_shape);
     TensorStore &flatten() { return this->reshape({numel()}); }
@@ -190,13 +186,13 @@ public:
 
     // store-flavored read/write
     inline ssize_t pread(void *buf, size_t nbytes, long offset) const {
-        CHECK_LE(offset + (long)nbytes, size_ * itemsize_) <<
-            "TensorStore::pread out of bound";
+        TORCH_CHECK(offset + (long)nbytes <= size_ * itemsize_,
+            "Store read out of bound: ", std::make_pair(nbytes, nbytes+offset));
         return hdl->pread(buf, nbytes, this->seek_set + offset);
     }
     inline ssize_t pwrite(const void *buf, size_t nbytes, long offset) const {
-        CHECK_LE(offset + (long)nbytes, size_ * itemsize_) <<
-            "TensorStore::pwrite out of bound";
+        TORCH_CHECK(offset + (long)nbytes <= size_ * itemsize_,
+            "Store write out of bound: ", std::make_pair(nbytes, nbytes+offset));
         return hdl->pwrite(buf, nbytes, this->seek_set + offset);
     }
 
@@ -204,37 +200,35 @@ public:
     class Accessor {
     public:
         Accessor(const TensorStore &store): store_(store) {
-            size_ = store.size_ * store.itemsize_ / sizeof(T);
-            CHECK_EQ(size_ * sizeof(T), store.size_ * store.itemsize_) <<
-                "TensorStoreAccessor<T>: unaligned sizeof(T)=" << sizeof(T);
+            TORCH_CHECK(sizeof(T) == (size_t) store.itemsize_,
+                "mismatched itemsize and sizeof(T)=", sizeof(T));
         }
 
-        size_t size() const { return size_; }
+        long size() const { return store_.numel(); }
 
         // accessor-flavored methods
         T operator[](size_t idx) const {
             T elem;
-            CHECK_GE(store_.pread(&elem, sizeof(T), idx*sizeof(T)), 0)
-                << strerror(errno);
+            TORCH_CHECK(store_.pread(&elem, sizeof(T), idx*sizeof(T))>=0,
+                strerror(errno));
             return elem;
         }
         void put(const T &data, size_t idx) const {
-            CHECK_GE(store_.pwrite(&data, sizeof(T), idx*sizeof(T)), 0)
-                << strerror(errno);
+            TORCH_CHECK(store_.pwrite(&data, sizeof(T), idx*sizeof(T))>=0,
+                strerror(errno));
         }
         std::vector<T> slice(size_t start, size_t end) const {
             std::vector<T> array(end-start);
-            CHECK_GE(store_.pread(&array[0], sizeof(T)*array.size(), start*sizeof(T)), 0)
-                << strerror(errno);
+            TORCH_CHECK(store_.pread(&array[0], sizeof(T)*array.size(), start*sizeof(T))>=0,
+                strerror(errno));
             return array;
         }
         void slice_put(const T *data, size_t start, size_t end) const {
-            CHECK_GE(store_.pwrite(data, sizeof(T)*(end-start), start*sizeof(T)), 0)
-                << strerror(errno);
+            TORCH_CHECK(store_.pwrite(data, sizeof(T)*(end-start), start*sizeof(T))>=0,
+                strerror(errno));
         }
     private:
         const TensorStore &store_;
-        size_t size_;
     };
 
     // provide typed array-like access to the TensorStore
@@ -263,10 +257,9 @@ protected:
     TensorStore(Store::Handle hdl, c10::IntArrayRef shape, int itemsize, long offset);
 };
 
-// TODO: unify GatherSlices and ShuffleStore into a single "gather" function
-
 // Gather store slices into a torch Tensor
-torch::Tensor GatherSlices(TensorStore &store, std::vector<std::pair<long, long>> ranges);
+torch::Tensor
+GatherSlices(TensorStore &store, const std::vector<std::pair<long, long>> &ranges);
 
 // Shuffle Store[shuffled[i]] -> Store[i]
 void ShuffleStore(TensorStore &, const TensorStore &, const torch::Tensor &);

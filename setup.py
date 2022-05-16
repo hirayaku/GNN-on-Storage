@@ -13,7 +13,7 @@ setup(name="gnnos",
     ext_modules=[CppExtension(
         'gnnos',
         list_src("./csrc"),
-        extra_compile_args={'cxx': ['-std=c++14', '-g', '-fopenmp']})],
+        extra_compile_args={'cxx': ['-std=c++14', '-fopenmp']})],
     cmdclass={
         'build_ext': BuildExtension.with_options(no_python_abi_suffix=True)
     })

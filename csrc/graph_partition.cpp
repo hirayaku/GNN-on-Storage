@@ -18,11 +18,14 @@ torch::Tensor NodePartitions::operator[](int idx) const {
 NodePartitions NodePartitions::New(int psize, torch::Tensor assignments) {
     auto assigns_vec = assignments.accessor<int, 1>();
     auto pos = torch::zeros({psize+1}, torch::dtype(torch::kLong));
-    auto pos_vec = pos.accessor<long, 1>();
-    for (long i = 0; i < assigns_vec.size(0); ++i) {
+    auto pos_vec = pos.data_ptr<long>();
+    for (long i = 0; i < assigns_vec.sizes()[0]; ++i) {
         pos_vec[assigns_vec[i]+1]++;
     }
     pos = torch::cumsum(pos, 0);
+    pos_vec = pos.data_ptr<long>();
+    TORCH_CHECK(pos_vec[psize] == assignments.numel(),
+        "Expect ", assignments.numel(), " items, but got ", pos_vec[psize]);
 
     // generate clusters tensor
     auto clusters = torch::empty_like(assignments, torch::dtype(torch::kLong));
@@ -319,7 +322,7 @@ COOArrays BCOOStore::cluster_subgraph(const std::vector<int> &cluster_ids) {
         auto from_cid = cluster_ids[i];
         for (int j = 0; j < nclusters; ++j) {
             auto to_cid = cluster_ids[j];
-            auto blkid = from_cid * nclusters + to_cid;
+            auto blkid = from_cid * psize() + to_cid;
             auto sg_blkid = i * nclusters + j;
             blk_pos[sg_blkid+1] = edge_pos_[blkid+1] - edge_pos_[blkid];
         }
@@ -342,11 +345,11 @@ COOArrays BCOOStore::cluster_subgraph(const std::vector<int> &cluster_ids) {
         auto from_cid = cluster_ids[i];
         for (int j = 0; j < nclusters; ++j) {
             auto to_cid = cluster_ids[j];
-            auto blkid = from_cid * nclusters + to_cid;
+            auto blkid = from_cid * psize() + to_cid;
             auto sg_blkid = i * nclusters + j;
 
             auto coo = coo_block(blkid);
-            CHECK_EQ(coo.num_edges(), blk_pos[sg_blkid+1]-blk_pos[sg_blkid]);
+            TORCH_CHECK(coo.num_edges() == blk_pos[sg_blkid+1]-blk_pos[sg_blkid]);
             std::vector<long> src, dst;
             std::tie(src, dst) = coo.accessor<long>().slice(0, coo.num_edges());
 

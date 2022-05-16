@@ -31,7 +31,7 @@ public:
     }
 
     // initialize by splitting a contiguous tensor
-    COOStore(const TensorStore &combined, size_t num_nodes)
+    COOStore(const TensorStore &combined, long num_nodes)
         : COOStore(combined.slice(0, combined.numel()/2),
                    combined.slice(combined.numel()/2, combined.numel()),
                    num_nodes)

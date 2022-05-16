@@ -122,6 +122,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "generate a random node paritioning",
         py::arg("CSRStore"), py::arg("psize"));
 
+    m.def("random_partition",
+        py::overload_cast<const COOStore&, int>(&random_partition),
+        "generate a random node paritioning",
+        py::arg("COOStore"), py::arg("psize"));
+
     m.def("go_partition", py::overload_cast<const CSRStore&, int>(&go_partition),
         "generate a good node paritioning", py::arg("CSRStore"), py::arg("psize"));
 

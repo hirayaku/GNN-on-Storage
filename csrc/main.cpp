@@ -8,14 +8,17 @@
 
 using namespace gnnos;
 
+#define RUN(fn) \
+    std::cout << "[RUN]\t" #fn << "\n"; \
+    fn(); \
+    std::cout << "[PASS]\t" #fn << "\n";
+
 static const TensorInfo products_options =
 TensorOptions("/mnt/md0/graphs/ogbn_products/serialize/edge_index")
     .shape({2, 123718280})
     .itemsize(8);
 
 void testCOOStore() {
-    LOG(INFO) << "testCOOStore";
-
     auto tensor = TensorStore::OpenForRead(products_options);
 
     gnnos::COOStore coo(
@@ -36,14 +39,12 @@ void testCOOStore() {
 }
 
 void testCOOStoreOpen() {
-    LOG(INFO) << "testCOOStoreOpen";
     auto graph = TensorStore::OpenForRead(products_options);
     // exception here
     TensorStore::Open(graph.metadata().path("edge_index"));
 }
 
 void testCOOStoreCreateTemp() {
-    LOG(INFO) << "testCOOStoreCreate";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto new_tensor = gnnos::TensorStore::CreateTemp(
         tensor.metadata().path("/mnt/md0/graphs/ogbn_products").offset(16)
@@ -70,7 +71,6 @@ void testCOOStoreCreateTemp() {
 }
 
 void testCOOStoreClone() {
-    LOG(INFO) << "testCOOStoreClone";
     auto tensor = TensorStore::OpenForRead(products_options);
     LOG(INFO) << tensor.metadata();
     auto coo = COOStore(tensor.flatten(), 2449029);
@@ -92,7 +92,6 @@ void testCOOStoreClone() {
 void testCOOStoreTraverse(size_t edge_block=1024) {
     // when edge_block == 1, IO bandwidth reduced to 1~2 MTEPS
     // when edge_block == 4096, IO bandwidth ~100 MTEPS
-    LOG(INFO) << "testCOOStoreClone";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     auto edges = coo.accessor<int64_t>();
@@ -102,7 +101,6 @@ void testCOOStoreTraverse(size_t edge_block=1024) {
 }
 
 void testCOOStorePartition1D() {
-    LOG(INFO) << "testCOOStorePartition";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
@@ -123,7 +121,6 @@ void testCOOStorePartition1D() {
 }
 
 void testCOOStorePartition2D() {
-    LOG(INFO) << "testCOOStorePartition2D";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
@@ -148,14 +145,12 @@ void testCOOStorePartition2D() {
 }
 
 void testCOOToCSRStore() {
-    LOG(INFO) << "testCOOToCSRStore";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     auto csr = CSRStore::NewFrom(coo);
 }
 
 void testCSRStoreOpen() {
-    LOG(INFO) << "testCOOToCSRStore";
     std::string folder = "/mnt/md0/inputs/oag-paper/";
     std::string ptr_file = folder + "graph.vertex.bin";
     std::string idx_file = folder + "graph.edge.bin";
@@ -170,7 +165,6 @@ void testCSRStoreOpen() {
 }
 
 void testCSRToBCOO() {
-    LOG(INFO) << "testCSRToBCOO";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
@@ -195,42 +189,34 @@ void testCSRToBCOO() {
 }
 
 void testNodePartitions() {
-    LOG(INFO) << "testNodePartitions";
     auto rand = torch::randint(10, {10}, torch::dtype(torch::kInt));
-    NodePartitions::New(10, rand);
+    auto p = NodePartitions::New(10, rand);
+    LOG(INFO) << "Check NodePartitions";
+    auto assigns = p.assignments().accessor<int, 1>();
+    for (int i = 0; i < p.psize; ++i) {
+        auto nodes = p[i];
+        for (auto n : tensor_iter<int64_t>(nodes)) {
+            CHECK_EQ(assigns[n], i);
+        }
+    }
 }
 
 void testBCOOSubgraph() {
-    LOG(INFO) << "testBCOOSubgraph";
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
     auto partition = random_partition(coo, psize);
     auto bcoo = BCOOStore::PartitionFrom2D(coo, partition);
-
+    LOG(INFO) << "get subgraphs...";
+    bcoo.cluster_subgraph({1});
+    bcoo.cluster_subgraph({100});
+    bcoo.cluster_subgraph({0, 1});
+    bcoo.cluster_subgraph({0, 1, 9, 127});
 }
 
 void getTorchInfo() {
     std::cout << "CUDA available: " << (torch::cuda::is_available() ? "yes": "no") << '\n';
     std::cout << torch::get_parallel_info();
-}
-
-void testTorchTensor() {
-    torch::Tensor tensor = torch::rand({3, 3});
-    std::cout << tensor << std::endl;
-    // assert foo is 2-dimensional and holds floats.
-    auto foo_a = tensor.accessor<float,2>();
-    auto foo_b = tensor.data_ptr();
-    float trace = 0;
-
-    for(int i = 0; i < foo_a.size(0); i++) {
-        // use the accessor foo_a to get tensor data.
-        trace += foo_a[i][i];
-        for (int j = 0; j < foo_a.size(1); ++j)
-            foo_a[i][j] = j;
-    }
-    std::cout << "trace: " << trace << "\n";
-    std::cout << tensor << std::endl;
 }
 
 void testTorchMM() {
@@ -246,19 +232,19 @@ void testTorchMM() {
 int main() {
     torch::ShowLogInfoToStderr();
 
-    // getTorchInfo();
-    // testTorchMM();
-    // testCOOStore();
-    // testCOOStoreOpen();
-    // testCOOStoreCreateTemp();
-    // testCOOStoreClone();
-    // testCOOStoreTraverse();
-    // testCOOStorePartition1D();
-    // testCOOStorePartition2D();
-    // testCSRStore();
-    testCSRToBCOO();
-    // testNodePartitions();
-
+    // RUN(getTorchInfo);
+    // RUN(testTorchMM);
+    // RUN(testCOOStore);
+    // RUN(testCOOStoreOpen);
+    // RUN(testCOOStoreCreateTemp);
+    // RUN(testCOOStoreClone);
+    // RUN(testCOOStoreTraverse);
+    RUN(testNodePartitions);
+    // RUN(testCOOStorePartition1D);
+    // RUN(testCOOStorePartition2D);
+    // RUN(testCOOToCSRStore);
+    // RUN(testCSRToBCOO);
+    RUN(testBCOOSubgraph);
 
     return 0;
 }

@@ -58,7 +58,7 @@ public:
 
     // constant methods
     int psize() const { return partition.psize; }
-    int num_blocks() const { return edge_pos_.size(); }
+    int num_blocks() const { return edge_pos_.size() - 1; }
     std::vector<long> edge_pos() const { return edge_pos_; }
 
     // return an edge block as a COOStore

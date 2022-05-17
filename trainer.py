@@ -74,8 +74,12 @@ class SAGE(nn.Module):
 
         return y
 
-from graphloader import PartitionSampler, PartitionedGraphLoader, split_tensor
-from dataloader import GNNoSPartitionDataLoader
+from .graphloader import (
+    split_tensor,
+    PartitionSampler, PartitionedGraphLoader,
+    HBatchSampler, HBatchGraphLoader)
+
+from .dataloader import PartitionDataLoader, HBatchDataLoader
 
 def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, passes=1):
     # TODO: try prefetch, try uva
@@ -167,7 +171,8 @@ if __name__ == '__main__':
         name='ogbn-products', root='/mnt/md0/graphs', mmap=True)
     gloader.formats(['coo', 'csc'])
 
-    dataloader = GNNoSPartitionDataLoader(gloader, batch_size=128)
+    dataloader = PartitionDataLoader(gloader, batch_size=128)
+    # dataloader = PartitionDataLoader(gloader, batch_size=128)
 
     import torch.multiprocessing as mp
     context = mp.get_context("spawn")
@@ -187,7 +192,7 @@ if __name__ == '__main__':
 
     for ep in range(n_epochs):
         print(f"{'='*10} Epoch {ep} {'='*10}" )
-        for i, (sg, features, intervals, _) in enumerate(dataloader):
+        for i, (sg, features, intervals) in enumerate(dataloader):
             # NB: be careful, don't send DGLGraph directly over the queue, otherwise confusing bugs
             # or even segfaults will emerge. DGLGraph seems not 100% compatible with multiprocessing
             adj = sg.adj_sparse('csr')

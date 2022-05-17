@@ -14,7 +14,8 @@ __all__ = [
     'GraphLoader',
     'PartitionSampler',
     'PartitionedGraphLoader',
-    'CppPartitionedGraphLoader']
+    'HBatchSampler',
+    'HBatchGraphLoader']
 
 GraphLoaderArgs = namedtuple("args", ["name", "root", "mmap"])
 def _args(**kwargs):
@@ -42,6 +43,9 @@ class GraphLoader(object):
     '''
     GraphLoader loads the stored graph dataset from the given folder.
     It could provide an in-memory version of the dataset or an mmap view
+    - graph topology: in-memory
+    - node features: in-memory (mmap=False) or on-storage (mmap=True)
+    - paritioned graph: no
     '''
     def __init__(self, **kwargs):
         args = _args(**kwargs)
@@ -59,7 +63,6 @@ class GraphLoader(object):
 
         feat_shape_file = osp.join(self.dataset_dir, "feat.shape")
         feat_file = osp.join(self.dataset_dir, "feat.feat")
-        # TODO: put (feat_name, feat_shape) in a json or other file, rather than a binary file
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         if self.mmap:
             self.node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32',
@@ -125,7 +128,9 @@ class PartitionSampler(dgl.dataloading.Sampler):
         self.prefetch_edata = prefetch_edata or []
 
     def sample(self, g, partition_ids):
-        # sample partitions and generate subgraphs without features attached
+        '''
+        sample partitions and generate subgraphs without features attached
+        '''
         partitions = [self.partitions[i] for i in partition_ids]
         node_ids = torch.cat(partitions)
         sg = g.subgraph(node_ids, relabel_nodes=True)
@@ -133,8 +138,6 @@ class PartitionSampler(dgl.dataloading.Sampler):
         dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
 
         intervals = partition_offsets(partitions)
-        # sg_nodes = sg.nodes()
-        # sg_partitions = [sg_nodes[intervals[i]:intervals[i+1]] for i in range(len(partition_ids))]
         return sg, intervals, partition_ids
 
 
@@ -146,6 +149,9 @@ class PartitionedGraphLoader(GraphLoader):
     If the graph is not yet partitioned, it generates a new partitioning,
     reshuffles the node features if needed and cache the results
     under the "partitions" folder.
+    - graph topology: in-memory
+    - node features: on-storage
+    - paritioned graph: yes
     '''
     def __init__(self, p_size, p_method=PartitionMethod(0), overwrite=False, **kwargs):
         super(PartitionedGraphLoader, self).__init__(**kwargs)
@@ -226,7 +232,7 @@ class PartitionedGraphLoader(GraphLoader):
     def partition_idx(self):
         return torch.arange(0, self.p_size)
 
-    def partition_features(self, pid):
+    def feat_partition(self, pid):
         '''
         Get the feature tensor of the pid-th partition
         '''
@@ -234,12 +240,42 @@ class PartitionedGraphLoader(GraphLoader):
             return torch.from_numpy(self.shuffled_features[self.offsets[pid]:self.offsets[pid+1]])
         else:
             return self.features(self.partitions[pid])
+    
+    def gather_feat_partitions(self, indices):
+        feats = [self.feat_partition(i) for i in indices]
+        return torch.cat(feats)
+
 
 import dataset, gnnos
 
-class CppPartitionedGraphLoader:
+class HBatchSampler(dgl.dataloading.Sampler):
     '''
-    PartitionedGraphLoader based on the TensorStore interface
+    Storage-Memory batch samper
+    Given partition IDs, sample a subgraph from a partitioned graph on storage
+    '''
+    def __init__(self, partitions,  prefetch_ndata=None, prefetch_edata=None):
+        super().__init__()
+        self.partitions = partitions
+        self.prefetch_ndata = prefetch_ndata or []
+        self.prefetch_edata = prefetch_edata or []
+
+    def sample(self, g: gnnos.BCOOStore, partition_ids):
+        partitions = [self.partitions[i] for i in partition_ids]
+        sg = dgl.graph(g.subgraph(partition_ids))
+        dgl.dataloading.set_node_lazy_features(sg, self.prefetch_ndata)
+        dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
+
+        intervals = partition_offsets(partitions)
+        return sg, intervals, partition_ids
+
+
+class HBatchGraphLoader:
+    '''
+    Load partitioned graph and features backed by gnnos.TensorStore
+    - graph topology: on-storage
+    - node features: on-storage
+    - paritioned graph: yes
+    The only data in the CPU memory are train/val/test masks
     '''
     def __init__(self, name: str, root: str, p_size, p_method=PartitionMethod(0)):
         self.name = name
@@ -270,7 +306,7 @@ class CppPartitionedGraphLoader:
             pg = gnnos.BCOOStore.from_csr_2d(graph, self.partitions)
         else:
             pg = gnnos.BCOOStore.from_coo_2d(graph, self.partitions)
-        self.pg = pg
+        self.graph: gnnos.BCOOStore = pg
 
         part_timer = time.time()
         print(f"Partition graph: {part_timer-load_timer:.2f}s")
@@ -296,6 +332,7 @@ class CppPartitionedGraphLoader:
 
     def gather_feat_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
+        # TODO: float16 for mag240m
         return gnnos.gather_slices(self.shuffled_features, slices, 'float32')
 
 
@@ -308,7 +345,7 @@ if __name__ == "__main__":
     gnnos.verbose()
 
     print(using('before'))
-    gloader = CppPartitionedGraphLoader(
+    gloader = HBatchGraphLoader(
         name="ogbn-products", root="/mnt/md0/inputs", p_size=16)
     print(using('after'))
     parts = torch.randint(16, (4,))
@@ -321,7 +358,8 @@ if __name__ == "__main__":
     print(using('collect'))
 
     print(using('before'))
-    gloader = GraphLoader(name="ogbn-products", root="/mnt/md0/graphs", mmap=True)
+    gloader = PartitionedGraphLoader(
+        name="ogbn-products", root="/mnt/md0/graphs", p_size=16)
     print(using('after'))
     feats_ref = gloader.features(nodes)
     print(feats_ref)

@@ -1,10 +1,10 @@
 import torch
 import dgl
 import dgl.dataloading
-from .graphloader import (
-    GraphLoader,
+from graphloader import (
+    GraphLoader, partition_offsets,
     PartitionSampler, PartitionedGraphLoader,
-    HBatchSampler, HBatchGraphLoader)
+    HBatchGraphLoader)
 
 # Notes on dataloaders with multiprocessing
 #
@@ -94,7 +94,7 @@ class PartitionDataLoader(dgl.dataloading.DataLoader):
     def __iter__(self):
         return self._FeatureIter(super().__iter__(), self.gloader)
 
-class HBatchDataLoader(dgl.dataloading.DataLoader):
+class HBatchDataLoader(torch.utils.data.DataLoader):
     '''
     Storage-Memory dataLoader
     Loads on-storage graph and feature partitions
@@ -102,11 +102,13 @@ class HBatchDataLoader(dgl.dataloading.DataLoader):
     #  TODO: spawn a separate processes to do the most work ?
     def __init__(self, graph_loader: HBatchGraphLoader, batch_size, **kwargs):
         self.gloader = graph_loader
+        collate_fn = lambda samples: (self.gloader.graph.subgraph(samples), samples)
         super().__init__(
-                self.gloader.graph, self.gloader.partition_idx(),
-                HBatchSampler(), device='cpu',
-                batch_size=batch_size, drop_last=False, shuffle=True,
-                **kwargs);
+                self.gloader.partition_idx(),
+                batch_size=batch_size,
+                collate_fn=collate_fn,
+                drop_last=False, shuffle=True,
+                **kwargs)
 
     class _FeatureIter(object):
         def __init__(self, it, gloader: HBatchGraphLoader):
@@ -117,8 +119,19 @@ class HBatchDataLoader(dgl.dataloading.DataLoader):
             return self
 
         def __next__(self):
-            sg, intervals, pids = next(self.it)
+            coo, pids = next(self.it)
+            partitions = [self.gloader.partitions[i] for i in pids]
+            intervals = partition_offsets(partitions)
+            nodes = torch.cat(partitions)
+
+            sg = dgl.graph(coo, num_nodes=nodes.numel())
             sg_features = self.gloader.gather_feat_partitions(pids)
+            sg.ndata['label'] = self.gloader.gather_label_partitions(pids)
+            print(sg.ndata['label'].shape)
+
+            sg.ndata['train_mask'] = self.gloader.masks[0][nodes]
+            sg.ndata['val_mask'] = self.gloader.masks[1][nodes]
+            sg.ndata['test_mask'] = self.gloader.masks[2][nodes]
             return sg, sg_features, intervals
 
     def __iter__(self):

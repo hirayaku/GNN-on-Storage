@@ -74,12 +74,12 @@ class SAGE(nn.Module):
 
         return y
 
-from .graphloader import (
+from graphloader import (
     split_tensor,
     PartitionSampler, PartitionedGraphLoader,
-    HBatchSampler, HBatchGraphLoader)
+    HBatchGraphLoader)
 
-from .dataloader import PartitionDataLoader, HBatchDataLoader
+from dataloader import PartitionDataLoader, HBatchDataLoader
 
 def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, passes=1):
     # TODO: try prefetch, try uva
@@ -112,14 +112,15 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
 
 def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_dim, num_classes):
     # TODO: enable cuda
-    torch.cuda.set_device(rank)
-    dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
+    # torch.cuda.set_device(rank)
+    # dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
+    dist.init_process_group('gloo', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
     assert rank == dist.get_rank()
     print(f"Trainer {rank}: init_process_group, world size = {world_size}")
 
     model = SAGE(feature_dim[0], 256, num_classes)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
-    # model = nn.parallel.DistributedDataParallel(model)
+    # model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
+    model = nn.parallel.DistributedDataParallel(model)
     opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     print(f"Trainer {rank}: model created")
 
@@ -167,12 +168,13 @@ if __name__ == '__main__':
     tracer = VizTracer(output_file=f"traces/ddp-proc{n_procs}.json", min_duration=10)
     tracer.start()
 
-    gloader = PartitionedGraphLoader(1024, overwrite=False,
-        name='ogbn-products', root='/mnt/md0/graphs', mmap=True)
-    gloader.formats(['coo', 'csc'])
-
-    dataloader = PartitionDataLoader(gloader, batch_size=128)
+    # gloader = PartitionedGraphLoader(1024, overwrite=False,
+    #     name='ogbn-products', root='/mnt/md0/graphs', mmap=True)
+    # gloader.formats(['coo', 'csc'])
     # dataloader = PartitionDataLoader(gloader, batch_size=128)
+
+    gloader = HBatchGraphLoader(name="ogbn-products", root="/mnt/md0/inputs", p_size=1024)
+    dataloader = HBatchDataLoader(gloader, batch_size=128)
 
     import torch.multiprocessing as mp
     context = mp.get_context("spawn")

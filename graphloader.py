@@ -248,27 +248,6 @@ class PartitionedGraphLoader(GraphLoader):
 
 import dataset, gnnos
 
-class HBatchSampler(dgl.dataloading.Sampler):
-    '''
-    Storage-Memory batch samper
-    Given partition IDs, sample a subgraph from a partitioned graph on storage
-    '''
-    def __init__(self, partitions,  prefetch_ndata=None, prefetch_edata=None):
-        super().__init__()
-        self.partitions = partitions
-        self.prefetch_ndata = prefetch_ndata or []
-        self.prefetch_edata = prefetch_edata or []
-
-    def sample(self, g: gnnos.BCOOStore, partition_ids):
-        partitions = [self.partitions[i] for i in partition_ids]
-        sg = dgl.graph(g.subgraph(partition_ids))
-        dgl.dataloading.set_node_lazy_features(sg, self.prefetch_ndata)
-        dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
-
-        intervals = partition_offsets(partitions)
-        return sg, intervals, partition_ids
-
-
 class HBatchGraphLoader:
     '''
     Load partitioned graph and features backed by gnnos.TensorStore
@@ -318,12 +297,27 @@ class HBatchGraphLoader:
         )
         gnnos.shuffle_store(shuffled_features, node_features, self.partitions.nodes())
         self.shuffled_features = shuffled_features
-        print(self.shuffled_features.metadata)
+        shuffled_labels = gnnos.tensor_store(
+            self.labels.metadata.with_path(gnnos.get_tmp_dir()),
+            "r+", temp=True
+        )
+        gnnos.shuffle_store(shuffled_labels, self.labels, self.partitions.nodes())
+        self.shuffled_labels = shuffled_labels 
 
         shuffle_timer = time.time()
-        print(f"Shuffle features: {shuffle_timer-part_timer:.2f}s")
+        print(f"Shuffle data: {shuffle_timer-part_timer:.2f}s")
 
-    def partiton_idx(self):
+    def feature_dim(self):
+        return self.shuffled_features.metadata.shape[1:]
+    
+    def num_classes(self):
+        if self.is_multilabel:
+            return self.labels.metadata.shape[1]
+        else:
+            # TODO: oag-paper & mag240m have byte labels
+            return torch.max(self.labels.tensor('int64')).item()
+
+    def partition_idx(self):
         return torch.arange(0, self.p_size)
 
     def gather_node_partitions(self, indices):
@@ -334,6 +328,11 @@ class HBatchGraphLoader:
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
         # TODO: float16 for mag240m
         return gnnos.gather_slices(self.shuffled_features, slices, 'float32')
+
+    def gather_label_partitions(self, indices):
+        slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
+        # TODO: byte/uint8 for oag-paper & mag240m
+        return gnnos.gather_slices(self.shuffled_labels, slices, 'int64')
 
 
 if __name__ == "__main__":

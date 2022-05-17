@@ -199,7 +199,7 @@ torch::Tensor GatherSlices(
     const std::vector<std::pair<long, long>> &ranges,
     torch::ScalarType dtype)
 {
-    std::vector<TensorStore> store_slices(ranges.size());
+    std::vector<TensorStore> store_slices;
     long rows = 0;
     std::vector<long> pos = {0};
     for (auto r : ranges) {

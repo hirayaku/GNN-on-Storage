@@ -14,7 +14,7 @@ using namespace gnnos;
     std::cout << "[PASS]\t" #fn << "\n";
 
 static const TensorInfo products_options =
-TensorOptions("/mnt/md0/graphs/ogbn_products/serialize/edge_index")
+TensorOptions("/mnt/md0/inputs/ogbn_products/edge_index")
     .shape({2, 123718280})
     .itemsize(8);
 
@@ -214,6 +214,11 @@ void testBCOOSubgraph() {
     bcoo.cluster_subgraph({0, 1, 9, 127});
 }
 
+void testGather() {
+    auto tensor = TensorStore::OpenForRead(products_options).flatten();
+    GatherSlices(tensor, {{2, 4}, {6, 7}}, torch::kLong);
+}
+
 void getTorchInfo() {
     std::cout << "CUDA available: " << (torch::cuda::is_available() ? "yes": "no") << '\n';
     std::cout << torch::get_parallel_info();
@@ -239,12 +244,13 @@ int main() {
     // RUN(testCOOStoreCreateTemp);
     // RUN(testCOOStoreClone);
     // RUN(testCOOStoreTraverse);
-    RUN(testNodePartitions);
+    // RUN(testNodePartitions);
     // RUN(testCOOStorePartition1D);
     // RUN(testCOOStorePartition2D);
     // RUN(testCOOToCSRStore);
     // RUN(testCSRToBCOO);
-    RUN(testBCOOSubgraph);
+    // RUN(testBCOOSubgraph);
+    RUN(testGather);
 
     return 0;
 }

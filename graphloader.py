@@ -290,6 +290,10 @@ class CppPartitionedGraphLoader:
     def partiton_idx(self):
         return torch.arange(0, self.p_size)
 
+    def gather_node_partitions(self, indices):
+        nodes = [self.partitions[i] for i in indices]
+        return torch.cat(nodes)
+
     def gather_feat_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
         return gnnos.gather_slices(self.shuffled_features, slices, 'float32')
@@ -307,11 +311,11 @@ if __name__ == "__main__":
     gloader = CppPartitionedGraphLoader(
         name="ogbn-products", root="/mnt/md0/inputs", p_size=16)
     print(using('after'))
-    partition_nodes = gloader.partitions[3]
-    # t0 = gloader.partition_features([3])
-    # print(t0)
+    parts = torch.randint(16, (4,))
+    feats = gloader.gather_feat_partitions(parts)
+    nodes = gloader.gather_node_partitions(parts)
+    print(feats)
     print(using('tensor'))
-    # del t0
     del gloader
     gc.collect()
     print(using('collect'))
@@ -319,9 +323,9 @@ if __name__ == "__main__":
     print(using('before'))
     gloader = GraphLoader(name="ogbn-products", root="/mnt/md0/graphs", mmap=True)
     print(using('after'))
-    t1 = gloader.features(partition_nodes)
+    feats_ref = gloader.features(nodes)
+    print(feats_ref)
     print(using('tensor'))
-    del t1
     del gloader
     gc.collect()
     print(using('collect'))

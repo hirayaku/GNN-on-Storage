@@ -132,6 +132,7 @@ std::ostream& operator<<(std::ostream&, const TensorInfo &);
 
 class TensorStore {
 public:
+    // TODO: we shouldn't allow an empty constructor: hdl in an illegal state
     TensorStore() {}
     TensorStore(const TensorStore &store) = default;
     TensorStore(TensorStore &&store) = default;

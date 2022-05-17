@@ -25,15 +25,19 @@ public:
     long num_nodes() const { return obj->assignments.numel(); }
 
     // return the assignments tensor
-    const torch::Tensor &assignments() {
-        return obj->assignments;
-    }
+    const torch::Tensor &assignments() const { return obj->assignments; }
+
+    // starting position of cluster[idx]
+    long pos(int idx) const;
 
     // size of cluster[idx]
     long size(int idx) const;
 
     // get cluster[idx]
     torch::Tensor operator[](int idx) const;
+
+    // get nodes in a shuffled order
+    const torch::Tensor &nodes() const { return obj->clusters; }
 
     // create a NodePartitions object from node assignments tensor
     static NodePartitions New(int psize, torch::Tensor assignments);

@@ -3,10 +3,12 @@
 
 namespace gnnos {
 
+long NodePartitions::pos(int idx) const {
+    return obj->cluster_pos[idx].item<long>();
+}
+
 long NodePartitions::size(int idx) const {
-    auto start = obj->cluster_pos[idx].item<long>();
-    auto end = obj->cluster_pos[idx+1].item<long>();
-    return end - start;
+    return pos(idx+1) - pos(idx);
 }
 
 torch::Tensor NodePartitions::operator[](int idx) const {

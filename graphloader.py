@@ -1,4 +1,5 @@
-import os
+import os, time
+from random import shuffle
 import os.path as osp
 from enum import Enum
 from functools import namedtuple
@@ -8,7 +9,12 @@ import dgl
 import utils
 import partition_utils as p_utils
 
-__all__ = ['PartitionMethod', 'GraphLoader', 'GraphPartitions', 'PartitionedGraphLoader']
+__all__ = [
+    'PartitionMethod',
+    'GraphLoader',
+    'PartitionSampler',
+    'PartitionedGraphLoader',
+    'CppPartitionedGraphLoader']
 
 GraphLoaderArgs = namedtuple("args", ["name", "root", "mmap"])
 def _args(**kwargs):
@@ -18,7 +24,7 @@ def _args(**kwargs):
 class PartitionMethod(Enum):
     RANDOM = 0
     METIS = 1
-    NEV = 2
+    HBATCH = 2
     EXTERNAL = 3
 
     @staticmethod
@@ -51,10 +57,10 @@ class GraphLoader(object):
             if k.endswith('_mask'):
                 self.graph.ndata[k] = v.bool()
 
-        feat_shape_file = osp.join(self.dataset_dir, "features.shape")
-        feat_file = osp.join(self.dataset_dir, "features")
+        feat_shape_file = osp.join(self.dataset_dir, "feat.shape")
+        feat_file = osp.join(self.dataset_dir, "feat.feat")
         # TODO: put (feat_name, feat_shape) in a json or other file, rather than a binary file
-        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64'))
+        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         if self.mmap:
             self.node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32',
                 shape=shape)
@@ -229,19 +235,94 @@ class PartitionedGraphLoader(GraphLoader):
         else:
             return self.features(self.partitions[pid])
 
+import dataset, gnnos
+
+class CppPartitionedGraphLoader:
+    '''
+    PartitionedGraphLoader based on the TensorStore interface
+    '''
+    def __init__(self, name: str, root: str, p_size, p_method=PartitionMethod(0)):
+        self.name = name
+        self.canonical_name = self.name.replace('-', '_')
+        self.root = root
+        self.dataset_dir = osp.join(root, self.canonical_name)
+        self.p_size = p_size
+        self.p_method = p_method
+
+        start_timer = time.time()
+
+        if name == "oag-paper":
+            data = dataset.load_oag(self.dataset_dir)
+        elif name == "mag240m":
+            data = dataset.load_mag240m(self.dataset_dir)
+        elif name.startswith("ogbn"):
+            data = dataset.load_ogb(self.dataset_dir)
+        else:
+            raise ValueError("Unknown dataset, please choose from oag-paper, mag240m, or OGB")
+        # unpack loaded data
+        graph, node_features, self.is_multilabel, self.labels, self.masks = data
+
+        load_timer = time.time()
+        print(f"Load dataset: {load_timer-start_timer:.2f}s")
+
+        self.partitions = gnnos.random_partition(graph, self.p_size)
+        if isinstance(graph, gnnos.CSRStore):
+            pg = gnnos.BCOOStore.from_csr_2d(graph, self.partitions)
+        else:
+            pg = gnnos.BCOOStore.from_coo_2d(graph, self.partitions)
+        self.pg = pg
+
+        part_timer = time.time()
+        print(f"Partition graph: {part_timer-load_timer:.2f}s")
+
+        # shuffle data
+        shuffled_features = gnnos.tensor_store(
+            node_features.metadata.with_path(gnnos.get_tmp_dir()),
+            "r+", temp=True
+        )
+        gnnos.shuffle_store(shuffled_features, node_features, self.partitions.nodes())
+        self.shuffled_features = shuffled_features
+        print(self.shuffled_features.metadata)
+
+        shuffle_timer = time.time()
+        print(f"Shuffle features: {shuffle_timer-part_timer:.2f}s")
+
+    def partiton_idx(self):
+        return torch.arange(0, self.p_size)
+
+    def gather_feat_partitions(self, indices):
+        slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
+        return gnnos.gather_slices(self.shuffled_features, slices, 'float32')
+
+
 if __name__ == "__main__":
     import gc, resource
     def using(point=""):
         usage=resource.getrusage(resource.RUSAGE_SELF)
         return '%s: mem=%s MB' % (point, usage[2]/1024.0 )
+
+    gnnos.verbose()
+
+    print(using('before'))
+    gloader = CppPartitionedGraphLoader(
+        name="ogbn-products", root="/mnt/md0/inputs", p_size=16)
+    print(using('after'))
+    partition_nodes = gloader.partitions[3]
+    # t0 = gloader.partition_features([3])
+    # print(t0)
+    print(using('tensor'))
+    # del t0
+    del gloader
+    gc.collect()
+    print(using('collect'))
+
     print(using('before'))
     gloader = GraphLoader(name="ogbn-products", root="/mnt/md0/graphs", mmap=True)
     print(using('after'))
-    gloader.formats(['csc'])
-    print(using('formats'))
+    t1 = gloader.features(partition_nodes)
+    print(using('tensor'))
+    del t1
+    del gloader
     gc.collect()
     print(using('collect'))
-    gloader.graph.edges()
-    print(gloader.graph.formats())
-    print(using('last'))
 

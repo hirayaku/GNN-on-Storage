@@ -9,7 +9,7 @@ import utils
 
 TensorInfo = namedtuple("TensorInfo", ("shape", "dtype", "path", "offset"))
 
-def tensor_serialize(tensor: np.ndarray, path: str) -> TensorInfo:
+def tensor_serialize(tensor: np.ndarray, path: str):
     byte_tensor = tensor.reshape(-1).view('int8')
     # byte tensor on disk
     disk_tensor = utils.memmap(path, random=False, mode='w+', shape=byte_tensor.shape)

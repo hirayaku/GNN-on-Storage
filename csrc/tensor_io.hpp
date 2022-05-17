@@ -150,8 +150,10 @@ public:
     static TensorStore
     CreateTemp(TensorInfo option = TensorOptions());
 
+    // TODO: we really need to replace itemsize with dtype
     // read TensorStore into a torch Tensor
     torch::Tensor tensor() const;
+    torch::Tensor tensor(torch::ScalarType) const;
     // torch::Tensor &TensorStore::tensor_out(torch::Tensor &out) const;
 
     // copy the tensor to another
@@ -186,13 +188,13 @@ public:
 
     // store-flavored read/write
     inline ssize_t pread(void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= size_ * itemsize_,
-            "Store read out of bound: ", std::make_pair(nbytes, nbytes+offset));
+        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize_,
+            "Store read out of bound: ", std::make_pair(offset, nbytes+offset));
         return hdl->pread(buf, nbytes, this->seek_set + offset);
     }
     inline ssize_t pwrite(const void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= size_ * itemsize_,
-            "Store write out of bound: ", std::make_pair(nbytes, nbytes+offset));
+        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize_,
+            "Store write out of bound: ", std::make_pair(offset, nbytes+offset));
         return hdl->pwrite(buf, nbytes, this->seek_set + offset);
     }
 
@@ -258,8 +260,10 @@ protected:
 };
 
 // Gather store slices into a torch Tensor
-torch::Tensor
-GatherSlices(TensorStore &store, const std::vector<std::pair<long, long>> &ranges);
+torch::Tensor GatherSlices(
+    const TensorStore &store,
+    const std::vector<std::pair<long, long>> &ranges,
+    torch::ScalarType);
 
 // Shuffle Store[shuffled[i]] -> Store[i]
 void ShuffleStore(TensorStore &, const TensorStore &, const torch::Tensor &);

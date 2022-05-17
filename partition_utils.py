@@ -1,7 +1,6 @@
 import torch
 
 from dgl.partition import metis_partition, metis_partition_assignment
-# from dgl.partition import ne_vertex_partition, NePolicy
 import dgl
 import dgl.function as fn
 

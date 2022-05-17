@@ -1,9 +1,35 @@
+#include <unordered_map>
 #include "tensor_io.hpp"
 #include "graph_io.hpp"
 #include "graph_partition.hpp"
 #include <torch/extension.h>
 
 using namespace gnnos;
+
+static torch::ScalarType str2dtype(const std::string &str) {
+    static std::unordered_map<std::string, torch::ScalarType> lookup {
+        {"bool", torch::kBool},
+        {"char", torch::kChar},
+        {"byte", torch::kByte},
+        {"short", torch::kShort},
+        {"int", torch::kInt},
+        {"long", torch::kLong},
+        {"int8", torch::kChar},
+        {"uint8", torch::kByte},
+        {"int16", torch::kInt16},
+        {"int32", torch::kInt32},
+        {"int64", torch::kInt64},
+        {"float16", torch::kFloat16},
+        {"float", torch::kFloat},
+        {"float32", torch::kFloat32},
+        {"float64", torch::kFloat64},
+        {"double", torch::kFloat64}
+    };
+
+    auto r = lookup.find(str);
+    TORCH_CHECK(r != lookup.end(), "Unknown type string: ", str);
+    return r->second;
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("verbose", []() { torch::ShowLogInfoToStderr(); });
@@ -48,8 +74,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("slice", py::overload_cast<long, long>(&TensorStore::slice, py::const_),
             "TensorStore[start, end)", py::arg("start"), py::arg("end"))
         .def("__getitem__", &TensorStore::at, "get TensorStore[idx]", py::arg("idx"))
-        .def("tensor", &TensorStore::tensor,
-            "read TensorStore into an in-memory torch Tensor")
+        .def("tensor",
+            [](const TensorStore &self, std::string type_str) {
+                return self.tensor(str2dtype(type_str));
+            }, "read TensorStore into an in-memory torch Tensor", py::arg("dtype"))
         .def("save", &TensorStore::save_to,
             "save TensorStore to file", py::arg("path"));
 
@@ -72,8 +100,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Create new TensorStore",
         py::arg("TensorInfo"), py::arg("flags") = "r", py::arg("temp") = false);
 
-    m.def("gather_slices", &GatherSlices, "gather store slices into a torch Tensor",
-        py::arg("TensorStore"), py::arg("ranges"));
+    m.def("gather_slices",
+        [](const TensorStore &store, std::vector<std::pair<long, long>> r, std::string t)
+        {
+            return GatherSlices(store, r, str2dtype(t));
+        }, "gather store slices into a torch Tensor",
+        py::arg("TensorStore"), py::arg("ranges"), py::arg("dtype"));
 
     m.def("shuffle_store", &ShuffleStore, "shuffle store elements based on clusters",
         py::arg("TensorStore"), py::arg("TensorStore"), py::arg("shuffled_ids"));
@@ -110,9 +142,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def(py::init<>())
         .def_readonly("psize", &NodePartitions::psize)
         .def("assignments", &NodePartitions::assignments)
+        .def("pos", &NodePartitions::pos, py::arg("idx"))
         .def("size", &NodePartitions::size, py::arg("idx"))
         .def("__getitem__", &NodePartitions::operator[],
-            "get the node partition tensor", py::arg("idx"));
+            "get the node partition tensor", py::arg("idx"))
+        .def("nodes", &NodePartitions::nodes);
 
     m.def("node_partitions", &NodePartitions::New, "create a NodePartition object",
         py::arg("psize"), py::arg("assignments"));

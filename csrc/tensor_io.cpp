@@ -158,6 +158,9 @@ TensorStore TensorStore::CreateTemp(TensorInfo option) {
 
 torch::Tensor TensorStore::tensor() const {
     auto dtype = default_dtype(this->itemsize());
+    return tensor(dtype);
+}
+torch::Tensor TensorStore::tensor(torch::ScalarType dtype) const {
     size_t sz = this->numel() * this->itemsize();
     char *buf = new char[sz];
     this->pread(buf, sz, 0);
@@ -191,8 +194,11 @@ TensorStore &TensorStore::reshape(c10::IntArrayRef new_shape) {
     return *this;
 }
 
-torch::Tensor
-GatherSlices(TensorStore &store, const std::vector<std::pair<long, long>> &ranges) {
+torch::Tensor GatherSlices(
+    const TensorStore &store,
+    const std::vector<std::pair<long, long>> &ranges,
+    torch::ScalarType dtype)
+{
     std::vector<TensorStore> store_slices(ranges.size());
     long rows = 0;
     std::vector<long> pos = {0};
@@ -214,7 +220,7 @@ GatherSlices(TensorStore &store, const std::vector<std::pair<long, long>> &range
         store_slices[i].pread(buf + start,  end - start, 0);
     }
 
-    auto dtype = default_dtype(store.itemsize());
+    // auto dtype = default_dtype(store.itemsize());
     return torch::from_blob(
         buf, shape,
         [](void *buf) { delete[] (char *)buf; },

@@ -11,6 +11,13 @@ import argparse
 import tqdm
 from sklearn.metrics import f1_score
 from pyinstrument import Profiler
+import os, time
+import os.path as osp
+
+import sys
+sys.path.append(os.path.abspath("../../"))
+#sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import utils
 
 from load_graph import load_reddit, load_ogb, inductive_split
 
@@ -126,8 +133,12 @@ def run(args, device, data):
     val_nfeat, val_labels, test_nfeat, test_labels = data
     in_feats = train_nfeat.shape[1]
     train_nid = th.nonzero(train_g.ndata['train_mask'], as_tuple=True)[0]
-    val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
-    test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
+    if args.disk_feat:
+        val_nid = th.nonzero(val_g.ndata['valid_mask'], as_tuple=True)[0]
+        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['valid_mask']), as_tuple=True)[0]
+    else:
+        val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
+        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
 
     # Create PyTorch DataLoader for constructing blocks
     sampler = dgl.dataloading.MultiLayerNeighborSampler(
@@ -217,6 +228,7 @@ if __name__ == '__main__':
                                 "on GPU when using it to save time for data copy. This may "
                                 "be undesired if they cannot fit in GPU memory at once. "
                                 "This flag disables that.")
+    argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
     args = argparser.parse_args()
 
     print(f'DGL version {dgl.__version__} from {dgl.__path__}')
@@ -226,25 +238,50 @@ if __name__ == '__main__':
     else:
         device = th.device('cpu')
 
-    if args.dataset == 'reddit':
-        g, n_classes = load_reddit()
-    elif args.dataset.startswith('ogbn'):
-        g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
+    if args.disk_feat:
+        dataset_dir = args.rootdir + args.dataset
+        print(dataset_dir)
+        graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
+        g = graphs[0]
+        for k, v in g.ndata.items():
+            if k.endswith('_mask'):
+                g.ndata[k] = v.bool()
+        feat_shape_file = osp.join(dataset_dir, "feat.shape")
+        feat_file = osp.join(dataset_dir, "feat.feat")
+        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
+        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+        n_classes = th.max(g.ndata['label']).item()
+        feat_len = node_features.shape[1]
     else:
-        raise Exception('unknown dataset')
+        if args.dataset == 'reddit':
+            g, n_classes = load_reddit()
+        elif args.dataset.startswith('ogbn'):
+            g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
+        else:
+            raise Exception('unknown dataset')
+        #feat_len = g.ndata.pop('features').shape[1]
+        feat_len = g.ndata['features'].shape[1]
+    nv = g.number_of_nodes()
+    ne = g.number_of_edges()
+    print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
 
-    if args.inductive:
-        train_g, val_g, test_g = inductive_split(g)
-        train_nfeat = train_g.ndata.pop('features')
-        val_nfeat = val_g.ndata.pop('features')
-        test_nfeat = test_g.ndata.pop('features')
-        train_labels = train_g.ndata.pop('labels')
-        val_labels = val_g.ndata.pop('labels')
-        test_labels = test_g.ndata.pop('labels')
-    else:
+    if args.disk_feat:
         train_g = val_g = test_g = g
-        train_nfeat = val_nfeat = test_nfeat = g.ndata.pop('features')
-        train_labels = val_labels = test_labels = g.ndata.pop('labels')
+        train_nfeat = val_nfeat = test_nfeat = node_features
+        train_labels = val_labels = test_labels = g.ndata['label']
+    else:
+        if args.inductive:
+            train_g, val_g, test_g = inductive_split(g)
+            train_nfeat = train_g.ndata.pop('features')
+            val_nfeat = val_g.ndata.pop('features')
+            test_nfeat = test_g.ndata.pop('features')
+            train_labels = train_g.ndata.pop('labels')
+            val_labels = val_g.ndata.pop('labels')
+            test_labels = test_g.ndata.pop('labels')
+        else:
+            train_g = val_g = test_g = g
+            train_nfeat = val_nfeat = test_nfeat = g.ndata.pop('features')
+            train_labels = val_labels = test_labels = g.ndata.pop('labels')
 
     if not args.data_cpu:
         train_nfeat = train_nfeat.to(device)

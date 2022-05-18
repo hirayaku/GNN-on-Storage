@@ -258,7 +258,7 @@ if __name__ == '__main__':
         feat_file = osp.join(dataset_dir, "feat.feat")
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        n_classes = th.max(g.ndata['label']).item()
+        n_classes = th.max(g.ndata['label']).item() + 1
         feat_len = node_features.shape[1]
     else:
         if args.dataset == 'reddit':

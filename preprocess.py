@@ -16,7 +16,7 @@ def tensor_serialize(tensor: np.ndarray, path: str):
     disk_tensor[:] = byte_tensor[:]
     disk_tensor.flush()
     return TensorInfo(shape=tensor.shape, dtype=str(tensor.dtype),
-        path=path, offset=0)._asdict()
+        path=osp.basename(path), offset=0)._asdict()
 
 def tensor_list_serialize(tensors: Iterable[np.ndarray], path: str) -> Iterable[TensorInfo]:
     byte_sum = sum([t.size * t.itemsize for t in tensors])
@@ -27,7 +27,7 @@ def tensor_list_serialize(tensors: Iterable[np.ndarray], path: str) -> Iterable[
         bt = t.reshape(-1).view(np.int8)
         disk_tensor[offset:offset+bt.size] = bt[:]
         info_list.append(TensorInfo(shape=t.shape, dtype=str(t.dtype),
-            path=path, offset=offset)._asdict())
+            path=osp.basename(path), offset=offset)._asdict())
         offset += bt.size
     disk_tensor.flush()
     assert(offset == byte_sum)

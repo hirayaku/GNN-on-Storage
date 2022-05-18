@@ -127,7 +127,6 @@ class HBatchDataLoader(torch.utils.data.DataLoader):
             sg = dgl.graph(coo, num_nodes=nodes.numel())
             sg_features = self.gloader.gather_feat_partitions(pids)
             sg.ndata['label'] = self.gloader.gather_label_partitions(pids)
-            print(sg.ndata['label'].shape)
 
             sg.ndata['train_mask'] = self.gloader.masks[0][nodes]
             sg.ndata['val_mask'] = self.gloader.masks[1][nodes]

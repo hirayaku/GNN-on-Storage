@@ -12,6 +12,7 @@ import time
 import numpy as np
 from ogb.nodeproppred import DglNodePropPredDataset
 import tqdm
+import argparse
 
 
 class SAGE(nn.Module):
@@ -173,16 +174,63 @@ def train(rank, world_size, graph, num_classes, split_idx):
             print('Test acc:', acc.item())
 
 if __name__ == '__main__':
-    dataset = DglNodePropPredDataset('ogbn-products')
-    graph, labels = dataset[0]
-    graph.ndata['label'] = labels
-    graph.create_formats_()     # must be called before mp.spawn().
-    split_idx = dataset.get_idx_split()
-    num_classes = dataset.num_classes
-    # use all available GPUs
-    n_procs = torch.cuda.device_count()
+    argparser = argparse.ArgumentParser("multi-gpu training")
+    argparser.add_argument('--gpu', type=int, default=0,
+                           help="GPU device ID. Use -1 for CPU training")
+    argparser.add_argument('--dataset', type=str, default='reddit')
+    argparser.add_argument('--rootdir', type=str, default='dataset')
+    argparser.add_argument('--num-epochs', type=int, default=20)
+    argparser.add_argument('--num-hidden', type=int, default=16)
+    argparser.add_argument('--num-layers', type=int, default=2)
+    argparser.add_argument('--fan-out', type=str, default='10,25')
+    argparser.add_argument('--batch-size', type=int, default=1000)
+    argparser.add_argument('--log-every', type=int, default=20)
+    argparser.add_argument('--eval-every', type=int, default=5)
+    argparser.add_argument('--lr', type=float, default=0.003)
+    argparser.add_argument('--dropout', type=float, default=0.5)
+    argparser.add_argument('--num-workers', type=int, default=4,
+                           help="Number of sampling processes. Use 0 for no extra process.")
+    argparser.add_argument('--inductive', action='store_true',
+                           help="Inductive learning setting")
+    argparser.add_argument('--data-cpu', action='store_true',
+                           help="By default the script puts all node features and labels "
+                                "on GPU when using it to save time for data copy. This may "
+                                "be undesired if they cannot fit in GPU memory at once. "
+                                "This flag disables that.")
+    argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
+    args = argparser.parse_args()
+
+    if args.disk_feat:
+        dataset_dir = args.rootdir + args.dataset
+        print(dataset_dir)
+        graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
+        g = graphs[0]
+        for k, v in g.ndata.items():
+            if k.endswith('_mask'):
+                g.ndata[k] = v.bool()
+        feat_shape_file = osp.join(dataset_dir, "feat.shape")
+        feat_file = osp.join(dataset_dir, "feat.feat")
+        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
+        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+        n_classes = th.max(g.ndata['label']).item() + 1
+        feat_len = node_features.shape[1]
+    else:
+        dataset = DglNodePropPredDataset(args.dataset)
+        g, labels = dataset[0]
+        g.ndata['label'] = labels
+        g.create_formats_()     # must be called before mp.spawn().
+        split_idx = dataset.get_idx_split()
+        n_classes = dataset.num_classes
+        # use all available GPUs
+        n_procs = torch.cuda.device_count()
+        feat_len = g.ndata['feat'].shape[1]
+        print("The type of features is : ", type(g.ndata['feat']))
+
+    nv = g.number_of_nodes()
+    ne = g.number_of_edges()
+    print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
 
     # Tested with mp.spawn and fork.  Both worked and got 4s per epoch with 4 GPUs
     # and 3.86s per epoch with 8 GPUs on p2.8x, compared to 5.2s from official examples.
     import torch.multiprocessing as mp
-    mp.spawn(train, args=(n_procs, graph, num_classes, split_idx), nprocs=n_procs)
+    mp.spawn(train, args=(n_procs, g, n_classes, split_idx), nprocs=n_procs)

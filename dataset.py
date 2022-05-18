@@ -90,7 +90,7 @@ def load_mag240m(path):
     label_shape = [nv, nclasses] if multilabel else [nv, 1]
     labels = new_store(osp.join(path, label_file), label_shape, 1)
     # indices
-    masks = [read_txt(mask_f) for mask_f in mask_files]
+    masks = [read_txt(osp.join(path, mask_f)) for mask_f in mask_files]
     assert [mask.size()[0] for mask in masks] == mask_sz
     masks = [idx2mask(graph.num_nodes, m) for m in masks]
 
@@ -138,5 +138,3 @@ def load_ogb(path):
     if not is_mask:
         masks = [idx2mask(graph.num_nodes, m) for m in masks]
     return graph, feats, multilabel, labels, masks
-
-    

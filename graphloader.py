@@ -314,8 +314,9 @@ class HBatchGraphLoader:
         if self.is_multilabel:
             return self.labels.metadata.shape[1]
         else:
-            # TODO: oag-paper & mag240m have byte labels
-            return torch.max(self.labels.tensor('int64')).item()
+            # TODO: oag-paper & mag240m have byte labels (what is nan converted to?)
+            labels: torch.Tensor = self.labels.tensor('float32')
+            return torch.max(labels[~labels.isnan()]).long().item() + 1
 
     def partition_idx(self):
         return torch.arange(0, self.p_size)
@@ -332,7 +333,7 @@ class HBatchGraphLoader:
     def gather_label_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
         # TODO: byte/uint8 for oag-paper & mag240m
-        return gnnos.gather_slices(self.shuffled_labels, slices, 'int64')
+        return gnnos.gather_slices(self.shuffled_labels, slices, 'float32').long()
 
 
 if __name__ == "__main__":

@@ -96,8 +96,6 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
             sg_train_mask = sg.ndata['train_mask']
             y_hat = model(sg, sg.ndata['feat'])[sg_train_mask]
             y = sg.ndata['label'][sg_train_mask].flatten()
-            if y.shape[0] > 1000:
-                print(y_hat.shape, y.shape)
             loss = F.cross_entropy(y_hat, y)
             opt.zero_grad()
             loss.backward()
@@ -106,9 +104,21 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
                 acc = MF.accuracy(y_hat, y)
                 mem = torch.cuda.max_memory_allocated() / 1000000
                 print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
+    
+    # validate with subgraph
+    model.eval()
+    val_tp = 0
+    val_total = 0
+    for it, (sg, _, _) in enumerate(dataloader):
+        val_mask = sg.ndata['val_mask']
+        y_hat = model(sg, sg.ndata['feat'])[val_mask]
+        pred = torch.argmax(y_hat, dim=1)
+        truth = sg.ndata['label'][val_mask].flatten().long()
+        val_tp += (pred == truth).sum().item()
+        val_total += pred.shape[0]
 
     tt = time.time()
-    return tt - t0
+    return val_tp, val_total, tt - t0
 
 def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_dim, num_classes):
     # TODO: enable cuda
@@ -133,14 +143,18 @@ def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_d
         if msg is None:
             break
 
-        adj, train_mask, labels, features, intervals = msg
+        adj, train_mask, val_mask, labels, features, intervals = msg
         g = dgl.graph(('csr', adj))
         g.ndata['train_mask'] = train_mask
+        g.ndata['val_mask'] = val_mask 
         g.ndata['label'] = labels
         g.ndata['feat'] = features
         partitions = split_tensor(g.nodes(), intervals)
-        tt = train(model, opt, g, partitions, batch_size, num_workers,
-            use_ddp=True, passes=world_size)
+        val_tp, val_total, t = train(model, opt, g, partitions, batch_size, num_workers,
+            use_ddp=True, passes=world_size*2)
+        
+        print(f"Val acc: {val_tp/val_total*100:.2f}%")
+        print(f"Step time: {t:.2f}s")
 
         # TODO: validate and test
         # if rank == 0:
@@ -156,6 +170,7 @@ def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_d
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='HieBatching DDP Trainer')
+    parser.add_argument("--dataset", type=str, default="ogbn-products")
     parser.add_argument("--n-procs", type=int, default=1,
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
@@ -164,17 +179,20 @@ if __name__ == '__main__':
     n_procs = args.n_procs
     n_epochs = args.n_epochs
 
-    from viztracer import VizTracer
-    tracer = VizTracer(output_file=f"traces/ddp-proc{n_procs}.json", min_duration=10)
-    tracer.start()
+    # from viztracer import VizTracer
+    # tracer = VizTracer(output_file=f"traces/ddp-proc{n_procs}.json", min_duration=10)
+    # tracer.start()
 
     # gloader = PartitionedGraphLoader(1024, overwrite=False,
     #     name='ogbn-products', root='/mnt/md0/graphs', mmap=True)
     # gloader.formats(['coo', 'csc'])
     # dataloader = PartitionDataLoader(gloader, batch_size=128)
 
-    gloader = HBatchGraphLoader(name="ogbn-products", root="/mnt/md0/inputs", p_size=1024)
-    dataloader = HBatchDataLoader(gloader, batch_size=128)
+    import gnnos
+    gnnos.verbose()
+
+    gloader = HBatchGraphLoader(name=args.dataset, root="/mnt/md0/inputs", p_size=256)
+    dataloader = HBatchDataLoader(gloader, batch_size=8)
 
     import torch.multiprocessing as mp
     context = mp.get_context("spawn")
@@ -183,7 +201,7 @@ if __name__ == '__main__':
     trainers = []
 
     for rank in range(n_procs):
-        q = context.Queue(maxsize=2)
+        q = context.Queue(maxsize=1)
         w = context.Process(
             target=train_ddp,
             args=(rank, n_procs, q, gloader.feature_dim(), gloader.num_classes()))
@@ -194,22 +212,26 @@ if __name__ == '__main__':
 
     for ep in range(n_epochs):
         print(f"{'='*10} Epoch {ep} {'='*10}" )
+        loop_start = time.time()
         for i, (sg, features, intervals) in enumerate(dataloader):
             # NB: be careful, don't send DGLGraph directly over the queue, otherwise confusing bugs
             # or even segfaults will emerge. DGLGraph seems not 100% compatible with multiprocessing
             adj = sg.adj_sparse('csr')
-            train_mask, label = sg.ndata['train_mask'], sg.ndata['label']
+            train_mask, val_mask = sg.ndata['train_mask'], sg.ndata['val_mask']
+            labels = sg.ndata['label']
+
+            print(f"load: {time.time()-loop_start:.2f}s")
             for q in queues:
-                q.put((adj, train_mask, label, features, intervals))
+                q.put((adj, train_mask, val_mask, labels, features, intervals))
             print("Put subgraph (num_nodes={}, num_edges={}) into queue".format(
-                sg.num_nodes(), sg.num_edges()
-            ))
+                sg.num_nodes(), sg.num_edges() ))
             del sg
+            loop_start = time.time()
 
     for q in queues:
         q.put(None)
     for w in trainers:
         w.join()
 
-    tracer.stop()
-    tracer.save()
+    # tracer.stop()
+    # tracer.save()

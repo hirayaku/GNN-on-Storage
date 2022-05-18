@@ -1,3 +1,4 @@
+# This is the baseline GraphSAGE code from GNS repo
 import dgl
 import numpy as np
 import torch as th

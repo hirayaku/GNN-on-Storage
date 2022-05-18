@@ -56,7 +56,7 @@ def process_ogb(name: str, rootdir: str, add_reverse_edges: bool) -> dict:
 
     dataset = NodePropPredDataset(name=name, root=rootdir)
     data_dir = osp.join(rootdir, dataset.dir_name)
-    serialize_dir = osp.join(data_dir, "serialize")
+    serialize_dir = osp.join(data_dir, "gnnos")
     os.makedirs(serialize_dir, exist_ok=True)
 
     graph, label = dataset[0]

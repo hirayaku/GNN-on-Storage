@@ -121,9 +121,10 @@ def split_tensor(tensor, intervals):
 
 
 class PartitionSampler(dgl.dataloading.Sampler):
-    def __init__(self, partitions,  prefetch_ndata=None, prefetch_edata=None):
+    def __init__(self, partitions, device='cpu', prefetch_ndata=None, prefetch_edata=None):
         super().__init__()
         self.partitions = partitions
+        self.device = device
         self.prefetch_ndata = prefetch_ndata or []
         self.prefetch_edata = prefetch_edata or []
 
@@ -133,7 +134,7 @@ class PartitionSampler(dgl.dataloading.Sampler):
         '''
         partitions = [self.partitions[i] for i in partition_ids]
         node_ids = torch.cat(partitions)
-        sg = g.subgraph(node_ids, relabel_nodes=True)
+        sg = g.subgraph(node_ids, relabel_nodes=True, output_device=self.device)
         dgl.dataloading.set_node_lazy_features(sg, self.prefetch_ndata)
         dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
 
@@ -277,6 +278,14 @@ class HBatchGraphLoader:
         # unpack loaded data
         graph, node_features, self.is_multilabel, self.labels, self.masks = data
 
+        # TODO: hide it in load_*
+        self.feature_dtype = 'float16' if self.name == 'mag240m' else 'float32'
+        self.label_dtype = 'byte'
+        if self.name == 'ogbn-papers100M':
+            self.label_dtype = 'float32'
+        elif self.name == 'ogbn-products':
+            self.label_dtype = 'int64'
+
         load_timer = time.time()
         print(f"Load dataset: {load_timer-start_timer:.2f}s")
 
@@ -302,20 +311,20 @@ class HBatchGraphLoader:
             "r+", temp=True
         )
         gnnos.shuffle_store(shuffled_labels, self.labels, self.partitions.nodes())
-        self.shuffled_labels = shuffled_labels 
+        self.shuffled_labels = shuffled_labels
 
         shuffle_timer = time.time()
         print(f"Shuffle data: {shuffle_timer-part_timer:.2f}s")
 
     def feature_dim(self):
         return self.shuffled_features.metadata.shape[1:]
-    
+
     def num_classes(self):
         if self.is_multilabel:
             return self.labels.metadata.shape[1]
         else:
             # TODO: oag-paper & mag240m have byte labels (what is nan converted to?)
-            labels: torch.Tensor = self.labels.tensor('float32')
+            labels: torch.Tensor = self.labels.tensor(self.label_dtype)
             return torch.max(labels[~labels.isnan()]).long().item() + 1
 
     def partition_idx(self):
@@ -328,12 +337,12 @@ class HBatchGraphLoader:
     def gather_feat_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
         # TODO: float16 for mag240m
-        return gnnos.gather_slices(self.shuffled_features, slices, 'float32')
+        return gnnos.gather_slices(self.shuffled_features, slices, self.feature_dtype)
 
     def gather_label_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
         # TODO: byte/uint8 for oag-paper & mag240m
-        return gnnos.gather_slices(self.shuffled_labels, slices, 'float32').long()
+        return gnnos.gather_slices(self.shuffled_labels, slices, self.label_dtype).long()
 
 
 if __name__ == "__main__":

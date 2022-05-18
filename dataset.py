@@ -110,6 +110,11 @@ def bytes_of(dtype):
         raise ValueError(f"Unknown dtype: {dtype}")
 
 def load_ogb(path):
+    meta_file = osp.join(path, "metadata.json")
+    if not osp.exists(meta_file):
+        path = osp.join(path, "gnnos")
+        meta_file = osp.join(path, "metadata.json")
+
     def load_by_dict(d):
         tinfo = d.copy()
         # relative path
@@ -118,9 +123,9 @@ def load_ogb(path):
         tinfo.pop('dtype')
         return new_store(**tinfo)
 
-    with open(osp.join(path, "metadata.json")) as f:
+    with open(meta_file) as f:
         metadata = json.load(f)
-    
+
     num_nodes = metadata['num_nodes']
     edge_index = load_by_dict(metadata['edge_index'])
     graph = gnnos.COOStore(edge_index.flatten(), num_nodes)

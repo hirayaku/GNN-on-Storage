@@ -20,11 +20,12 @@ from graphloader import (
 
 from dataloader import PartitionDataLoader, HBatchDataLoader
 
-def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, passes=1):
+def train_gpu(model, opt, g, train_set, batch_size, num_workers, use_ddp=False, passes=1):
     # TODO: try prefetch, try uva
-    sampler = PartitionSampler(train_set) # prefetch_ndata=['label', 'train_mask'])
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
+    sampler = PartitionSampler(train_set, device=device) # prefetch_ndata=['label', 'train_mask'])
     dataloader = dgl.dataloading.DataLoader(
-            g, torch.arange(len(train_set)), sampler,
+            g, torch.arange(len(train_set)), sampler, device=device,
             batch_size=batch_size, shuffle=True, drop_last=False,
             use_ddp=use_ddp, num_workers=num_workers)
 
@@ -32,6 +33,7 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
     t0 = time.time()
     for _ in range(passes):
         for it, (sg, _, _) in enumerate(dataloader):
+            assert sg.device == device
             sg_train_mask = sg.ndata['train_mask']
             y_hat = model(sg, sg.ndata['feat'])[sg_train_mask]
             y = sg.ndata['label'][sg_train_mask].flatten()
@@ -43,7 +45,7 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
                 acc = MF.accuracy(y_hat, y)
                 mem = torch.cuda.max_memory_allocated() / 1000000
                 print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
-    
+
     # validate with subgraph
     model.eval()
     val_tp = 0
@@ -59,22 +61,19 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
     tt = time.time()
     return val_tp, val_total, tt - t0
 
-def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_dim, num_classes):
-    # TODO: enable cuda
-    # torch.cuda.set_device(rank)
-    # dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
-    dist.init_process_group('gloo', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
+def train_gpu_ddp(rank, world_size, feature_dim, num_classes, subgraph_queue: multiprocessing.Queue,
+        micro_batch_size=1, num_workers=0):
+
+    torch.cuda.set_device(rank)
+    dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
     assert rank == dist.get_rank()
     print(f"Trainer {rank}: init_process_group, world size = {world_size}")
 
-    model = SAGE(feature_dim[0], 256, num_classes)
-    # model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
-    model = nn.parallel.DistributedDataParallel(model)
+    device = torch.cuda.current_device()
+    model = SAGE(feature_dim[0], 256, num_classes).to(device)
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
     opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
-    print(f"Trainer {rank}: model created")
-
-    batch_size = 4
-    num_workers = 0
+    print(f"Trainer {rank}: model created on {device}, micro batchsize={micro_batch_size}")
 
     while True:
         # print(f"Trainer {rank}: queue size = {subgraph_queue.qsize()}")
@@ -85,13 +84,13 @@ def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_d
         adj, train_mask, val_mask, labels, features, intervals = msg
         g = dgl.graph(('csr', adj))
         g.ndata['train_mask'] = train_mask
-        g.ndata['val_mask'] = val_mask 
+        g.ndata['val_mask'] = val_mask
         g.ndata['label'] = labels
         g.ndata['feat'] = features
         partitions = split_tensor(g.nodes(), intervals)
-        val_tp, val_total, t = train(model, opt, g, partitions, batch_size, num_workers,
+        val_tp, val_total, t = train_gpu(model, opt, g, partitions, micro_batch_size, num_workers,
             use_ddp=True, passes=world_size*2)
-        
+
         print(f"Val acc: {val_tp/val_total*100:.2f}%")
         print(f"Step time: {t:.2f}s")
 
@@ -105,33 +104,37 @@ def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_d
         #         gloader.graph, gloader.valid_idx(), neighbor_sampler, batch_size=1024, shuffle=True,
         #         drop_last=False, num_workers=0)
         #     print('Validation acc:', acc.item())
+
         dist.barrier()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='HieBatching DDP Trainer')
     parser.add_argument("--dataset", type=str, default="ogbn-products")
+    parser.add_argument("--root", type=str, default="datasets")
+    parser.add_argument("--tmpdir", type=str, default=".",
+                        help="Location to save intermediate data (prefer fast storage)")
     parser.add_argument("--n-procs", type=int, default=1,
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
                         help="Number of training epochs")
+    parser.add_argument("--psize", type=int, default=256,
+                        help="Number of node partitions")
+    parser.add_argument("--bsize", type=int, default=16,
+                        help="Batch size for storage-host hierarchy")
+    parser.add_argument("--bsize2", type=int, default=4,
+                        help="Batch size for host-gpu hierarchy")
     args = parser.parse_args()
     n_procs = args.n_procs
     n_epochs = args.n_epochs
-
-    # from viztracer import VizTracer
-    # tracer = VizTracer(output_file=f"traces/ddp-proc{n_procs}.json", min_duration=10)
-    # tracer.start()
-
-    # gloader = PartitionedGraphLoader(1024, overwrite=False,
-    #     name='ogbn-products', root='/mnt/md0/graphs', mmap=True)
-    # gloader.formats(['coo', 'csc'])
-    # dataloader = PartitionDataLoader(gloader, batch_size=128)
+    bsize = args.bsize
+    ubsize = args.bsize2
 
     import gnnos
     gnnos.verbose()
+    gnnos.set_tmp_dir(args.tmpdir)
 
-    gloader = HBatchGraphLoader(name=args.dataset, root="/mnt/md0/inputs", p_size=256)
-    dataloader = HBatchDataLoader(gloader, batch_size=8)
+    gloader = HBatchGraphLoader(name=args.dataset, root=args.root, p_size=args.psize)
+    dataloader = HBatchDataLoader(gloader, batch_size=bsize)
 
     import torch.multiprocessing as mp
     context = mp.get_context("spawn")
@@ -142,10 +145,10 @@ if __name__ == '__main__':
     for rank in range(n_procs):
         q = context.Queue(maxsize=1)
         w = context.Process(
-            target=train_ddp,
-            args=(rank, n_procs, q, gloader.feature_dim(), gloader.num_classes()))
+            target=train_gpu_ddp,
+            args=(rank, n_procs, gloader.feature_dim(), gloader.num_classes(), q, ubsize))
         w.start()
-        
+
         queues.append(q)
         trainers.append(w)
 
@@ -172,5 +175,3 @@ if __name__ == '__main__':
     for w in trainers:
         w.join()
 
-    # tracer.stop()
-    # tracer.save()

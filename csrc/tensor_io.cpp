@@ -14,11 +14,13 @@ int IO_THREADS = torch::get_num_threads();
 // Store methods
 
 Store::~Store() {
+    LOG(INFO) << "Close " << path_ << " (fd=" << fd_ << ")";
     if (!is_tmp_ && fsync(fd_) != 0)
         TORCH_WARN("Failed to fsync fd=", fd_, ": ", strerror(errno));
+    if (is_tmp_ && unlink(path_.data()) != 0)
+        TORCH_WARN("Failed to unlink fd=", fd_, ": ", strerror(errno));
     if (close(fd_) != 0)
         TORCH_WARN("Failed to close fd=", fd_, ": ", strerror(errno));
-    LOG(INFO) << "Close " << path_ << " (fd=" << fd_ << ")";
 }
 
 long Store::size() const {
@@ -57,7 +59,7 @@ Store::Handle Store::OpenTemp(const char *path) {
     int fd = mkstemp(filename);
     TORCH_CHECK(fd >= 0, "Failed to open temp Store from ", path, ": ", strerror(errno));
     LOG(INFO) << "Open " << filename << " (fd=" << fd << ")";
-    return std::shared_ptr<Store>(new Store(path, fd, true));
+    return std::shared_ptr<Store>(new Store(filename, fd, true));
 }
 
 

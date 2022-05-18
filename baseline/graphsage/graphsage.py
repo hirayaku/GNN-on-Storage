@@ -173,10 +173,18 @@ def run(args, device, data):
             # Load the input features as well as output labels
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
+            if args.disk_feat:
+                batch_labels = batch_labels.reshape(-1,)
+            #    batch_labels.flatten()
+            #print(batch_inputs[0])
             blocks = [block.int().to(device) for block in blocks]
 
             # Compute loss and prediction
             batch_pred = model(blocks, batch_inputs)
+            #print(batch_pred[0:10])
+            #print("The type of batch_labels is : ", type(batch_labels))
+            #print("The type of batch_pred is : ", type(batch_pred))
+            #print(batch_labels[0:10])
             loss = loss_fcn(batch_pred, batch_labels)
             optimizer.zero_grad()
             loss.backward()
@@ -261,6 +269,7 @@ if __name__ == '__main__':
             raise Exception('unknown dataset')
         #feat_len = g.ndata.pop('features').shape[1]
         feat_len = g.ndata['features'].shape[1]
+        print("The type of features is : ", type(g.ndata['features']))
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))

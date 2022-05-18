@@ -36,6 +36,10 @@ class DiskTensor(np.memmap):
                 print(f"madvise failed with error {errno}: {os.strerror(errno)}")
                 sys.exit(errno)
 
+    def to(self, device):
+        return torch.tensor(self, device=device)
+        #return torch.tensor(self, dtype=torch.float32, device=device)
+
 def memmap(path, random=False, dtype=np.int8, mode='r+', offset=0, shape=None, order='C'):
     '''
     memmap binary files, can be tuned for random accesses

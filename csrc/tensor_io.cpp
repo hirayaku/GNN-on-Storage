@@ -50,6 +50,16 @@ Store::Handle Store::Open(const char *path, int flags) {
     return std::shared_ptr<Store>(new Store(path, fd, is_tmp));
 }
 
+Store::Handle Store::OpenTemp(const char *path) {
+    char filename[256];
+    strncpy(filename, path, 100);
+    strncat(filename, "/gnnos-XXXXXX", 100);
+    int fd = mkstemp(filename);
+    TORCH_CHECK(fd >= 0, "Failed to open temp Store from ", path, ": ", strerror(errno));
+    LOG(INFO) << "Open " << filename << " (fd=" << fd << ")";
+    return std::shared_ptr<Store>(new Store(path, fd, true));
+}
+
 
 // MmapStore methods
 
@@ -153,7 +163,15 @@ TensorStore TensorStore::Create(TensorInfo option) {
     return NewFrom(option, O_CREAT | O_RDWR | O_EXCL);
 }
 TensorStore TensorStore::CreateTemp(TensorInfo option) {
-    return NewFrom(option, O_TMPFILE | O_RDWR);
+    auto tensor = TensorStore(Store::OpenTemp(option.path().data()),
+        option.shape(), option.itemsize(), option.offset());
+    long len = tensor.numel() * tensor.itemsize();
+    if (tensor.hdl->size() < tensor.seek_set + len) {
+        int rc = tensor.hdl->alloc(tensor.seek_set, len);
+        TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
+    }
+    return tensor;
+    // return NewFrom(option, O_TMPFILE | O_RDWR);
 }
 
 torch::Tensor TensorStore::tensor() const {

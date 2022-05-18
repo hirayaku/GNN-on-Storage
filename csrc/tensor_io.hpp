@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <string.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -42,6 +43,7 @@ public:
     const std::string &path() const { return path_; }
 
     static Handle Open(const char *path, int flags);
+    static Handle OpenTemp(const char *path);
 private:
     std::string path_;
     int fd_;

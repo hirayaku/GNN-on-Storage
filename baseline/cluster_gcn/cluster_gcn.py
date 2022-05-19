@@ -6,7 +6,7 @@ import dgl
 import dgl.nn as dglnn
 import time
 import numpy as np
-from ogb.nodeproppred import DglNodePropPredDataset
+#from ogb.nodeproppred import DglNodePropPredDataset
 import argparse
 import tqdm
 from sklearn.metrics import f1_score
@@ -40,42 +40,43 @@ class SAGE(nn.Module):
         return h
 
 def run(args, device, data):
-    dataset = dgl.data.AsNodePredDataset(DglNodePropPredDataset(args.dataset))
-    graph = dataset[0]      # already prepares ndata['label'/'train_mask'/'val_mask'/'test_mask']
-    feats = graph.ndata['feat']
-    labels = graph.ndata['label']
-    num_classes = dataset.num_classes
+    #dataset = dgl.data.AsNodePredDataset(DglNodePropPredDataset(args.dataset))
+    #graph = dataset[0]      # already prepares ndata['label'/'train_mask'/'val_mask'/'test_mask']
+    #feats = graph.ndata['feat']
+    #labels = graph.ndata['label']
+    #num_classes = dataset.num_classes
 
-    #num_classes, graph, feats, labels = data
+    num_classes, graph, feats, labels = data
     in_feats = feats.shape[1]
  
-    model = SAGE(in_feats, 256, num_classes).cuda()
+    model = SAGE(in_feats, args.num_hidden, num_classes)
+    model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
+    print("setup sampler")
     num_partitions = 1000
     if args.disk_feat:
-        sampler = dgl.dataloading.ClusterGCNSampler(
-                graph, num_partitions,
-                prefetch_ndata=['train_mask', 'val_mask', 'test_mask'])
+        sampler = dgl.dataloading.ClusterGCNSampler(graph, num_partitions,
+                  prefetch_ndata=['label', 'train_mask', 'valid_mask', 'test_mask'])
+    #          prefetch_ndata=['feat', 'label', 'train_mask', 'val_mask', 'test_mask'])
     else:
-        sampler = dgl.dataloading.ClusterGCNSampler(
-                graph, num_partitions,
-                prefetch_ndata=['feat', 'label', 'train_mask', 'val_mask', 'test_mask'])
+        sampler = dgl.dataloading.ClusterGCNSampler(graph, num_partitions,
+                  prefetch_ndata=['feat', 'label', 'train_mask', 'val_mask', 'test_mask'])
+
+    print("setup data loader")
+    print("device: ", device)
     # DataLoader for generic dataloading with a graph, a set of indices (any indices, like
     # partition IDs here), and a graph sampler.
     # NodeDataLoader and EdgeDataLoader are simply special cases of DataLoader where the
     # indices are guaranteed to be node and edge IDs.
-    dataloader = dgl.dataloading.DataLoader(
-            graph,
-            torch.arange(num_partitions).to('cuda'),
-            sampler,
-            device='cuda',
-            batch_size=100,
-            shuffle=True,
-            drop_last=False,
-            num_workers=0,
-            use_uva=True)
+    #dataloader = dgl.dataloading.DataLoader(
+    dataloader = dgl.dataloading.NodeDataLoader(
+        graph, torch.arange(num_partitions).to(device), 
+        sampler, device=device, batch_size=args.batch_size,
+        shuffle=True, drop_last=False, num_workers=0)
+        #shuffle=True, drop_last=False, num_workers=0, use_uva=True)
 
+    print("start training")
     durations = []
     iter_tput = []
     for epoch in range(args.num_epochs):
@@ -86,32 +87,33 @@ def run(args, device, data):
         tic_step = time.time()
         for it, sg in enumerate(dataloader):
             x = sg.ndata['feat']
-            if args.disk_feat:
-                y = sg.ndata['label']
-            else:
-                y = sg.ndata['label']
+            y = sg.ndata['label']
+        for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
+            # Load the input features as well as output labels
+            batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
+                                                        seeds, input_nodes, device)
             m = sg.ndata['train_mask'].bool()
             y_hat = model(sg, x)
             loss = F.cross_entropy(y_hat[m], y[m])
             opt.zero_grad()
             loss.backward()
             opt.step()
-            iter_tput.append(100 / (time.time() - tic_step))
+            iter_tput.append(args.batch_size / (time.time() - tic_step))
             if it % args.log_every == 0:
                 acc = MF.accuracy(y_hat[m], y[m])
-                mem = torch.cuda.max_memory_allocated() / 1000000
+                gpu_mem_alloc = torch.cuda.max_memory_allocated() / 1000000 if torch.cuda.is_available() else 0
+                avg_tput = np.mean(iter_tput[3:]) if (it > 2 or epoch > 0) else iter_tput[it]
                 #print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
                 print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
-                    epoch, it, loss.item(), acc.item(), np.mean(iter_tput[3:]), mem))
+                    epoch, it, loss.item(), acc.item(), avg_tput, gpu_mem_alloc))
             tic_step = time.time()
 
         tt = time.time()
-        #print(tt - t0)
-        print('Epoch Time(s): {:.4f}'.format(tt - t0))
-
+        epoch_time = tt - t0
+        print('Epoch Time(s): {:.4f}'.format(epoch_time))
         profiler.stop()
         print(profiler.output_text(unicode=True, color=True))
-        durations.append(tt - t0)
+        durations.append(epoch_time)
 
         model.eval()
         with torch.no_grad():
@@ -145,12 +147,12 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='reddit')
-    argparser.add_argument('--rootdir', type=str, default='../dataset')
+    argparser.add_argument('--rootdir', type=str, default='../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
-    argparser.add_argument('--num-hidden', type=int, default=16)
+    argparser.add_argument('--num-hidden', type=int, default=256)
     argparser.add_argument('--num-layers', type=int, default=2)
     argparser.add_argument('--fan-out', type=str, default='10,25')
-    argparser.add_argument('--batch-size', type=int, default=1000)
+    argparser.add_argument('--batch-size', type=int, default=100)
     argparser.add_argument('--log-every', type=int, default=2)
     argparser.add_argument('--eval-every', type=int, default=5)
     argparser.add_argument('--lr', type=float, default=0.003)
@@ -202,6 +204,8 @@ if __name__ == '__main__':
         #print("The type of features is : ", type(g.ndata['features']))
         #labels = g.ndata.pop('labels')
         labels = g.ndata['labels']
+        g.ndata['label'] = g.ndata['labels']
+        g.ndata['feat'] = g.ndata['features']
 
     nv = g.number_of_nodes()
     ne = g.number_of_edges()

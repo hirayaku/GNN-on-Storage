@@ -142,18 +142,6 @@ if __name__ == "__main__":
     num_workers = 4
     num_partitions = 1024
 
-    # tracer = VizTracer(output_file=f"traces/dataloader-w{num_workers}.json", min_duration=10)
-    # tracer.start()
-
-    # gloader = HBatchGraphLoader(name="ogbn-products", root="/mnt/md0/inputs", p_size=num_partitions)
-    # dataloader = HBatchDataLoader(gloader, 32, num_workers=4)
-    # for _, (sg, features, _) in enumerate(dataloader):
-    #     assert (gloader.features(sg.ndata[dgl.NID]) == features).all()
-
-    # del dataloader # to kill all worker processes; otherwise tracer won't stop
-    # tracer.stop()
-    # tracer.save()
-
     tracer = VizTracer(output_file=f"traces/dataloader-w{num_workers}.json", min_duration=10)
     tracer.start()
 

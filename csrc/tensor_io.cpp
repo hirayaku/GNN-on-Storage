@@ -44,7 +44,7 @@ int Store::persist(const std::string &path) {
 
 Store::Handle Store::Open(const char *path, int flags) {
     int mask = S_IRUSR | S_IRGRP | S_IROTH;
-    if (flags & O_WRONLY) mask |= S_IWUSR;
+    if ((flags & O_WRONLY) | (flags & O_RDWR) ) mask |= S_IWUSR;
     int fd = open(path, flags, mask);
     TORCH_CHECK(fd >= 0, "Failed to open Store from ", path, ": ", strerror(errno));
     LOG(INFO) << "Open " << path << " (fd=" << fd << ")";
@@ -86,39 +86,15 @@ MmapStore::Handle MmapStore::Open(const char *path, int flags) {
 }
 
 
-
-c10::ScalarType default_dtype(int itemsize) {
-    auto dtype = torch::kLong;
-    switch(itemsize) {
-    case 1:
-        dtype = torch::kByte;
-        break;
-    case 2:
-        dtype = torch::kInt16;
-        break;
-    case 4:
-        dtype = torch::kInt32;
-        break;
-    case 8:
-        dtype = torch::kInt64;
-        break;
-    default:
-        throw std::runtime_error(
-            "Can't find dtype for itemsize " + std::to_string(itemsize)
-        );
-    }
-    return dtype;
-}
-
-
 // TensorInfo methods
+
 TensorInfo TensorOptions() { return TensorInfo(); }
 TensorInfo TensorOptions(std::string path) { return TensorInfo().path(std::move(path)); }
 std::ostream& operator<<(std::ostream& out, const TensorInfo &info) {
-    out << "TensorInfo{";
+    out << "TensorInfo {";
     out << '\"' << info.path() << '\"' <<  ", ";
     out << info.shape() << ", ";
-    out << "itemsize:" << info.itemsize() << ", ";
+    out << "dtype:" << info.dtype() << ", ";
     out << "offset:" << info.offset();
     out << "}";
     return out;
@@ -126,8 +102,8 @@ std::ostream& operator<<(std::ostream& out, const TensorInfo &info) {
 
 // TensorStore methods
 TensorStore::TensorStore(Store::Handle hdl, c10::IntArrayRef shape,
-                         int itemsize, long offset)
-    : hdl(std::move(hdl)), shape_(std::move(shape)), itemsize_(itemsize), seek_set(offset)
+                         DType dtype, long offset)
+    : hdl(std::move(hdl)), shape_(std::move(shape)), dtype_(dtype), seek_set(offset)
 {
     size_ = std::accumulate(shape_.begin(), shape_.end(), 1L, std::multiplies<long>());
 };
@@ -142,12 +118,12 @@ TensorStore::TensorStore(const TensorStore &other, std::pair<long, long> range)
     auto row_items = other.numel() / other.shape_[0];
     shape_[0] = range.second - range.first;
     size_ = row_items * shape_[0];
-    seek_set = other.seek_set + row_items * itemsize_ * range.first;
+    seek_set = other.seek_set + row_items * itemsize() * range.first;
 }
 
 TensorStore TensorStore::NewFrom(TensorInfo option, int flags) {
     auto tensor = TensorStore(Store::Open(option.path().data(), flags),
-        option.shape(), option.itemsize(), option.offset());
+        option.shape(), option.dtype(), option.offset());
     long len = tensor.numel() * tensor.itemsize();
     if (tensor.hdl->size() < tensor.seek_set + len) {
         int rc = tensor.hdl->alloc(tensor.seek_set, len);
@@ -166,21 +142,21 @@ TensorStore TensorStore::Create(TensorInfo option) {
 }
 TensorStore TensorStore::CreateTemp(TensorInfo option) {
     auto tensor = TensorStore(Store::OpenTemp(option.path().data()),
-        option.shape(), option.itemsize(), option.offset());
+        option.shape(), option.dtype(), option.offset());
     long len = tensor.numel() * tensor.itemsize();
     if (tensor.hdl->size() < tensor.seek_set + len) {
         int rc = tensor.hdl->alloc(tensor.seek_set, len);
         TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
     }
     return tensor;
-    // return NewFrom(option, O_TMPFILE | O_RDWR);
 }
 
 torch::Tensor TensorStore::tensor() const {
-    auto dtype = default_dtype(this->itemsize());
-    return tensor(dtype);
+    return tensor(this->dtype());
 }
 torch::Tensor TensorStore::tensor(torch::ScalarType dtype) const {
+    TORCH_CHECK(dtype_ == dtype || torch::elementSize(dtype_) == torch::elementSize(dtype),
+        "Illegal dtype cast from ", dtype_, " to ", dtype);
     size_t sz = this->numel() * this->itemsize();
     char *buf = new char[sz];
     this->pread(buf, sz, 0);
@@ -191,6 +167,8 @@ torch::Tensor TensorStore::tensor(torch::ScalarType dtype) const {
 }
 
 void TensorStore::copy_to(TensorStore &that) {
+    TORCH_CHECK(torch::elementSize(dtype_) == torch::elementSize(that.dtype_),
+        "Illegal dtype cast from ", dtype_, " to ", that.dtype_);
     constexpr size_t CHUNK_SIZE = 1024 * 1024;
     size_t tensor_nbytes = this->numel() * this->itemsize();
     size_t nchunks = tensor_nbytes / CHUNK_SIZE;
@@ -216,8 +194,7 @@ TensorStore &TensorStore::reshape(c10::IntArrayRef new_shape) {
 
 torch::Tensor GatherSlices(
     const TensorStore &store,
-    const std::vector<std::pair<long, long>> &ranges,
-    torch::ScalarType dtype)
+    const std::vector<std::pair<long, long>> &ranges)
 {
     std::vector<TensorStore> store_slices;
     long rows = 0;
@@ -244,22 +221,19 @@ torch::Tensor GatherSlices(
     return torch::from_blob(
         buf, shape,
         [](void *buf) { delete[] (char *)buf; },
-        torch::dtype(dtype));
+        store.dtype());
 }
 
 void ShuffleStore(TensorStore &store, const TensorStore &from_store,
     const torch::Tensor &shuffled_ids) {
 
     auto id_accessor = shuffled_ids.accessor<long, 1>();
-    constexpr long BLOCK_SZ = 1024 * 16;
+    constexpr long BLOCK_SZ = 1024 * 64;
     SmallVector<long> buf_shape(from_store.shape());
     buf_shape[0] = BLOCK_SZ;
 
     long offset = 0;
-    auto tensor_buf = torch::empty(
-        buf_shape,
-        torch::dtype(default_dtype(from_store.itemsize()))
-    );
+    auto tensor_buf = torch::empty(buf_shape, torch::dtype(from_store.dtype()));
     char *buf = (char *)tensor_buf.data_ptr();
     const long row_bytes = tensor_buf.nbytes() / BLOCK_SZ;
 

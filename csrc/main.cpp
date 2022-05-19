@@ -15,8 +15,7 @@ using namespace gnnos;
 
 static const TensorInfo products_options =
 TensorOptions("/mnt/md0/inputs/ogbn_products/edge_index")
-    .shape({2, 123718280})
-    .itemsize(8);
+    .shape({2, 123718280}).dtype(torch::kLong);
 
 void testCOOStore() {
     auto tensor = TensorStore::OpenForRead(products_options);
@@ -41,13 +40,13 @@ void testCOOStore() {
 void testCOOStoreOpen() {
     auto graph = TensorStore::OpenForRead(products_options);
     // exception here
-    TensorStore::Open(graph.metadata().path("edge_index"));
+    TensorStore::OpenForRead(graph.metadata().path("edge_index"));
 }
 
 void testCOOStoreCreateTemp() {
     auto tensor = TensorStore::OpenForRead(products_options);
     auto new_tensor = gnnos::TensorStore::CreateTemp(
-        tensor.metadata().path("/mnt/md0/graphs/ogbn_products").offset(16)
+        tensor.metadata().path(TMPDIR).offset(16)
     );
 
     COOStore coo(tensor.flatten(), 2449029);
@@ -60,7 +59,7 @@ void testCOOStoreCreateTemp() {
     CHECK_EQ(coo.accessor<int64_t>().slice(0, 100), new_coo.accessor<int64_t>().slice(0, 100));
 
     auto new_tensor2 = gnnos::TensorStore::CreateTemp(
-        tensor.metadata().path("/mnt/md0/graphs/ogbn_products").offset(8)
+        tensor.metadata().path(TMPDIR).offset(8)
     );
     auto data2 = new_tensor2.accessor<int64_t>().slice(0, 8);
     // should be zeros, independent of new_tensor
@@ -87,6 +86,12 @@ void testCOOStoreClone() {
     auto coo_clone = COOStore(tensor.flatten(), 0);
 
     CHECK_EQ(coo.num_edges(), coo_clone.num_edges());
+    auto edges = coo.slice(100, 200).tensor();
+    auto clone_edges = coo.slice(100, 200).tensor();
+    std::cout << "Comparison result: "
+        << (std::get<0>(edges) == std::get<0>(clone_edges)).all() << "\n";
+    std::cout << "Comparison result: "
+        << (std::get<1>(edges) == std::get<1>(clone_edges)).all() << "\n";
 }
 
 void testCOOStoreTraverse(size_t edge_block=1024) {
@@ -216,7 +221,7 @@ void testBCOOSubgraph() {
 
 void testGather() {
     auto tensor = TensorStore::OpenForRead(products_options).flatten();
-    GatherSlices(tensor, {{2, 4}, {6, 7}}, torch::kLong);
+    std::cout << "Gathered:\n" << GatherSlices(tensor, {{2, 4}, {123718280+2, 123718280+4}});
 }
 
 void getTorchInfo() {

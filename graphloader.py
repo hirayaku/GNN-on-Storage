@@ -278,14 +278,6 @@ class HBatchGraphLoader:
         # unpack loaded data
         graph, node_features, self.is_multilabel, self.labels, self.masks = data
 
-        # TODO: hide it in load_*
-        self.feature_dtype = 'float16' if self.name == 'mag240m' else 'float32'
-        self.label_dtype = 'byte'
-        if self.name == 'ogbn-papers100M':
-            self.label_dtype = 'float32'
-        elif self.name == 'ogbn-products':
-            self.label_dtype = 'int64'
-
         load_timer = time.time()
         print(f"Load dataset: {load_timer-start_timer:.2f}s")
 
@@ -323,8 +315,7 @@ class HBatchGraphLoader:
         if self.is_multilabel:
             return self.labels.metadata.shape[1]
         else:
-            # TODO: oag-paper & mag240m have byte labels (what is nan converted to?)
-            labels: torch.Tensor = self.labels.tensor(self.label_dtype)
+            labels: torch.Tensor = self.labels.tensor()
             return torch.max(labels[~labels.isnan()]).long().item() + 1
 
     def partition_idx(self):
@@ -336,13 +327,11 @@ class HBatchGraphLoader:
 
     def gather_feat_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
-        # TODO: float16 for mag240m
-        return gnnos.gather_slices(self.shuffled_features, slices, self.feature_dtype)
+        return gnnos.gather_slices(self.shuffled_features, slices)
 
     def gather_label_partitions(self, indices):
         slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
-        # TODO: byte/uint8 for oag-paper & mag240m
-        return gnnos.gather_slices(self.shuffled_labels, slices, self.label_dtype).long()
+        return gnnos.gather_slices(self.shuffled_labels, slices).long()
 
 
 if __name__ == "__main__":

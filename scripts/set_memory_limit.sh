@@ -6,12 +6,13 @@ if [[ "$1" =~ "-h" || $# == 0 ]]; then
 fi
 
 MEM_CAP=$1
-USERNAME=$2
-GROUPNAME=$3
-[[ -z $USERNAME ]] && USERNAME=$USER
-[[ -z $GROUPNAME ]] && GROUPNAME=$USERNAME
+user=$2
+group=$3
+[[ -z $user ]] && user=$USER
+[[ -z $group ]] && group=$user
 
-cgcreate -a $USERNAME:$GROUPNAME -t $USERNAME:$GROUPNAME -g memory:GNN
-echo $MEM_CAP > /sys/fs/cgroup/memory/GNN/memory.limit_in_bytes
-echo 0 > /sys/fs/cgroup/memory/GNN/memory.swappiness
+cgcreate -a $user:$group -t $user:$group -g memory:gnn
+echo $MEM_CAP > /sys/fs/cgroup/memory/gnn/memory.limit_in_bytes
+echo 0 > /sys/fs/cgroup/memory/gnn/memory.swappiness
 
+echo "Memory limited to $MEM_CAP for memory:gnn"

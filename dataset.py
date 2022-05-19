@@ -17,13 +17,24 @@ def parse_meta(path):
     return nv, ne, vbytes, ebytes, feat_sz, nclasses, multilabel, \
         train_idx_sz, val_idx_sz, test_idx_sz
 
-def new_store(path, shape, itemsize, offset=0):
+def new_store(path, shape, dtype, offset=0):
     '''
     return a new TensorStore given the four parameters 
     '''
     return gnnos.tensor_store(
-        gnnos.options(path).with_shape(shape).with_itemsize(itemsize).with_offset(offset)
+        gnnos.options(path).with_shape(shape).with_dtype(dtype).with_offset(offset)
     )
+
+def int_dtype(itemsize: int) -> torch.dtype:
+    if itemsize == 1:
+        return torch.uint8
+    elif itemsize == 2:
+        return torch.int16
+    elif itemsize == 4:
+        return torch.int32
+    elif itemsize == 8:
+        return torch.int64
+    raise ValueError(f"Invalid integral size: {itemsize}")
 
 def load_oag(path):
     nv, ne, vbytes, ebytes, feat_sz, nclasses, multilabel, \
@@ -31,7 +42,9 @@ def load_oag(path):
     mask_sz = [train_idx_sz, val_idx_sz, test_idx_sz]
 
     # oag-specific
-    feat_bytes = 4
+    feat_dtype = torch.float32
+    label_dtype = torch.uint8
+    mask_dtype = torch.uint8
     ptr_file = "graph.vertex.bin"
     idx_file = "graph.edge.bin"
     feat_file = "graph.feats.bin"
@@ -39,16 +52,17 @@ def load_oag(path):
     mask_files = [f"{name}.masks.bin" for name in ("train", "val", "test")]
 
     # graph topology
-    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], ebytes)
-    idx_store = new_store(osp.join(path, idx_file), [ne], vbytes)
+    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], int_dtype(ebytes))
+    idx_store = new_store(osp.join(path, idx_file), [ne], int_dtype(vbytes))
     graph = gnnos.CSRStore(ptr_store, idx_store)
     # node features
-    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_bytes)
+    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_dtype)
     # labels
     label_shape = [nv, nclasses] if multilabel else [nv, 1]
-    labels = new_store(osp.join(path, label_file), label_shape, 1)
+    labels = new_store(osp.join(path, label_file), label_shape, label_dtype)
     # masks
-    masks = [new_store(osp.join(path, file), [nv], 1).tensor('bool') for file in mask_files]
+    masks = [new_store(osp.join(path, file), [nv], mask_dtype).tensor().bool()
+        for file in mask_files]
     
     return graph, feats, multilabel, labels, masks
 
@@ -73,7 +87,8 @@ def load_mag240m(path):
     mask_sz = [train_idx_sz, val_idx_sz, test_idx_sz]
 
     # mag240M-specific
-    feat_bytes = 2
+    feat_dtype = torch.float16
+    label_dtype = torch.uint8
     ptr_file = "graph.vertex.bin"
     idx_file = "graph.edge.bin"
     feat_file = "graph.feats.bin"
@@ -81,14 +96,14 @@ def load_mag240m(path):
     mask_files = ['train_idx.txt', 'valid_idx.txt', 'testdev_idx.txt']
 
     # graph topology
-    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], ebytes)
-    idx_store = new_store(osp.join(path, idx_file), [ne], vbytes)
+    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], int_dtype(ebytes))
+    idx_store = new_store(osp.join(path, idx_file), [ne], int_dtype(vbytes))
     graph = gnnos.CSRStore(ptr_store, idx_store)
     # node features
-    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_bytes)
+    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_dtype)
     # labels
     label_shape = [nv, nclasses] if multilabel else [nv, 1]
-    labels = new_store(osp.join(path, label_file), label_shape, 1)
+    labels = new_store(osp.join(path, label_file), label_shape, label_dtype)
     # indices
     masks = [read_txt(osp.join(path, mask_f)) for mask_f in mask_files]
     assert [mask.size()[0] for mask in masks] == mask_sz
@@ -96,18 +111,6 @@ def load_mag240m(path):
 
     return graph, feats, multilabel, labels, masks
 
-
-def bytes_of(dtype):
-    if dtype.endswith('64') or dtype == 'double' or dtype == 'long':
-        return 8
-    elif dtype.endswith('32') or dtype == 'float' or dtype == 'int':
-        return 4
-    elif dtype.endswith('16') or dtype == 'short':
-        return 2
-    elif dtype.endswith('8') or dtype == 'byte' or dtype == 'char':
-        return 1
-    else:
-        raise ValueError(f"Unknown dtype: {dtype}")
 
 def load_ogb(path):
     meta_file = osp.join(path, "metadata.json")
@@ -119,8 +122,7 @@ def load_ogb(path):
         tinfo = d.copy()
         # relative path
         tinfo['path'] = osp.join(path, tinfo['path'])
-        tinfo['itemsize'] = bytes_of(tinfo['dtype'])
-        tinfo.pop('dtype')
+        tinfo['dtype'] = getattr(torch, tinfo['dtype'])
         return new_store(**tinfo)
 
     with open(meta_file) as f:
@@ -134,12 +136,7 @@ def load_ogb(path):
     labels = load_by_dict(metadata['label'])
 
     is_mask = metadata['idx'].pop('is_mask')
-    dtype = metadata['idx']['train']['dtype']
-    masks = [
-        load_by_dict(metadata['idx']['train']).tensor(dtype),
-        load_by_dict(metadata['idx']['valid']).tensor(dtype),
-        load_by_dict(metadata['idx']['test']).tensor(dtype),
-    ]
+    masks = [ load_by_dict(metadata['idx'][t]).tensor() for t in ('train', 'valid', 'test')]
     if not is_mask:
         masks = [idx2mask(graph.num_nodes, m) for m in masks]
     return graph, feats, multilabel, labels, masks

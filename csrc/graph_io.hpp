@@ -99,6 +99,8 @@ struct CSRStore {
     CSRStore(const CSRStore &) = default;
     CSRStore(CSRStore &&) = default;
 
+    // convert COOStore to CSRStore; expect COOStore to have dtype kLong
+    // TODO: make it work under any COO dtype (use template)
     static CSRStore NewFrom(const COOStore &);
 
     // read COOStore into COOArrays

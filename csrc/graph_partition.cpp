@@ -64,7 +64,9 @@ NodePartitions go_partition(const CSRStore &graph, int psize) {
     return rand_partitions;
 }
 
+
 // BCOOStore methods
+
 BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partition) {
     auto assigns_vec = partition.assignments().accessor<int, 1>();
     auto psize = partition.psize;
@@ -393,8 +395,8 @@ BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &csr,
         long p_num_nodes = clusters[i].size();
         long p_num_edges = p_counts[i];
         csr_blocks.push_back({
-            TensorStore::CreateTemp(TensorOptions(TMPDIR).itemsize(8).shape({p_num_nodes+1})),
-            TensorStore::CreateTemp(TensorOptions(TMPDIR).itemsize(8).shape({p_num_edges}))
+            TensorStore::CreateTemp(TensorOptions(TMPDIR).shape({p_num_nodes+1})),
+            TensorStore::CreateTemp(TensorOptions(TMPDIR).shape({p_num_edges}))
         });
     }
 

@@ -96,20 +96,17 @@ private:
     MmapStore(const char *path, int fd, bool is_tmp): path_(path), fd_(fd), is_tmp_(is_tmp) {}
 };
 
-c10::ScalarType default_dtype(int itemsize);
+// c10::ScalarType default_dtype(int itemsize);
 
 template <typename T>
 using SmallVector = c10::SmallVector<T, 4>;
 
 class TensorInfo {
-    std::string path_;
-    SmallVector<long> shape_;
-    int itemsize_ = 4;
-    long offset_ = 0;
 public:
+    using DType = torch::ScalarType;
     const std::string &path() const { return path_; }
     const c10::IntArrayRef shape() const { return shape_; }
-    int itemsize() const { return itemsize_; }
+    DType dtype() const { return dtype_; }
     long offset() const { return offset_; }
     TensorInfo &path(std::string path) {
         path_ = std::move(path);
@@ -119,14 +116,19 @@ public:
         shape_ = new_shape;
         return *this;
     }
-    TensorInfo &itemsize(int new_size) {
-        itemsize_ = new_size;
+    TensorInfo &dtype(DType dtype) {
+        dtype_ = dtype;
         return *this;
     }
     TensorInfo &offset(long new_offset) {
         offset_ = new_offset;
         return *this;
     }
+private:
+    std::string path_;
+    SmallVector<long> shape_;
+    DType dtype_ = torch::kLong;
+    long offset_ = 0;
 };
 TensorInfo TensorOptions();
 TensorInfo TensorOptions(std::string path);
@@ -140,6 +142,8 @@ public:
     TensorStore(TensorStore &&store) = default;
     TensorStore& operator=(TensorStore &&store) = default;
     ~TensorStore() = default;
+
+    using DType = torch::ScalarType;
 
     // create from TensorInfo: ("path", "shape", "dtype", "offset")
     static TensorStore
@@ -156,7 +160,7 @@ public:
     // TODO: we really need to replace itemsize with dtype
     // read TensorStore into a torch Tensor
     torch::Tensor tensor() const;
-    torch::Tensor tensor(torch::ScalarType) const;
+    torch::Tensor tensor(DType cast_type) const;
     // torch::Tensor &TensorStore::tensor_out(torch::Tensor &out) const;
 
     // copy the tensor to another
@@ -183,20 +187,22 @@ public:
     // constant methods
     const c10::IntArrayRef shape() const { return shape_; }
     long numel() const { return size_; }
-    int itemsize() const { return itemsize_; }
+    DType dtype() const { return dtype_; }
+    int itemsize() const { return (int)torch::elementSize(dtype_); }
+    
     TensorInfo metadata() const {
         return TensorOptions(hdl->path()).shape(shape_)
-            .itemsize(itemsize_).offset(seek_set);
+            .dtype(dtype_).offset(seek_set);
     }
 
     // store-flavored read/write
     inline ssize_t pread(void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize_,
+        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
             "Store read out of bound: ", std::make_pair(offset, nbytes+offset));
         return hdl->pread(buf, nbytes, this->seek_set + offset);
     }
     inline ssize_t pwrite(const void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize_,
+        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
             "Store write out of bound: ", std::make_pair(offset, nbytes+offset));
         return hdl->pwrite(buf, nbytes, this->seek_set + offset);
     }
@@ -205,8 +211,8 @@ public:
     class Accessor {
     public:
         Accessor(const TensorStore &store): store_(store) {
-            TORCH_CHECK(sizeof(T) == (size_t) store.itemsize_,
-                "mismatched itemsize and sizeof(T)=", sizeof(T));
+            TORCH_CHECK(sizeof(T) == (size_t) store.itemsize(),
+                "mismatched dtype and cast type: sizeof ", store.dtype(), " != ", sizeof(T));
         }
 
         long size() const { return store_.numel(); }
@@ -251,22 +257,20 @@ protected:
     // shape_ and size_ are counts of items
     SmallVector<long> shape_;
     long size_ = 0;
-    // TODO: consider changing itemsize to torch::dtype
-    int itemsize_ = 0;
+    torch::ScalarType dtype_;
     // seek_* are byte offsets
     long seek_set = 0;
 
     // create from another TensorStore by slicing dim-0 range
     TensorStore(const TensorStore &other, std::pair<long, long> range);
     // create from an existing store handle
-    TensorStore(Store::Handle hdl, c10::IntArrayRef shape, int itemsize, long offset);
+    TensorStore(Store::Handle hdl, c10::IntArrayRef shape, DType dtype, long offset);
 };
 
 // Gather store slices into a torch Tensor
 torch::Tensor GatherSlices(
     const TensorStore &store,
-    const std::vector<std::pair<long, long>> &ranges,
-    torch::ScalarType);
+    const std::vector<std::pair<long, long>> &ranges);
 
 // Shuffle Store[shuffled[i]] -> Store[i]
 void ShuffleStore(TensorStore &, const TensorStore &, const torch::Tensor &);

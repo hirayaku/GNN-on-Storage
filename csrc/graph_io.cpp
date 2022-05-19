@@ -18,7 +18,7 @@ COOStore COOStore::clone(std::string path, bool fill) {
     size_t src_nbytes = src_store_.numel() * src_store_.itemsize();
     auto new_src_store = TensorStore::Create(
         src_store_.metadata().offset(0).path(path));
-    auto new_dst_store = TensorStore::Create(
+    auto new_dst_store = TensorStore::Open(
         dst_store_.metadata().offset(src_nbytes).path(path));
     if (fill) {
         src_store_.copy_to(new_src_store);
@@ -41,11 +41,11 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
     std::tie(num_nodes, std::ignore, dst_info) = coo.metadata();
 
     auto ptr_store = TensorStore::CreateTemp(
-        TensorOptions(TMPDIR).shape({num_nodes+1}).itemsize(8).offset(0));
+        TensorOptions(TMPDIR).shape({num_nodes+1}).dtype(torch::kLong).offset(0));
     auto idx_store = TensorStore::CreateTemp(dst_info.path(TMPDIR).offset(0));
 
     // count degrees of each node (id starting from 1)
-    auto d_counts_ = torch::zeros({num_nodes+1}, torch::TensorOptions(torch::kLong));
+    auto d_counts_ = torch::zeros({num_nodes+1}, torch::dtype(torch::kLong));
     auto d_counts = d_counts_.accessor<long, 1>();
     auto edge_accessor = coo.accessor<long>();
     constexpr long BLOCK_EDGES = 1024 * 1024;
@@ -65,7 +65,6 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
     }
     CHECK_EQ(torch::sum(d_counts_).item<long>(), coo.num_edges());
     LOG(INFO) << "Counting complete";
-    // ptr_store.save_to(TMPDIR + std::string("csr_ptr"));
 
     // compute rowptr array
     auto ptr_tensor_ = torch::cumsum(d_counts_, 0);

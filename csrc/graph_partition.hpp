@@ -12,9 +12,9 @@ private:
         torch::Tensor assignments;  // num_nodes
         torch::Tensor clusters;     // num_nodes
         torch::Tensor cluster_pos;  // psize + 1
-        // ~NodePartitionsData() {
-        //     LOG(INFO) << "De-allocate NodePartitionsData";
-        // }
+        ~NodePartitionsData() {
+            LOG(INFO) << "De-allocate NodePartitionsData";
+        }
     };
 
     std::shared_ptr<NodePartitionsData> obj;
@@ -52,9 +52,10 @@ NodePartitions go_partition(const CSRStore &graph, int psize);
 class BCOOStore: public COOStore {
 public:
     BCOOStore() = default;
-    // partition by the src node
+    // partition by the src node, expects COOStore to have dtype kLong
+    // TODO: use template to allow more COOStore dtype
     static BCOOStore PartitionFrom1D(const COOStore &, NodePartitions);
-    // partition by (src, dst)
+    // partition by (src, dst), expects COOStore to have dtype kLong
     static BCOOStore PartitionFrom2D(const COOStore &, NodePartitions);
     // partition by (src, dst)
     template <typename PtrT, typename IdxT>
@@ -131,7 +132,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
     CHECK_EQ(pos_.index({-1}).item<long>(), csr.num_edges());
 
     // create a unnamed COOStore (int64_t) to place the partitioned graph
-    TensorInfo info = TensorOptions(TMPDIR).itemsize(8).shape({csr.num_edges()});
+    TensorInfo info = TensorOptions(TMPDIR).shape({csr.num_edges()});
     auto bcoo = COOStore(
         TensorStore::CreateTemp(info),
         TensorStore::CreateTemp(info),

@@ -1,4 +1,4 @@
-import torch
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics.functional as MF
@@ -6,7 +6,6 @@ import dgl
 import dgl.nn as dglnn
 import time
 import numpy as np
-#from ogb.nodeproppred import DglNodePropPredDataset
 import argparse
 import tqdm
 from sklearn.metrics import f1_score
@@ -14,44 +13,29 @@ from pyinstrument import Profiler
 import os, time
 import os.path as osp
 
-import sys
+import os, sys
 sys.path.append(os.path.abspath("../../"))
 import utils
 
 sys.path.append(os.path.abspath("../graphsage/"))
 from load_graph import load_reddit, load_ogb, inductive_split
-
-class SAGE(nn.Module):
-    def __init__(self, in_feats, n_hidden, n_classes):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        self.layers.append(dglnn.SAGEConv(in_feats, n_hidden, 'mean'))
-        self.layers.append(dglnn.SAGEConv(n_hidden, n_hidden, 'mean'))
-        self.layers.append(dglnn.SAGEConv(n_hidden, n_classes, 'mean'))
-        self.dropout = nn.Dropout(0.5)
-
-    def forward(self, sg, x):
-        h = x
-        for l, layer in enumerate(self.layers):
-            h = layer(sg, h)
-            if l != len(self.layers) - 1:
-                h = F.relu(h)
-                h = self.dropout(h)
-        return h
+from graphsage import *
 
 def run(args, device, data):
-    #dataset = dgl.data.AsNodePredDataset(DglNodePropPredDataset(args.dataset))
-    #graph = dataset[0]      # already prepares ndata['label'/'train_mask'/'val_mask'/'test_mask']
-    #feats = graph.ndata['feat']
-    #labels = graph.ndata['label']
-    #num_classes = dataset.num_classes
-
     num_classes, graph, feats, labels = data
     in_feats = feats.shape[1]
- 
-    model = SAGE(in_feats, args.num_hidden, num_classes)
+    #train_nid = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
+    #if args.disk_feat:
+    #    val_nid = th.nonzero(graph.ndata['valid_mask'], as_tuple=True)[0]
+    #    test_nid = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['valid_mask']), as_tuple=True)[0]
+    #else:
+    #    val_nid = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
+    #    test_nid = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['val_mask']), as_tuple=True)[0]
+
+    model = SAGE1(in_feats, args.num_hidden, num_classes, args.num_layers, F.relu, args.dropout)
     model = model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+    loss_fcn = nn.CrossEntropyLoss()
+    opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
     print("setup sampler")
     num_partitions = 1000
@@ -69,12 +53,14 @@ def run(args, device, data):
     # partition IDs here), and a graph sampler.
     # NodeDataLoader and EdgeDataLoader are simply special cases of DataLoader where the
     # indices are guaranteed to be node and edge IDs.
-    #dataloader = dgl.dataloading.DataLoader(
+    uva = True
+    if device == th.device('cpu'):
+        uva = False
     dataloader = dgl.dataloading.NodeDataLoader(
-        graph, torch.arange(num_partitions).to(device), 
+    #dataloader = dgl.dataloading.DataLoader(
+        graph, th.arange(num_partitions).to(device), 
         sampler, device=device, batch_size=args.batch_size,
-        shuffle=True, drop_last=False, num_workers=0)
-        #shuffle=True, drop_last=False, num_workers=0, use_uva=True)
+        shuffle=True, drop_last=False, num_workers=0, use_uva=uva)
 
     print("start training")
     durations = []
@@ -86,26 +72,28 @@ def run(args, device, data):
         model.train()
         tic_step = time.time()
         for it, sg in enumerate(dataloader):
-            x = sg.ndata['feat']
-            y = sg.ndata['label']
-        for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
-            # Load the input features as well as output labels
-            batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
-                                                        seeds, input_nodes, device)
+            batch_labels = sg.ndata['label']
             m = sg.ndata['train_mask'].bool()
-            y_hat = model(sg, x)
-            loss = F.cross_entropy(y_hat[m], y[m])
+            if args.disk_feat:
+                input_nodes = sg.ndata[dgl.NID]
+                print(type(input_nodes))
+                batch_inputs = feats[input_nodes].to(device)
+                batch_labels = batch_labels.reshape(-1,)
+                #batch_labels = labels[input_nodes]
+            else:
+                batch_inputs = sg.ndata['feat']
+            batch_pred = model(sg, batch_inputs)
+            loss = F.cross_entropy(batch_pred[m], batch_labels[m])
             opt.zero_grad()
             loss.backward()
             opt.step()
-            iter_tput.append(args.batch_size / (time.time() - tic_step))
+            iter_tput.append(len(batch_labels[m]) / (time.time() - tic_step))
             if it % args.log_every == 0:
-                acc = MF.accuracy(y_hat[m], y[m])
-                gpu_mem_alloc = torch.cuda.max_memory_allocated() / 1000000 if torch.cuda.is_available() else 0
+                acc = MF.accuracy(batch_pred[m], batch_labels[m])
+                gpu_mem_alloc = th.cuda.max_memory_allocated() / 1000000 if th.cuda.is_available() else 0
                 avg_tput = np.mean(iter_tput[3:]) if (it > 2 or epoch > 0) else iter_tput[it]
-                #print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
                 print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
-                    epoch, it, loss.item(), acc.item(), avg_tput, gpu_mem_alloc))
+                       epoch, it, loss.item(), acc.item(), avg_tput, gpu_mem_alloc))
             tic_step = time.time()
 
         tt = time.time()
@@ -116,30 +104,35 @@ def run(args, device, data):
         durations.append(epoch_time)
 
         model.eval()
-        with torch.no_grad():
+        with th.no_grad():
             val_preds, test_preds = [], []
             val_labels, test_labels = [], []
             for it, sg in enumerate(dataloader):
-                x = sg.ndata['feat']
+                if args.disk_feat:
+                    x = feats[sg.ndata[dgl.NID]].to(device)
+                    m_val = sg.ndata['valid_mask'].bool()
+                else:
+                    x = sg.ndata['feat']
+                    m_val = sg.ndata['val_mask'].bool()
                 y = sg.ndata['label']
-                m_val = sg.ndata['val_mask'].bool()
                 m_test = sg.ndata['test_mask'].bool()
                 y_hat = model(sg, x)
                 val_preds.append(y_hat[m_val])
                 val_labels.append(y[m_val])
                 test_preds.append(y_hat[m_test])
                 test_labels.append(y[m_test])
-            val_preds = torch.cat(val_preds, 0)
-            val_labels = torch.cat(val_labels, 0)
-            test_preds = torch.cat(test_preds, 0)
-            test_labels = torch.cat(test_labels, 0)
+            val_preds = th.cat(val_preds, 0)
+            val_labels = th.cat(val_labels, 0)
+            test_preds = th.cat(test_preds, 0)
+            test_labels = th.cat(test_labels, 0)
             val_acc = MF.accuracy(val_preds, val_labels)
             test_acc = MF.accuracy(test_preds, test_labels)
-            print('Validation acc:', val_acc.item(), 'Test acc:', test_acc.item())
-            print('Eval Acc {:.4f}'.format(val_acc))
+            #print('Validation acc:', val_acc.item(), 'Test acc:', test_acc.item())
+            print('Validation Acc {:.4f}'.format(val_acc))
             print('Test Acc: {:.4f}'.format(test_acc))
 
-    print(np.mean(durations[4:]), np.std(durations[4:]))
+    print('Average epoch time: {:.4f}'.format(np.mean(durations[1:])))
+    #print('Average : {:.4f}'.format(np.std(durations[1:])))
 
 
 if __name__ == '__main__':
@@ -150,7 +143,7 @@ if __name__ == '__main__':
     argparser.add_argument('--rootdir', type=str, default='../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=256)
-    argparser.add_argument('--num-layers', type=int, default=2)
+    argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--fan-out', type=str, default='10,25')
     argparser.add_argument('--batch-size', type=int, default=100)
     argparser.add_argument('--log-every', type=int, default=2)
@@ -172,11 +165,12 @@ if __name__ == '__main__':
     print(f'DGL version {dgl.__version__} from {dgl.__path__}')
 
     if args.gpu >= 0:
-        device = torch.device('cuda:%d' % args.gpu)
+        device = th.device('cuda:%d' % args.gpu)
     else:
-        device = torch.device('cpu')
+        device = th.device('cpu')
 
     if args.disk_feat:
+        print("reading features from disk")
         dataset_dir = args.rootdir + args.dataset
         print(dataset_dir)
         graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
@@ -190,7 +184,7 @@ if __name__ == '__main__':
         feats = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
         feat_len = feats.shape[1]
         labels = g.ndata['label']
-        n_classes = torch.max(g.ndata['label']).item() + 1
+        n_classes = th.max(g.ndata['label']).item() + 1
     else:
         if args.dataset == 'reddit':
             g, n_classes = load_reddit()
@@ -201,7 +195,6 @@ if __name__ == '__main__':
         feat_len = g.ndata['features'].shape[1]
         #feats = g.ndata.pop('features')
         feats = g.ndata['features']
-        #print("The type of features is : ", type(g.ndata['features']))
         #labels = g.ndata.pop('labels')
         labels = g.ndata['labels']
         g.ndata['label'] = g.ndata['labels']
@@ -211,9 +204,9 @@ if __name__ == '__main__':
     ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
 
-    #if not args.data_cpu:
-    #    feats = feats.to(device)
-    #    labels = labels.to(device)
+    if not args.data_cpu:
+        feats = feats.to(device)
+        labels = labels.to(device)
 
     g.create_formats_()
     data = n_classes, g, feats, labels

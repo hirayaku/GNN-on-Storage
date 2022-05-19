@@ -21,8 +21,10 @@ def run(args, device, data):
         test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
 
     # Create PyTorch DataLoader for constructing blocks
+    print("setup sampler")
     sampler = dgl.dataloading.MultiLayerNeighborSampler(
         [int(fanout) for fanout in args.fan_out.split(',')])
+    print("setup data loader")
     dataloader = dgl.dataloading.NodeDataLoader(
         train_g,
         train_nid,
@@ -39,32 +41,26 @@ def run(args, device, data):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     # Training loop
+    print("start training")
     avg = 0
     iter_tput = []
     for epoch in range(args.num_epochs):
         profiler = Profiler()
         profiler.start()
         tic = time.time()
-
-        # Loop over the dataloader to sample the computation dependency graph as a list of
-        # blocks.
         tic_step = time.time()
+        # Loop over the dataloader to sample MFG as a list of blocks
         for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
+            print("Epoch {:d} Step {:d}".format(epoch, step))
             # Load the input features as well as output labels
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
             if args.disk_feat:
                 batch_labels = batch_labels.reshape(-1,)
-            #    batch_labels.flatten()
-            #print(batch_inputs[0])
             blocks = [block.int().to(device) for block in blocks]
 
-            # Compute loss and prediction
+            print("Compute loss and prediction")
             batch_pred = model(blocks, batch_inputs)
-            #print(batch_pred[0:10])
-            #print("The type of batch_labels is : ", type(batch_labels))
-            #print("The type of batch_pred is : ", type(batch_pred))
-            #print(batch_labels[0:10])
             loss = loss_fcn(batch_pred, batch_labels)
             optimizer.zero_grad()
             loss.backward()
@@ -139,6 +135,8 @@ if __name__ == '__main__':
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
         n_classes = th.max(g.ndata['label']).item() + 1
+        if args.dataset == 'ogbn-papers100M':
+            n_classes = 172
         feat_len = node_features.shape[1]
     else:
         if args.dataset == 'reddit':
@@ -178,10 +176,10 @@ if __name__ == '__main__':
 
     # Create csr/coo/csc formats before launching training processes with multi-gpu.
     # This avoids creating certain formats in each sub-process, which saves momory and CPU.
+    print("Create csr/coo/csc formats")
     train_g.create_formats_()
     val_g.create_formats_()
     test_g.create_formats_()
-    # Pack data
     data = n_classes, train_g, val_g, test_g, train_nfeat, train_labels, \
            val_nfeat, val_labels, test_nfeat, test_labels
 

@@ -76,7 +76,8 @@ def run(args, device, data):
             m = sg.ndata['train_mask'].bool()
             if args.disk_feat:
                 input_nodes = sg.ndata[dgl.NID]
-                print(type(input_nodes))
+                if device == th.device('cuda'):
+                    input_nodes.cpu()
                 batch_inputs = feats[input_nodes].to(device)
                 batch_labels = batch_labels.reshape(-1,)
                 #batch_labels = labels[input_nodes]

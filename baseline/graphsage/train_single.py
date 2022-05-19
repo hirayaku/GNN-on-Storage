@@ -51,7 +51,7 @@ def run(args, device, data):
         tic_step = time.time()
         # Loop over the dataloader to sample MFG as a list of blocks
         for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
-            print("Epoch {:d} Step {:d}".format(epoch, step))
+            #print("Epoch {:d} Step {:d}".format(epoch, step))
             # Load the input features as well as output labels
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
@@ -59,7 +59,7 @@ def run(args, device, data):
                 batch_labels = batch_labels.reshape(-1,)
             blocks = [block.int().to(device) for block in blocks]
 
-            print("Compute loss and prediction")
+            #print("Compute loss and prediction")
             batch_pred = model(blocks, batch_inputs)
             loss = loss_fcn(batch_pred, batch_labels)
             optimizer.zero_grad()

@@ -15,12 +15,7 @@ class DiskTensor(np.memmap):
                 shape=None, order='C'):
         obj = super().__new__(cls, filename, dtype=dtype, mode=mode,
             offset=offset, shape=shape, order=order)
-        # for compatiblity with DGLGraph
-        obj.device = torch.device('cpu')
         return obj
-
-    def __array_finalize__(self, obj):
-        self.device = getattr(obj, 'device', None)
 
     def madvise_random(self):
         try:

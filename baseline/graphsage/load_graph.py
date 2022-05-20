@@ -22,9 +22,10 @@ def load_ogb(name, root='dataset'):
     labels = labels[:, 0]
 
     graph.ndata['features'] = graph.ndata['feat']
-    graph.ndata['labels'] = labels
     in_feats = graph.ndata['features'].shape[1]
     num_labels = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
+    labels = labels.long()
+    graph.ndata['labels'] = labels
 
     # Find the node IDs in the training, validation, and test set.
     train_nid, val_nid, test_nid = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']

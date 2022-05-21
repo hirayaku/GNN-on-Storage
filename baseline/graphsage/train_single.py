@@ -53,15 +53,19 @@ def run(args, device, data):
         for step, (input_nodes, seeds, blocks) in enumerate(dataloader):
             #print("Epoch {:d} Step {:d}".format(epoch, step))
             # Load the input features as well as output labels
+            #print("dtype of train_labels is : ", train_labels.dtype)
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
+            #print("dtype of batch_labels is : ", batch_labels.dtype)
             if args.disk_feat:
                 batch_labels = batch_labels.reshape(-1,)
             blocks = [block.int().to(device) for block in blocks]
 
             #print("Compute loss and prediction")
             batch_pred = model(blocks, batch_inputs)
+            #print("dtype of batch_pred is : ", batch_pred.dtype)
             loss = loss_fcn(batch_pred, batch_labels)
+            #loss = F.cross_entropy(batch_pred, batch_labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -93,7 +97,7 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='reddit')
-    argparser.add_argument('--rootdir', type=str, default='../dataset/')
+    argparser.add_argument('--rootdir', type=str, default='/local/dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=16)
     argparser.add_argument('--num-layers', type=int, default=2)
@@ -134,10 +138,13 @@ if __name__ == '__main__':
         feat_file = osp.join(dataset_dir, "feat.feat")
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        n_classes = th.max(g.ndata['label']).item() + 1
+        labels = g.ndata['label']
+        n_classes = th.max(labels).item() + 1
         if args.dataset == 'ogbn-papers100M':
             n_classes = 172
         feat_len = node_features.shape[1]
+        labels = labels.long()
+        g.ndata['label'] = labels
     else:
         if args.dataset == 'reddit':
             g, n_classes = load_reddit()

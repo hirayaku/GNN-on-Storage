@@ -14,7 +14,7 @@ if __name__ == "__main__":
     '''
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', type=str, default='ogbn-papers100M', help='Dataset name')
-    parser.add_argument('--rootdir', type=str, default='.', help='Directory to download the OGB dataset')
+    parser.add_argument('--rootdir', type=str, default='../dataset/', help='Directory to download the OGB dataset')
     parser.add_argument('--graph-output-dir', type=str, help='Directory to store the graph with train/test/val masks')
     parser.add_argument('--feat-output-dir', type=str, help='Directory to store features')
     parser.add_argument('--graph-formats', type=str, default='', help='Graph format (coo, csr or csc)')

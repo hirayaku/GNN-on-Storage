@@ -131,7 +131,7 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='reddit')
-    argparser.add_argument('--rootdir', type=str, default='../dataset/')
+    argparser.add_argument('--rootdir', type=str, default='../../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=16)
     argparser.add_argument('--num-layers', type=int, default=2)

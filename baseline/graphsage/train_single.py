@@ -82,15 +82,15 @@ def run(args, device, data):
         profiler.stop()
         print(profiler.output_text(unicode=True, color=True))
 
-        if epoch >= 5:
+        if epoch >= 1:
             avg += toc - tic
         if epoch % args.eval_every == 0 and epoch != 0:
-            eval_acc = evaluate(model, val_g, val_nfeat, val_labels, val_nid, device)
+            eval_acc = evaluate(model, val_g, val_nfeat, val_labels, val_nid, device, args.batch_size, args.num_workers)
             print('Eval Acc {:.4f}'.format(eval_acc))
-            test_acc = evaluate(model, test_g, test_nfeat, test_labels, test_nid, device)
-            print('Test Acc: {:.4f}'.format(test_acc))
 
-    print('Avg epoch time: {}'.format(avg / (epoch - 4)))
+    test_acc = evaluate(model, test_g, test_nfeat, test_labels, test_nid, device, args.batch_size, args.num_workers)
+    print('Test Acc: {:.6f}'.format(test_acc))
+    print('Avg epoch time: {:.5f}'.format(avg / epoch))
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser("multi-gpu training")

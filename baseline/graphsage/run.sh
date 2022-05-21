@@ -1,5 +1,5 @@
 # in-memory execution on CPU
-#python train_single.py --gpu -1 --dataset ogbn-products --num-epochs 2
+#python train_single.py --gpu -1 --dataset ogbn-products --num-epochs 2 --num-layers 3
 
 # in-disk execution on a single GPU
 #python train_single.py --gpu 0 --dataset ogbn-products --rootdir ~/datasets/dgl-data/ --data-cpu --disk-feat --num-epochs 2

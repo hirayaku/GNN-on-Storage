@@ -142,10 +142,6 @@ if __name__ == '__main__':
         feat_file = osp.join(dataset_dir, "feat.feat")
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        print(g.ndata.keys())
-        #if args.dataset == 'mag240m':
-        #    labels = g.ndata['labels']
-        #else:
         labels = g.ndata['label']
         #n_classes = th.max(labels).item() + 1
         n_classes = len(th.unique(labels[th.logical_not(th.logical_or(th.isnan(labels), th.eq(labels, -1)))]))

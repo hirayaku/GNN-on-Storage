@@ -15,4 +15,6 @@
 #cp -r ~/datasets/dgl-data/mag240m_kddcup2021 /local/
 #python train_single.py --gpu 0 --dataset mag240m --data-cpu --num-epochs 2 --rootdir /local/
 
+#cp ~/datasets/dgl-data/mag240m/paper_feat.* ~/datasets/dgl-data/mag240m/graph_bidirected.dgl /local/mag240m/
 python train_single.py --gpu -1 --dataset mag240m --num-epochs 2 --num-layers 3  --data-cpu --rootdir /local
+#python train_single.py --gpu -1 --dataset mag240m --num-epochs 1 --num-layers 3  --data-cpu --rootdir /jet/home/xhchen/datasets/dgl-data/ --disk-feat

@@ -42,7 +42,7 @@ if __name__ == "__main__":
     #inst_offset = author_offset + dataset.num_authors
     #paper_offset = inst_offset + dataset.num_institutions
 
-    graph = dgl.graph((ei_cites[0], ei_cites[1]), num_nodes=dataset.num_papers)
+    graph = dgl.heterograph({('paper', 'cite', 'paper'): (ei_cites[0], ei_cites[1])}, num_nodes_dict={'paper': dataset.num_papers})
     #graph = dgl.heterograph({
             #('paper', 'cite', 'paper'): (np.concatenate([ei_cites[0], ei_cites[1]]), np.concatenate([ei_cites[1], ei_cites[0]]))
             #('author', 'write', 'paper'): (ei_writes[0], ei_writes[1]),
@@ -50,13 +50,14 @@ if __name__ == "__main__":
             #('author', 'affiliate-with', 'institution'): (ei_affiliated[0], ei_affiliated[1]),
             #('institution', 'affiliate', 'author'): (ei_affiliated[1], ei_affiliated[0]),
             #})
+    print("label type: ", type(dataset.paper_label))
+    print("label dtype: ", dataset.paper_label.dtype)
     labels = th.from_numpy(dataset.paper_label)
     n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
     nv = graph.number_of_nodes()
     ne = graph.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}'.format(nv, ne, n_classes))
     assert dataset.num_papers == nv
-    graph.ndata['label'] = labels
 
     keySet = {'train', 'valid', 'test-dev', 'test-challenge', 'test-whole'}
     try:
@@ -67,14 +68,7 @@ if __name__ == "__main__":
     except:
         print("No train/val/test idx")
         raise
-    for key in keySet:
-        idx = splitted_idx[key]
-        mask = th.zeros(graph.num_nodes(), dtype=th.bool)
-        mask[idx] = True
-        graph.ndata[f'{key}_mask'] = mask
 
-    graph.ndata['test_mask'] = graph.ndata['test-dev_mask']
-    print(graph.ndata.keys())
     data_dir = osp.join(rootdir, 'mag240m')
     '''
     # features are separated from the graph
@@ -109,6 +103,16 @@ if __name__ == "__main__":
     if args.graph_formats != "":
         graph = graph.formats(args.graph_formats.split(','))
 
+    for key in keySet:
+        idx = splitted_idx[key]
+        mask = th.zeros(graph.num_nodes(), dtype=th.bool)
+        mask[idx] = True
+        graph.ndata[f'{key}_mask'] = mask
+    graph.ndata['test_mask'] = graph.ndata['test-dev_mask']
+
+    graph.ndata['label'] = labels
+    print("graph type: ", type(graph))
+    print(graph.ndata.keys())
     print(f'save graph to {graph_output_path}')
     save_graphs(graph_output_path, [graph])
 

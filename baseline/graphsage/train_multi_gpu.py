@@ -7,8 +7,6 @@ import torch.multiprocessing as mp
 import torch.distributed.optim
 import torchmetrics.functional as MF
 
-from load_graph import load_reddit, load_ogb, inductive_split
-
 def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
     th.cuda.set_device(rank)
     dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
@@ -46,11 +44,11 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
 
     train_dataloader = dgl.dataloading.DataLoader(
         graph, train_idx, sampler, device='cuda', batch_size=1024,
-        shuffle=True, drop_last=False, num_workers=0, use_ddp=True) #, use_uva=True)
+        shuffle=True, drop_last=False, num_workers=args.num_workers, use_ddp=True) #, use_uva=True)
 
     valid_dataloader = dgl.dataloading.DataLoader(
         graph, valid_idx, sampler, device='cuda', batch_size=1024,
-        shuffle=True, drop_last=False, num_workers=0, use_ddp=True) #, use_uva=True)
+        shuffle=True, drop_last=False, num_workers=args.num_workers, use_ddp=True) #, use_uva=True)
 
     avg = 0
     iter_tput = []
@@ -106,9 +104,12 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
                 print('Validation Acc {:.4f}'.format(val_acc))
         dist.barrier()
 
-    if rank == 0 and epoch >= 5:
-        avg += epoch_time
-    #'''
+        if rank == 0 and epoch >= 5:
+            avg += epoch_time
+
+    if rank == 0:
+        print('Avg epoch time: {}'.format(avg / (epoch - 4)))
+
     model.eval()
     with th.no_grad():
         # since we do 1-layer at a time, use a very large batch size
@@ -119,8 +120,6 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
             #print('Test acc:', acc.item())
             print('Test Acc: {:.4f}'.format(test_acc))
     #test_acc = evaluate(model, graph, feats, labels, test_idx, 'cuda')
-    if rank == 0:
-        print('Avg epoch time: {}'.format(avg / (epoch - 4)))
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser("multi-gpu training")
@@ -144,38 +143,33 @@ if __name__ == '__main__':
     argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
     args = argparser.parse_args()
 
+    #split_idx = dataset.get_idx_split()
     print(args)
 
+    dataset_dir = osp.join(args.rootdir, args.dataset)
+    print(f"Loading {args.dataset} from {dataset_dir}")
+    graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
+    g = graphs[0]
+    g.create_formats_()
+    labels = g.ndata.pop('label').flatten().long()
+    n_classes = th.max(labels).item() + 1
+    for k, v in g.ndata.items():
+        if k.endswith('_mask'):
+            g.ndata[k] = v.bool()
+
+    # load feature from file
+    feat_shape_file = osp.join(dataset_dir, "feat.shape")
+    shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
+    feat_file = osp.join(dataset_dir, "feat.feat")
+    print(f"Loading feature data from {feat_file}")
     if args.disk_feat:
-        dataset_dir = args.rootdir + args.dataset
-        print(dataset_dir)
-        graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
-        g = graphs[0]
-        labels = g.ndata.pop('label').flatten().long()
-        n_classes = th.max(labels).item() + 1
-        for k, v in g.ndata.items():
-            if k.endswith('_mask'):
-                g.ndata[k] = v.bool()
-
-        feat_shape_file = osp.join(dataset_dir, "feat.shape")
-        feat_file = osp.join(dataset_dir, "feat.feat")
-        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        feat_len = node_features.shape[1]
     else:
-        #dataset = DglNodePropPredDataset(args.dataset)
-        #g, labels = dataset[0]
-        #g.ndata['label'] = labels
-        g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
-        g.create_formats_()     # must be called before mp.spawn().
-        #n_classes = dataset.num_classes
-        # use all available GPUs
-        labels = g.ndata.pop('label')
-        feat_len = g.ndata['feat'].shape[1]
-        #node_features = g.ndata['feat']
-        node_features = g.ndata.pop('feat')
+        feat_size  = torch.prod(torch.tensor(shape, dtype=torch.long)).item()
+        node_features = torch.from_file(feat_file, size=feat_size, dtype=torch.float32).reshape(shape)
+    print("Features: ", node_features.shape)
+    feat_len = node_features.shape[1]
 
-    #split_idx = dataset.get_idx_split()
     n_procs = args.n_procs
     nv = g.number_of_nodes()
     ne = g.number_of_edges()

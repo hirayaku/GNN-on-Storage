@@ -96,12 +96,12 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser("multi-gpu training")
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
-    argparser.add_argument('--dataset', type=str, default='reddit')
+    argparser.add_argument('--dataset', type=str, default='ogbn-products')
     argparser.add_argument('--rootdir', type=str, default='/local/dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
-    argparser.add_argument('--num-hidden', type=int, default=16)
-    argparser.add_argument('--num-layers', type=int, default=2)
-    argparser.add_argument('--fan-out', type=str, default='10,25')
+    argparser.add_argument('--num-hidden', type=int, default=256)
+    argparser.add_argument('--num-layers', type=int, default=3)
+    argparser.add_argument('--fan-out', type=str, default='15,10,5')
     argparser.add_argument('--batch-size', type=int, default=1000)
     argparser.add_argument('--log-every', type=int, default=20)
     argparser.add_argument('--eval-every', type=int, default=5)
@@ -118,6 +118,7 @@ if __name__ == '__main__':
                                 "This flag disables that.")
     argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
     args = argparser.parse_args()
+    print(args)
 
     print(f'DGL version {dgl.__version__} from {dgl.__path__}')
 
@@ -153,8 +154,8 @@ if __name__ == '__main__':
         else:
             raise Exception('unknown dataset')
         #feat_len = g.ndata.pop('features').shape[1]
-        feat_len = g.ndata['features'].shape[1]
-        print("The type of features is : ", type(g.ndata['features']))
+        feat_len = g.ndata['feat'].shape[1]
+        print("The type of features is : ", type(g.ndata['feat']))
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
@@ -166,20 +167,20 @@ if __name__ == '__main__':
     else:
         if args.inductive:
             train_g, val_g, test_g = inductive_split(g)
-            train_nfeat = train_g.ndata.pop('features')
-            val_nfeat = val_g.ndata.pop('features')
-            test_nfeat = test_g.ndata.pop('features')
-            train_labels = train_g.ndata.pop('labels')
-            val_labels = val_g.ndata.pop('labels')
-            test_labels = test_g.ndata.pop('labels')
+            train_nfeat = train_g.ndata.pop('feat')
+            val_nfeat = val_g.ndata.pop('feat')
+            test_nfeat = test_g.ndata.pop('feat')
+            train_labels = train_g.ndata.pop('label')
+            val_labels = val_g.ndata.pop('label')
+            test_labels = test_g.ndata.pop('label')
         else:
             train_g = val_g = test_g = g
-            train_nfeat = val_nfeat = test_nfeat = g.ndata.pop('features')
-            train_labels = val_labels = test_labels = g.ndata.pop('labels')
+            train_nfeat = val_nfeat = test_nfeat = g.ndata.pop('feat')
+            train_labels = val_labels = test_labels = g.ndata.pop('label')
 
-    if not args.data_cpu:
-        train_nfeat = train_nfeat.to(device)
-        train_labels = train_labels.to(device)
+    #  if not args.data_cpu:
+    #      train_nfeat = train_nfeat.to(device)
+    #      train_labels = train_labels.to(device)
 
     # Create csr/coo/csc formats before launching training processes with multi-gpu.
     # This avoids creating certain formats in each sub-process, which saves momory and CPU.

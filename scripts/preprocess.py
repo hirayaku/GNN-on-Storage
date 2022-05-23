@@ -62,9 +62,7 @@ if __name__ == "__main__":
         feat_mmap.flush()
 
         del graph.ndata[feat_name]
-    
-    # TODO: heterogeneous graph with multiple types?
-    # TODO: the size of edge data could be comparable to node features; separate nodes with edges
+
     if args.to_bidirected:
         graph_output_path = osp.join(args.graph_output_dir, 'graph_bidirected.dgl')
         graph = dgl.to_bidirected(graph)

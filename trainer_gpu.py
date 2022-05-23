@@ -1,6 +1,7 @@
 import multiprocessing
 import sys, os, argparse, time, random
 import tqdm
+from pyinstrument import Profiler
 
 import torch
 import torch.nn as nn
@@ -17,7 +18,7 @@ from graphloader import (
     PartitionSampler, PartitionedGraphLoader,
     HBatchGraphLoader)
 
-from dataloader import PartitionDataLoader, HBatchDataLoader
+from dataloader import HBatchDataLoader
 
 def train_block_batching(model, opt, g, train_set, batch_size, num_workers, use_ddp=False, passes=1):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
@@ -69,10 +70,13 @@ def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers,
             batch_size=batch_size, shuffle=True, drop_last=False,
             use_ddp=use_ddp, num_workers=num_workers)
 
-    model.train()
+    profiler = Profiler()
+    profiler.start()
     t0 = time.time()
+
+    model.train()
     for _ in range(passes):
-        for it, (_, _, blocks) in enumerate(dataloader):
+        for it, (_, _, blocks) in enumerate(train_dataloader):
             x = blocks[0].srcdata['feat']
             y = blocks[-1].dstdata['label']
             y_hat = model(blocks, x)
@@ -87,6 +91,8 @@ def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers,
         dist.barrier()
 
     tt = time.time()
+    profiler.stop()
+    print(profiler.output_text(unicode=True, color=True))
 
     # validate with current graph
     val_mask = g.ndata['val_mask']
@@ -118,9 +124,10 @@ def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
     print(f"Trainer {rank}: init_process_group, world size = {world_size}")
 
     device = torch.cuda.current_device()
-    model = SAGE(feature_dim[0], 256, num_classes, F.relu, 0.5).to(device)
+    model = SAGE(feature_dim[0], args.num_hidden, num_classes, args.n_layers, F.relu, 0.5).to(device)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    #  opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
     print(f"Trainer {rank}: model created on {device}, micro batchsize={args.bsize2}")
 
     # select sampling method
@@ -158,7 +165,7 @@ def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
         else:
             train_set = split_tensor(g.nodes(), intervals)
 
-        val_acc, tt, tv = train_gpu(g, partitions)
+        val_acc, tt, tv = train_gpu(g, train_set)
         val_acc = val_acc / world_size
         dist.reduce(val_acc, 0)
 
@@ -174,6 +181,10 @@ if __name__ == '__main__':
     parser.add_argument("--root", type=str, default="datasets")
     parser.add_argument("--tmpdir", type=str, default=".",
                         help="Location to save intermediate data (prefer fast storage)")
+    parser.add_argument("--n-layers", type=int, default=3,
+                    help="Number of GNN layers")
+    parser.add_argument('--num-hidden', type=int, default=256)
+    parser.add_argument('--lr', type=float, default=0.003)
     parser.add_argument("--n-procs", type=int, default=1,
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
@@ -190,7 +201,7 @@ if __name__ == '__main__':
                         help="Choose sampling method for host-gpu hierarchy")
     parser.add_argument("--fanout", type=str, default="15,10,5",
                         help="Choose sampling method for host-gpu hierarchy")
-    parser.add_argument("--num-workers", type=int, default=0,
+    parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of graph sampling workers for host-gpu hierarchy")
     args = parser.parse_args()
     n_procs = args.n_procs
@@ -230,7 +241,6 @@ if __name__ == '__main__':
 
     mega_batch = 0
     for ep in range(n_epochs):
-        print(f"{'='*10} Epoch {ep} {'='*10}" )
         loop_start = time.time()
         for i, (sg, features, intervals) in enumerate(dataloader):
             # NB: be careful, don't send DGLGraph directly over the queue, otherwise confusing bugs
@@ -238,14 +248,17 @@ if __name__ == '__main__':
             adj = sg.adj_sparse('csr')
             train_mask, val_mask = sg.ndata['train_mask'], sg.ndata['val_mask']
             labels = sg.ndata['label'].flatten().long()
+            print(f"Load batch: {time.time()-loop_start:.2f}s")
 
             for q in queues:
                 q.put((adj, train_mask, val_mask, labels, features, intervals))
-                print(f"Load batch: {time.time()-loop_start:.2f}s")
             print(f"Loader sent MegaBatch {mega_batch} "
                 f"(num_nodes={sg.num_nodes()}, num_edges={sg.num_edges()})")
+            mega_batch += 1
             del sg
             loop_start = time.time()
+
+        print(f"{'='*10} Epoch {ep} Loaded {'='*10}" )
 
     for q in queues:
         q.put(None)

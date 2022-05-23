@@ -1,5 +1,6 @@
 import dgl
 import torch as th
+import os.path as osp
 
 def load_reddit():
     from dgl.data import RedditDataset
@@ -19,13 +20,21 @@ def load_ogb(name, root='dataset'):
     print('finish loading', name)
     splitted_idx = data.get_idx_split()
     graph, labels = data[0]
-    labels = labels[:, 0]
 
-    graph.ndata['features'] = graph.ndata['feat']
-    in_feats = graph.ndata['features'].shape[1]
+    #  ndata = dict()
+    #  for k, v in graph.ndata.items():
+    #      ndata[k] = v
+    #  if 'products' not in name:
+    #      graph = dgl.to_bidirected(graph)
+    #  for k, v in ndata.items():
+    #      graph.ndata[k] = v
+    #  dgl.save_graphs(osp.join(osp.join(root, name), "processed/dgl_data_bidrected"), [graph], {'labels': labels})
+
+    in_feats = graph.ndata['feat'].shape[1]
+    labels = labels[:, 0]
     num_labels = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
     labels = labels.long()
-    graph.ndata['labels'] = labels
+    graph.ndata['label'] = labels
 
     # Find the node IDs in the training, validation, and test set.
     train_nid, val_nid, test_nid = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']

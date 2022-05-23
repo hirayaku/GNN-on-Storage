@@ -12,6 +12,7 @@ from load_graph import load_reddit, load_ogb, inductive_split
 def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
     th.cuda.set_device(rank)
     dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
 
     model = SAGE_DIST(feat_len, args.num_hidden, num_classes, args.num_layers, F.relu, args.dropout).cuda()
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
@@ -42,22 +43,20 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
         [int(fanout) for fanout in args.fan_out.split(',')])
     #sampler = dgl.dataloading.NeighborSampler(
     #        [15, 10, 5], prefetch_node_feats=['feat'], prefetch_labels=['label'])
-    train_dataloader = dgl.dataloading.DataLoader(
-        graph, train_idx, sampler, device='cuda', batch_size=1024, 
-        shuffle=True, drop_last=False, num_workers=0, use_ddp=True, use_uva=True)
-    #train_dataloader = dgl.dataloading.NodeDataLoader(
-    #    graph, train_idx, sampler, device='cuda', batch_size=args.batch_size,
-    #    shuffle=True, drop_last=False, num_workers=0, use_ddp=True, use_uva=True)
 
-    valid_dataloader = dgl.dataloading.NodeDataLoader(
-        graph, valid_idx, sampler, device='cuda', batch_size=1024, 
-        shuffle=True, drop_last=False, num_workers=0, use_ddp=True, use_uva=True)
+    train_dataloader = dgl.dataloading.DataLoader(
+        graph, train_idx, sampler, device='cuda', batch_size=1024,
+        shuffle=True, drop_last=False, num_workers=0, use_ddp=True) #, use_uva=True)
+
+    valid_dataloader = dgl.dataloading.DataLoader(
+        graph, valid_idx, sampler, device='cuda', batch_size=1024,
+        shuffle=True, drop_last=False, num_workers=0, use_ddp=True) #, use_uva=True)
 
     avg = 0
     iter_tput = []
     for epoch in range(args.num_epochs):
-        profiler = Profiler()
-        profiler.start()
+        #  profiler = Profiler()
+        #  profiler.start()
         model.train()
         t0 = time.time()
         tic_step = time.time()
@@ -85,11 +84,12 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
             tic_step = time.time()
 
         tt = time.time()
-        profiler.stop()
-        print(profiler.output_text(unicode=True, color=True))
+        #  profiler.stop()
+        #  print(profiler.output_text(unicode=True, color=True))
         epoch_time = tt - t0
         if rank == 0:
             print('Epoch Time(s): {:.4f}'.format(epoch_time))
+
         if epoch % args.eval_every == 0 and epoch != 0:
             #eval_acc = evaluate(model, graph, feats, labels, valid_idx, 'cuda')
             model.eval()
@@ -124,8 +124,8 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser("multi-gpu training")
-    argparser.add_argument('--gpu', type=int, default=0,
-                           help="GPU device ID. Use -1 for CPU training")
+    argparser.add_argument('--n-procs', type=int, default=4,
+                           help="Number of GPUs used for training")
     argparser.add_argument('--dataset', type=str, default='reddit')
     argparser.add_argument('--rootdir', type=str, default='../../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
@@ -141,33 +141,27 @@ if __name__ == '__main__':
                            help="Number of sampling processes. Use 0 for no extra process.")
     argparser.add_argument('--inductive', action='store_true',
                            help="Inductive learning setting")
-    argparser.add_argument('--data-cpu', action='store_true',
-                           help="By default the script puts all node features and labels "
-                                "on GPU when using it to save time for data copy. This may "
-                                "be undesired if they cannot fit in GPU memory at once. "
-                                "This flag disables that.")
     argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
     args = argparser.parse_args()
+
+    print(args)
 
     if args.disk_feat:
         dataset_dir = args.rootdir + args.dataset
         print(dataset_dir)
         graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
         g = graphs[0]
+        labels = g.ndata.pop('label').flatten().long()
+        n_classes = th.max(labels).item() + 1
         for k, v in g.ndata.items():
             if k.endswith('_mask'):
                 g.ndata[k] = v.bool()
+
         feat_shape_file = osp.join(dataset_dir, "feat.shape")
         feat_file = osp.join(dataset_dir, "feat.feat")
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
-        labels = g.ndata['label']
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        n_classes = th.max(g.ndata['label']).item() + 1
-        if args.dataset == 'ogbn-papers100M':
-            n_classes = 172
         feat_len = node_features.shape[1]
-        labels = labels.long()
-        g.ndata['label'] = labels
     else:
         #dataset = DglNodePropPredDataset(args.dataset)
         #g, labels = dataset[0]
@@ -176,16 +170,13 @@ if __name__ == '__main__':
         g.create_formats_()     # must be called before mp.spawn().
         #n_classes = dataset.num_classes
         # use all available GPUs
-        labels = g.ndata.pop('labels')
+        labels = g.ndata.pop('label')
         feat_len = g.ndata['feat'].shape[1]
         #node_features = g.ndata['feat']
-        node_features = g.ndata.pop('features')
+        node_features = g.ndata.pop('feat')
 
-    #if not args.data_cpu:
-    #    labels = labels.to('cuda')
-    #    node_features = node_features.to('cuda')
     #split_idx = dataset.get_idx_split()
-    n_procs = th.cuda.device_count()
+    n_procs = args.n_procs
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}, num_GPUs: {}'.format(nv, ne, n_classes, feat_len, n_procs))

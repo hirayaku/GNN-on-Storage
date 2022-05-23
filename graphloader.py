@@ -281,6 +281,7 @@ class HBatchGraphLoader:
         if osp.exists(assigns_file):
             assigns = torch.load(assigns_file)
             self.partitions = gnnos.node_partitions(p_size, assigns)
+            print(f"Loaded cached partitioning from {assigns_file}")
         else:
             self.partitions = gnnos.random_partition(graph, self.p_size)
             os.makedirs(partition_dir, exist_ok=True)

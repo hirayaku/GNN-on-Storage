@@ -5,7 +5,7 @@ import sys
 sys.path.append(os.path.abspath("../../"))
 import utils
 
-from load_graph import load_reddit, load_ogb, inductive_split
+from load_graph import *
 
 def run(args, device, data):
     # Unpack data
@@ -13,7 +13,7 @@ def run(args, device, data):
     val_nfeat, val_labels, test_nfeat, test_labels = data
     in_feats = train_nfeat.shape[1]
     train_nid = th.nonzero(train_g.ndata['train_mask'], as_tuple=True)[0]
-    if args.disk_feat:
+    if args.disk_feat or args.dataset == 'mag240m':
         val_nid = th.nonzero(val_g.ndata['valid_mask'], as_tuple=True)[0]
         test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['valid_mask']), as_tuple=True)[0]
     else:
@@ -21,10 +21,10 @@ def run(args, device, data):
         test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
 
     # Create PyTorch DataLoader for constructing blocks
-    print("setup sampler")
+    #print("setup sampler")
     sampler = dgl.dataloading.MultiLayerNeighborSampler(
         [int(fanout) for fanout in args.fan_out.split(',')])
-    print("setup data loader")
+    #print("setup data loader")
     dataloader = dgl.dataloading.NodeDataLoader(
         train_g,
         train_nid,
@@ -56,7 +56,10 @@ def run(args, device, data):
             #print("dtype of train_labels is : ", train_labels.dtype)
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
+            #print("dtype of batch_inputs is : ", batch_inputs.dtype)
             #print("dtype of batch_labels is : ", batch_labels.dtype)
+            if batch_inputs.dtype != th.float32:
+                batch_inputs = batch_inputs.float()
             if args.disk_feat:
                 batch_labels = batch_labels.reshape(-1,)
             blocks = [block.int().to(device) for block in blocks]
@@ -97,7 +100,7 @@ if __name__ == '__main__':
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='ogbn-products')
-    argparser.add_argument('--rootdir', type=str, default='/local/dataset/')
+    argparser.add_argument('--rootdir', type=str, default='../../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=256)
     argparser.add_argument('--num-layers', type=int, default=3)
@@ -139,23 +142,35 @@ if __name__ == '__main__':
         feat_file = osp.join(dataset_dir, "feat.feat")
         shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+        print(g.ndata.keys())
+        #if args.dataset == 'mag240m':
+        #    labels = g.ndata['labels']
+        #else:
         labels = g.ndata['label']
-        n_classes = th.max(labels).item() + 1
+        #n_classes = th.max(labels).item() + 1
+        n_classes = len(th.unique(labels[th.logical_not(th.logical_or(th.isnan(labels), th.eq(labels, -1)))]))
         if args.dataset == 'ogbn-papers100M':
-            n_classes = 172
+            assert n_classes == 172
+        elif args.dataset == 'mag240m':
+            assert n_classes == 153
         feat_len = node_features.shape[1]
         labels = labels.long()
         g.ndata['label'] = labels
     else:
         if args.dataset == 'reddit':
             g, n_classes = load_reddit()
+        elif args.dataset == 'mag240m':
+            g, n_classes = load_mag240m(args.rootdir)
         elif args.dataset.startswith('ogbn'):
             g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
         else:
             raise Exception('unknown dataset')
         #feat_len = g.ndata.pop('features').shape[1]
         feat_len = g.ndata['feat'].shape[1]
-        print("The type of features is : ", type(g.ndata['feat']))
+        #print("The type of features is : ", type(g.ndata['feat']))
+        #feat_len = g.ndata['features'].shape[1]
+        #print("The type of features is : ", type(g.ndata['features']))
+
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))

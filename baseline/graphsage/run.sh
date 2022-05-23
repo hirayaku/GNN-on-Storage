@@ -10,4 +10,9 @@
 #python train_multi_gpu.py --dataset ogbn-products --num-epochs=20 --gpu 0  --eval-every 5
 
 # in-disk execution on multi-GPU
-python train_multi_gpu.py --dataset ogbn-products --num-epochs=20 --gpu 0 --disk-feat --rootdir ~/datasets/dgl-data/
+#python train_multi_gpu.py --dataset ogbn-products --num-epochs=20 --gpu 0 --disk-feat --rootdir ~/datasets/dgl-data/
+
+#cp -r ~/datasets/dgl-data/mag240m_kddcup2021 /local/
+#python train_single.py --gpu 0 --dataset mag240m --data-cpu --num-epochs 2 --rootdir /local/
+
+python train_single.py --gpu -1 --dataset mag240m --num-epochs 2 --num-layers 3  --data-cpu --rootdir /local

@@ -140,3 +140,22 @@ def load_ogb(path):
     if not is_mask:
         masks = [idx2mask(graph.num_nodes, m) for m in masks]
     return graph, feats, multilabel, labels, masks
+
+def dataset_partition(graph, feats, labels, partitioning, out_dir):
+    psize = partitioning.psize
+    if isinstance(graph, gnnos.CSRStore):
+        pg = gnnos.BCOOStore.from_csr_2d(graph, partitioning)
+    else:
+        pg = gnnos.BCOOStore.from_coo_2d(graph, partitioning)
+    print("Partitioning completed")
+
+    feat_file = osp.join(out_dir, f'feat-{psize}')
+    label_file = osp.join(out_dir, f'label-{psize}')
+    shuffled_feats = gnnos.tensor_store(feats.metadata.with_path(feat_file), "x")
+    shuffled_labels = gnnos.tensor_store(labels.metadata.with_path(label_file), "x")
+    gnnos.shuffle_store(shuffled_feats, feats, partitioning.nodes())
+    gnnos.shuffle_store(shuffled_labels, labels, partitioning.nodes())
+    print("Shuffling completed")
+
+    assign_file = osp.join(out_dir, f'assign-{psize}')
+    assign_store = gnnos.save(partitioning.assignment(), assign_file)

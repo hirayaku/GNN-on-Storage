@@ -139,7 +139,7 @@ class PartitionSampler(dgl.dataloading.Sampler):
         dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
 
         intervals = partition_offsets(partitions)
-        return sg, intervals, partition_ids
+        return intervals, partition_ids, sg
 
 
 
@@ -208,13 +208,6 @@ class PartitionedGraphLoader(GraphLoader):
             new_features[offset:offset+partition_len, :] = features[partition, :]
             offset += partition_len
 
-        # # creates a map of nid -> offsets, sorted by nid
-        # feat_offsets = torch.arange(0, features.shape[0])
-        # par_array = torch.cat(partition_list)
-        # nid_to_feat = torch.stack((par_array, feat_offsets))
-        # nid_to_feat = nid_to_feat[:, nid_to_feat[0].argsort()]
-        # new_features[nid_to_feat[1], :] = features[:, :]
-
         new_features.flush()
         # prevent any future writes on the mmap file
         new_features = utils.memmap(new_file, mode='r', dtype='float32', shape=features.shape)
@@ -281,7 +274,19 @@ class HBatchGraphLoader:
         load_timer = time.time()
         print(f"Load dataset: {load_timer-start_timer:.2f}s")
 
-        self.partitions = gnnos.random_partition(graph, self.p_size)
+        # TODO: cache partitions
+        # try loading cached partition files: assignments, BCOO, features, labels
+        partition_dir = osp.join(self.dataset_dir, f'partitions/{p_method.name}')
+        assigns_file = osp.join(partition_dir, f'p{p_size}.pt')
+        if osp.exists(assigns_file):
+            assigns = torch.load(assigns_file)
+            self.partitions = gnnos.node_partitions(p_size, assigns)
+        else:
+            self.partitions = gnnos.random_partition(graph, self.p_size)
+            os.makedirs(partition_dir, exist_ok=True)
+            torch.save(self.partitions.assignments(), assigns_file)
+
+
         if isinstance(graph, gnnos.CSRStore):
             pg = gnnos.BCOOStore.from_csr_2d(graph, self.partitions)
         else:

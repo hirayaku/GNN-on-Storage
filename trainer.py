@@ -31,7 +31,7 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
     model.train()
     t0 = time.time()
     for _ in range(passes):
-        for it, (sg, _, _) in enumerate(dataloader):
+        for it, (_, _, sg) in enumerate(dataloader):
             sg_train_mask = sg.ndata['train_mask']
             y_hat = model(sg, sg.ndata['feat'])[sg_train_mask]
             y = sg.ndata['label'][sg_train_mask].flatten()
@@ -48,7 +48,7 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
     model.eval()
     val_tp = 0
     val_total = 0
-    for it, (sg, _, _) in enumerate(dataloader):
+    for it, (_, _, sg) in enumerate(dataloader):
         val_mask = sg.ndata['val_mask']
         y_hat = model(sg, sg.ndata['feat'])[val_mask]
         pred = torch.argmax(y_hat, dim=1)
@@ -60,7 +60,6 @@ def train(model, opt, g, train_set,batch_size, num_workers=0, use_ddp=False, pas
     return val_tp, val_total, tt - t0
 
 def train_ddp(rank, world_size, subgraph_queue: multiprocessing.Queue, feature_dim, num_classes):
-    # TODO: enable cuda
     # torch.cuda.set_device(rank)
     # dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
     dist.init_process_group('gloo', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)

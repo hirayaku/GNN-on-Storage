@@ -33,8 +33,6 @@ class MmapDataLoader(dgl.dataloading.DataLoader):
                  batch_size=1, drop_last=False, shuffle=True, use_prefetch_thread=None,
                  use_alternate_stream=None, pin_prefetcher=None, use_uva=None, **kwargs):
 
-        # TODO: when num_workers > 0, dgl DataLoader will invoke graph.create_formats_
-        # it takes up too much memory
         super().__init__(
                 graph_loader.graph, indices, sampler, device=device,
                 use_ddp=use_ddp, ddp_seed=ddp_seed,
@@ -84,7 +82,7 @@ class PartitionDataLoader(dgl.dataloading.DataLoader):
             return self
 
         def __next__(self):
-            sg, intervals, pids = next(self.it)
+            intervals, pids, sg = next(self.it)
             # sg_features = torch.zeros((intervals[-1], *self.gloader.feature_dim()))
             # for i in range(len(pids)):
             #     sg_features[intervals[i]:intervals[i+1]] = self.gloader.partition_features(pids[i])

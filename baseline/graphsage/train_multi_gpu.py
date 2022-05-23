@@ -14,18 +14,19 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
 
     model = SAGE_DIST(feat_len, args.num_hidden, num_classes, args.num_layers, F.relu, args.dropout).cuda()
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
-    #opt = th.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     opt = th.optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
     loss_fcn = nn.CrossEntropyLoss()
 
+    # re-assembly graph
+    adj, ndata = graph
+    graph = dgl.graph(('csc', adj))
+    for k, v in ndata.items():
+        graph.ndata[k] = v
+
     #train_idx, valid_idx, test_idx = split_idx['train'], split_idx['valid'], split_idx['test']
     train_idx = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
-    if args.disk_feat:
-        valid_idx = th.nonzero(graph.ndata['valid_mask'], as_tuple=True)[0]
-        test_idx = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['valid_mask']), as_tuple=True)[0]
-    else:
-        valid_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
-        test_idx = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['val_mask']), as_tuple=True)[0]
+    valid_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
+    test_idx = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['val_mask']), as_tuple=True)[0]
 
     # move ids to GPU
     #train_idx = train_idx.to('cuda')
@@ -59,10 +60,10 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
         t0 = time.time()
         tic_step = time.time()
         for it, (input_nodes, output_nodes, blocks) in enumerate(train_dataloader):
-            x = feats[input_nodes].to('cuda')
-            y = labels[output_nodes].to('cuda')
-            if args.disk_feat:
-                y = batch_labels.reshape(-1,)
+            x = feats[input_nodes.cpu()].to('cuda')
+            y = labels[output_nodes.cpu()].to('cuda')
+            #  if args.disk_feat:
+            #      y = batch_labels.reshape(-1,)
             #    x = blocks[0].srcdata['feat']
             #    y = blocks[-1].dstdata['label'][:, 0]
             blocks = [block.int().to('cuda') for block in blocks]
@@ -95,8 +96,8 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
             y_hats = []
             for it, (input_nodes, output_nodes, blocks) in enumerate(valid_dataloader):
                 with th.no_grad():
-                    x = feats[input_nodes].to('cuda')
-                    ys.append(labels[output_nodes].to('cuda'))
+                    x = feats[input_nodes.cpu()].to('cuda')
+                    ys.append(labels[output_nodes.cpu()].to('cuda'))
                     y_hats.append(model.module(blocks, x))
             val_acc = MF.accuracy(th.cat(y_hats), th.cat(ys)) / world_size
             dist.reduce(val_acc, 0)
@@ -150,31 +151,35 @@ if __name__ == '__main__':
     print(f"Loading {args.dataset} from {dataset_dir}")
     graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
     g = graphs[0]
-    g.create_formats_()
+    nv = g.number_of_nodes()
+    ne = g.number_of_edges()
     labels = g.ndata.pop('label').flatten().long()
+    #  g.create_formats_()
+    adj = g.adj_sparse('csc')
     n_classes = th.max(labels).item() + 1
+    ndata = dict()
+    if 'valid_mask' in g.ndata:
+        g.ndata['val_mask'] = g.ndata.pop('valid_mask')
     for k, v in g.ndata.items():
         if k.endswith('_mask'):
-            g.ndata[k] = v.bool()
+            ndata[k] = v.bool()
+    g = (adj, ndata)
 
     # load feature from file
     feat_shape_file = osp.join(dataset_dir, "feat.shape")
     shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
     feat_file = osp.join(dataset_dir, "feat.feat")
     print(f"Loading feature data from {feat_file}")
-    if args.disk_feat:
-        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-    else:
-        feat_size  = torch.prod(torch.tensor(shape, dtype=torch.long)).item()
-        node_features = torch.from_file(feat_file, size=feat_size, dtype=torch.float32).reshape(shape)
+    node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+    if not args.disk_feat:
+        node_features = node_features.to('cpu')
     print("Features: ", node_features.shape)
     feat_len = node_features.shape[1]
 
     n_procs = args.n_procs
-    nv = g.number_of_nodes()
-    ne = g.number_of_edges()
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}, num_GPUs: {}'.format(nv, ne, n_classes, feat_len, n_procs))
 
     # Tested with mp.spawn and fork.  Both worked and got 4s per epoch with 4 GPUs
     # and 3.86s per epoch with 8 GPUs on p2.8x, compared to 5.2s from official examples.
     mp.spawn(train, args=(n_procs, g, n_classes, feat_len, args, node_features, labels), nprocs=n_procs)
+

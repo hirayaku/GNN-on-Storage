@@ -23,12 +23,6 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
     valid_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
     test_idx = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['val_mask']), as_tuple=True)[0]
 
-    # move ids to GPU
-    #train_idx = train_idx.to('cuda')
-    #valid_idx = valid_idx.to('cuda')
-    #test_idx = test_idx.to('cuda')
-    #feats = feats.to('cuda')
-
     # For training, each process/GPU will get a subset of the
     # train_idx/valid_idx, and generate mini-batches indepednetly. This allows
     # the only communication neccessary in training to be the all-reduce for
@@ -149,32 +143,44 @@ if __name__ == '__main__':
     feat_file = osp.join(dataset_dir, "feat.feat")
     print(f"Loading feature data from {feat_file}")
     if not args.disk_feat:
-        node_features = utils.memmap(feat_file, mode='r', dtype='float32', shape=shape).to('cpu').share_memory_()
+        count = 1
+        for s in shape:
+            count *= s
+        array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
+        node_features = torch.from_numpy(array).share_memory_()
     else:
         node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
     print("Features: ", node_features.shape)
     feat_len = node_features.shape[1]
+
+    utils.using("Features loaded")
 
     print(f"Loading graph data from {dataset_dir}")
     graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
     g = graphs[0]
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
-    labels = g.ndata.pop('label').flatten().long()
-    g = g.formats('csc')
-    n_classes = th.max(labels).item() + 1
     if 'valid_mask' in g.ndata:
         g.ndata['val_mask'] = g.ndata.pop('valid_mask')
-    #  adj = g.adj_sparse('csc')
-    #  ndata = dict()
-    #  for k, v in g.ndata.items():
-    #      if k.endswith('_mask'):
-    #          ndata[k] = v.bool()
-    #  g = (adj, ndata)
+    for k, v in g.ndata.items():
+        if k.endswith('_mask'):
+            g.ndata[k] = v.bool()
+    labels = g.ndata.pop('label').flatten()
+    n_classes = len(th.unique(labels[th.logical_not(th.logical_or(th.isnan(labels), th.eq(labels, -1)))]))
+    labels = labels.long()
+    if args.dataset == 'ogbn-papers100M':
+        assert n_classes == 172
+    elif args.dataset == 'mag240m':
+        assert n_classes == 153
+
+    utils.using("Graph loaded")
 
     n_procs = args.n_procs
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}, num_GPUs: {}'.format(nv, ne, n_classes, feat_len, n_procs))
 
+    g.create_formats_()
+
+    utils.using("Graph format")
     # Tested with mp.spawn and fork.  Both worked and got 4s per epoch with 4 GPUs
     # and 3.86s per epoch with 8 GPUs on p2.8x, compared to 5.2s from official examples.
     mp.spawn(train, args=(n_procs, g, n_classes, feat_len, args, node_features, labels), nprocs=n_procs)

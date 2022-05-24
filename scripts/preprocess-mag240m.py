@@ -34,6 +34,28 @@ if __name__ == "__main__":
     print('dimensionality of paper features: {:d}'.format(dataset.num_paper_features))
     print('number of subject area classes: {:d}'.format(dataset.num_classes))
 
+    #'''
+    # features are separated from the graph
+    print('Writing features into file')
+    if args.feat_output_dir is None:
+        args.feat_output_dir = data_dir
+    feat_name = 'paper_feat'
+    feat_tensor = dataset.paper_feat
+    feat_output_path = osp.join(args.feat_output_dir, f'{feat_name}.feat')
+    shape_output_path = osp.join(args.feat_output_dir, f'{feat_name}.shape')
+
+    print(f'save feature[{feat_name}] to {shape_output_path}')
+    shape_mmap = np.memmap(shape_output_path, mode='w+', dtype='int64', shape=(len(feat_tensor.shape),))
+    shape_mmap[:] = np.array(feat_tensor.shape)
+    shape_mmap.flush()
+    print(f'save feature[{feat_name}] to {feat_output_path}')
+    feat_mmap = np.memmap(feat_output_path, mode='w+', dtype='float16',
+                          shape=tuple(feat_tensor.shape)) # shape must be tuple
+    feat_mmap[:] = feat_tensor[:]
+    feat_mmap.flush()
+    print('done')
+
+    '''
     ei_writes = dataset.edge_index('author', 'writes', 'paper')
     ei_cites = dataset.edge_index('paper', 'paper')
     ei_affiliated = dataset.edge_index('author', 'institution')
@@ -70,28 +92,7 @@ if __name__ == "__main__":
         raise
 
     data_dir = osp.join(rootdir, 'mag240m')
-    '''
-    # features are separated from the graph
-    if args.feat_output_dir is None:
-        args.feat_output_dir = data_dir
-    # node feat -> npy files
-    #feat_keys = {'paper-feat'}
-    #for feat_name in set(graph.ndata.keys()):
-    feat_name = 'paper_feat'
-    feat_tensor = dataset.paper_feat
-    feat_output_path = osp.join(args.feat_output_dir, f'{feat_name}.feat')
-    shape_output_path = osp.join(args.feat_output_dir, f'{feat_name}.shape')
 
-    print(f'save feature[{feat_name}] to {feat_output_path}')
-    shape_mmap = np.memmap(shape_output_path, mode='w+', dtype='int64', shape=(len(feat_tensor.shape),))
-    shape_mmap[:] = np.array(feat_tensor.shape)
-    shape_mmap.flush()
-    feat_mmap = np.memmap(feat_output_path, mode='w+', dtype='float32',
-                          shape=tuple(feat_tensor.shape)) # shape must be tuple
-    feat_mmap[:] = feat_tensor[:]
-    feat_mmap.flush()
-    #del graph.ndata[feat_name]
-    '''
     if args.graph_output_dir is None:
         args.graph_output_dir = data_dir
     if args.to_bidirected:
@@ -115,4 +116,4 @@ if __name__ == "__main__":
     print(graph.ndata.keys())
     print(f'save graph to {graph_output_path}')
     save_graphs(graph_output_path, [graph])
-
+    #'''

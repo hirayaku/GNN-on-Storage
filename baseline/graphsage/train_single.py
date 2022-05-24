@@ -141,7 +141,10 @@ if __name__ == '__main__':
         array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
         node_features = th.from_numpy(array)
     else:
-        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+        if args.dataset == 'mag240m':
+            node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float16', shape=shape)
+        else:
+            node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
     print("Features: ", node_features.shape)
     feat_len = node_features.shape[1]
 

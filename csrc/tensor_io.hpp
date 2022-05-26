@@ -24,6 +24,10 @@ public:
     Store(Store &&) = delete;
     virtual ~Store();
 
+    long size() const;
+    const std::string &path() const { return path_; }
+    bool is_tmp() const { return is_tmp_; }
+
     ssize_t pread(void *buf, size_t nbytes, off_t offset) const {
         return pread64(fd_, buf, nbytes, offset);
     }
@@ -36,11 +40,7 @@ public:
         return posix_fallocate(fd_, offset, len);
     }
 
-    long size() const;
-
-    int persist(const std::string &path);
-
-    const std::string &path() const { return path_; }
+    Store &persist(const std::string &path);
 
     static Handle Open(const char *path, int flags);
     static Handle OpenTemp(const char *path);
@@ -116,7 +116,7 @@ public:
         shape_ = new_shape;
         return *this;
     }
-    TensorInfo &dtype(DType dtype) {
+    TensorInfo &dtype(const DType dtype) {
         dtype_ = dtype;
         return *this;
     }
@@ -148,27 +148,37 @@ public:
     // create from TensorInfo: ("path", "shape", "dtype", "offset")
     static TensorStore
     NewFrom(TensorInfo option, int flags);
+    // open an existing tensor store in readonly mode
     static TensorStore
     OpenForRead(TensorInfo option = TensorOptions());
+    // open an existing tensor store with read and write
+    // if it doesn't exist, create a new persistent tensor store
     static TensorStore
     Open(TensorInfo option = TensorOptions());
+    // create a persistent tensor store with existence check
     static TensorStore
     Create(TensorInfo option = TensorOptions());
+    // create a temp tensor store (removed when the process normally exits)
     static TensorStore
     CreateTemp(TensorInfo option = TensorOptions());
+    // save the torch Tensor into a temp tensor store
+    static TensorStore
+    NewFrom(const torch::Tensor &tensor);
+    // save the torch Tensor into a tensor store
+    static TensorStore
+    NewFrom(const torch::Tensor &tensor, std::string path);
 
-    // TODO: we really need to replace itemsize with dtype
-    // read TensorStore into a torch Tensor
     torch::Tensor tensor() const;
     torch::Tensor tensor(DType cast_type) const;
     // torch::Tensor &TensorStore::tensor_out(torch::Tensor &out) const;
 
-    // copy the tensor to another
-    void copy_to(TensorStore &);
-    void save_to(std::string path) {
-        TORCH_CHECK(hdl->persist(path) == 0, "Failed to save as ",
-            path, ": ", strerror(errno));
-    }
+    // copy the TensorStore to another
+    void copy_to(TensorStore &) const;
+    // semantics of save_to:
+    // if the TensorStore is temporary, the backing store will be linked
+    // to a named file and no copy will happen;
+    // otherwise, a new TensorStore will be opened and copied into
+    TensorInfo save_to(std::string path) const;
 
     // slice TensorStore[start, end) at dim=0
     TensorStore slice(long start, long end) const {

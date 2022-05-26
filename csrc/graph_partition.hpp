@@ -3,6 +3,7 @@
 #include <memory>
 #include <torch/torch.h>
 #include "graph_io.hpp"
+#include "utils.hpp"
 
 namespace gnnos {
 
@@ -12,9 +13,6 @@ private:
         torch::Tensor assignments;  // num_nodes
         torch::Tensor clusters;     // num_nodes
         torch::Tensor cluster_pos;  // psize + 1
-        ~NodePartitionsData() {
-            LOG(INFO) << "De-allocate NodePartitionsData";
-        }
     };
 
     std::shared_ptr<NodePartitionsData> obj;
@@ -45,13 +43,17 @@ public:
 
 NodePartitions random_partition(const CSRStore &graph, int psize);
 NodePartitions random_partition(const COOStore &graph, int psize);
-NodePartitions go_partition(const CSRStore &graph, int psize);
+NodePartitions good_partition(const CSRStore &graph, int psize);
 
 
 // Blocked COO Store
 class BCOOStore: public COOStore {
 public:
     BCOOStore() = default;
+    // build a BCOOStore on top of COOStore
+    // edge_pos represents the edge blocks from COO partitioning
+    BCOOStore(COOStore coo, torch::Tensor edge_pos, NodePartitions partition);
+
     // partition by the src node, expects COOStore to have dtype kLong
     // TODO: use template to allow more COOStore dtype
     static BCOOStore PartitionFrom1D(const COOStore &, NodePartitions);
@@ -64,7 +66,7 @@ public:
     // constant methods
     int psize() const { return partition.psize; }
     int num_blocks() const { return edge_pos_.size() - 1; }
-    std::vector<long> edge_pos() const { return edge_pos_; }
+    torch::Tensor edge_pos() const { return vector_to_tensor<long>(edge_pos_); }
 
     // return an edge block as a COOStore
     COOStore coo_block(int blkid);
@@ -72,7 +74,6 @@ public:
     COOArrays cluster_subgraph(const std::vector<int> &cluster_ids);
 
 private:
-
     // TODO: an alternative design choice is to keep a vector of COOStore,
     // rather than inheritating COOStore and keeping a vector of edge position offsets.
     // It could support a more general form of BCOOStore: COO blocks could come from
@@ -81,17 +82,6 @@ private:
 
     // current node partition
     NodePartitions partition;
-
-    // build a BCOOStore on top of COOStore
-    // edge_pos represents the edge blocks from COO partitioning
-    BCOOStore(COOStore coo, std::vector<long> edge_pos, NodePartitions partition)
-        : COOStore(std::move(coo)), edge_pos_(std::move(edge_pos))
-        , partition(std::move(partition))
-    {
-        TORCH_CHECK(coo.num_nodes() == this->partition.num_nodes(),
-            "Invalid partition assignments: ", this->partition.num_nodes());
-    }
-
 };
 
 template <typename PtrT, typename IdxT>
@@ -155,7 +145,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
     }
     // coarsened locks
     std::vector<std::mutex> mutexes(16 * 16);
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (long i = 0; i < csr.num_nodes(); i += BLOCK_NODES) {
         auto start = i;
         auto end = i + BLOCK_NODES;
@@ -207,25 +197,29 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current
 
-
-    long *pos_data = pos_.contiguous().data_ptr<long>();
-    std::vector<long> pos(pos_data, pos_data + psize*psize + 1);
-    return BCOOStore(bcoo, std::move(pos), std::move(partition));
+    return BCOOStore(bcoo, pos_, std::move(partition));
 }
 
-/*
 // Blocked CSR Store
 struct BCSRStore {
-    BCSRStore() = default;
+public:
+    BCSRStore(const std::vector<CSRStore> &blocks);
+
+    // constant methods
+    int psize() const { return partition.psize; }
+    int num_blocks() const { return blocks.size(); }
+
+    CSRStore &operator[](int blkid);
+    // return a subgraph induced by the specified vertex clusters (2D partition only)
+    CSRArrays cluster_subgraph(const std::vector<int> &cluster_ids);
 
     // partition by the src node
     static BCSRStore PartitionFrom1D(const CSRStore &, NodePartitions);
-    // partition by (src, dst)
-    static BCSRStore PartitionFrom2D(const CSRStore &, NodePartitions);
+
+private:
 
     std::vector<CSRStore> blocks;
     NodePartitions partition;
 };
-*/
 
 }   // ns gnnos

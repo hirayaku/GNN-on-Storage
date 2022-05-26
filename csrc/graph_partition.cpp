@@ -58,7 +58,7 @@ NodePartitions random_partition(const CSRStore &graph, int psize) {
     return NodePartitions::New(psize, random_assignment(graph.num_nodes(), psize));
 }
 
-NodePartitions go_partition(const CSRStore &graph, int psize) {
+NodePartitions good_partition(const CSRStore &graph, int psize) {
     auto rand_partitions = random_partition(graph, psize);
     // BCOOStore rand_dcoo = BCOOStore::PartitionFrom1D(coo, rand_assigns, psize);
     return rand_partitions;
@@ -66,6 +66,16 @@ NodePartitions go_partition(const CSRStore &graph, int psize) {
 
 
 // BCOOStore methods
+
+BCOOStore::BCOOStore(COOStore coo, torch::Tensor edge_pos, NodePartitions partition)
+    : COOStore(std::move(coo)), edge_pos_(edge_pos.numel())
+    , partition(std::move(partition))
+{
+    TORCH_CHECK(coo.num_nodes() == this->partition.num_nodes(),
+        "Invalid partition assignments: ", this->partition.num_nodes());
+    long *ptr = edge_pos.data_ptr<long>();
+    std::copy(ptr, ptr+edge_pos_.size(), edge_pos_.begin());
+}
 
 BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partition) {
     auto assigns_vec = partition.assignments().accessor<int, 1>();
@@ -93,7 +103,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
     LOG(INFO) << "Counting complete";
 
     // compute pos array
-    auto pos_ = torch::zeros({psize+1}, p_counts_.options());
+    auto pos_ = torch::zeros({psize+1}, torch::dtype(torch::kLong));
     auto pos_1 = pos_.index({torch::indexing::Slice(1, torch::indexing::None)});
     torch::cumsum_out(pos_1, p_counts_, 0);
     CHECK_EQ(pos_.index({0}).item<long>(), 0);
@@ -126,7 +136,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
     }
     // coarsened locks
     std::vector<std::mutex> mutexes(64);
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (long i = 0; i < coo.num_edges(); i += BLOCK_EDGES) {
         auto start = i;
         auto end = i + BLOCK_EDGES;
@@ -178,9 +188,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers
 
-    long *pos_data = pos_.contiguous().data_ptr<long>();
-    std::vector<long> pos(pos_data, pos_data + psize + 1);
-    return BCOOStore(coo_copy, std::move(pos), std::move(partition));
+    return BCOOStore(coo_copy, pos_, std::move(partition));
 }
 
 BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partition) {
@@ -227,6 +235,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
     );
     auto edge_copy_accessor = coo_copy.accessor<int64_t>();
 
+    LOG(INFO) << "Partition begins";
     // shuffle edges into each partition
     {
     // the starting position of each partition
@@ -242,7 +251,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
     }
     // coarsened locks
     std::vector<std::mutex> mutexes(16 * 16);
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (long i = 0; i < coo.num_edges(); i += BLOCK_EDGES) {
         auto start = i;
         auto end = i + BLOCK_EDGES;
@@ -294,10 +303,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current
 
-
-    long *pos_data = pos_.contiguous().data_ptr<long>();
-    std::vector<long> pos(pos_data, pos_data + psize*psize + 1);
-    return BCOOStore(coo_copy, std::move(pos), std::move(partition));
+    return BCOOStore(coo_copy, pos_, std::move(partition));
 }
 
 COOStore BCOOStore::coo_block(int blkid) {
@@ -367,10 +373,9 @@ COOArrays BCOOStore::cluster_subgraph(const std::vector<int> &cluster_ids) {
     return {std::move(sg_src_), std::move(sg_dst_)};
 }
 
-/*
-BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &csr,
-    const torch::Tensor &assigns, int psize) {
+BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &coo, NodePartitions partition) {
     
+    /*
     auto assigns_vec = assigns.accessor<int, 1>();
     auto ptr_accessor = csr.ptr_store.accessor<long>();
     auto idx_accessor = csr.idx_store.accessor<long>();
@@ -407,10 +412,9 @@ BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &csr,
         long deg = ptr_vec[nid+1] - ptr_vec[nid];
         auto blkid = assigns_vec[nid];
         auto &blk = csr_blocks[blkid];
-        blk.ptr_store[]
     }
+    */
 
 }
-*/
 
 }

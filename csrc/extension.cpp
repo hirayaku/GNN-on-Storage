@@ -119,6 +119,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Create new TensorStore",
         py::arg("TensorInfo"), py::arg("flags") = "r", py::arg("temp") = false);
 
+    m.def("from_tensor",
+        py::overload_cast<const torch::Tensor&, std::string>(&TensorStore::NewFrom),
+        "save the torch Tensor into TensorStore", py::arg("Tensor"), py::arg("path"));
+
     m.def("gather_slices", &GatherSlices,
         "gather store slices into a torch Tensor",
         py::arg("TensorStore"), py::arg("ranges"));
@@ -138,7 +142,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_property_readonly("metadata", &COOStore::metadata)
         .def("slice", py::overload_cast<long, long>(&COOStore::slice, py::const_),
             "COOStore[start, end)", py::arg("start"), py::arg("end"))
-        .def("tensor", &COOStore::tensor);
+        .def("tensor", &COOStore::tensor)
+        .def("save", [](const COOStore &self, std::string path) {
+            return save_COOStore(self, path);
+        },"save COOStore to file", py::arg("path"));
 
     py::class_<CSRStore>(m, "CSRStore")
         .def(py::init<TensorStore, TensorStore>())
@@ -146,6 +153,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_property_readonly("num_edges", &CSRStore::num_edges)
         .def_property_readonly("metadata", &CSRStore::metadata)
         .def("tensor", &CSRStore::tensor)
+        .def("save", [](const CSRStore &self, std::string path) {
+            return save_CSRStore(self, path);
+        },"save CSRStore to file", py::arg("path"))
         .def("neighbors", &CSRStore::out_neighbors,
             "get neighbor nodes", py::arg("nid"))
         .def_static("from_coo", &CSRStore::NewFrom, "convert COOStore to CSRStore",
@@ -155,7 +165,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Graph Partitioning
 
     py::class_<NodePartitions>(m, "NodePartitions")
-        .def(py::init<>())
         .def_readonly("psize", &NodePartitions::psize)
         .def("assignments", &NodePartitions::assignments)
         .def("pos", &NodePartitions::pos, py::arg("idx"))
@@ -177,13 +186,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "generate a random node paritioning",
         py::arg("COOStore"), py::arg("psize"));
 
-    m.def("go_partition", py::overload_cast<const CSRStore&, int>(&go_partition),
+    m.def("good_partition", &good_partition,
         "generate a good node paritioning", py::arg("CSRStore"), py::arg("psize"));
 
     py::class_<BCOOStore, COOStore>(m, "BCOOStore")
         .def(py::init<>())
+        .def(py::init<COOStore, torch::Tensor, NodePartitions>())
         .def_property_readonly("psize", &BCOOStore::psize)
         .def_property_readonly("num_blocks", &BCOOStore::num_blocks)
+        .def("edge_pos", &BCOOStore::edge_pos)
         .def("__getitem__", &BCOOStore::coo_block, "get the coo block", py::arg("idx"))
         .def("subgraph", &BCOOStore::cluster_subgraph,
             "get the subgraph induced from node clusters", py::arg("clusters"))

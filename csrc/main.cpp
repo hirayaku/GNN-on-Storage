@@ -69,6 +69,7 @@ void testCOOStoreCreateTemp() {
     std::cout << "\n";
 }
 
+/*
 void testCOOStoreClone() {
     auto tensor = TensorStore::OpenForRead(products_options);
     LOG(INFO) << tensor.metadata();
@@ -93,6 +94,7 @@ void testCOOStoreClone() {
     std::cout << "Comparison result: "
         << (std::get<1>(edges) == std::get<1>(clone_edges)).all() << "\n";
 }
+*/
 
 void testCOOStoreTraverse(size_t edge_block=1024) {
     // when edge_block == 1, IO bandwidth reduced to 1~2 MTEPS
@@ -139,6 +141,36 @@ void testCOOStorePartition2D() {
         for (int j = 0; j < psize; ++j) {
             int from = i, to = j;
             auto block = dcoo.coo_block(from * psize + to);
+            auto accessor = block.accessor<long>();
+            for (int eid = 0; eid < accessor.size(); ++eid) {
+                auto e = accessor[eid];
+                CHECK_EQ(assigns_vec[e.first], from);
+                CHECK_EQ(assigns_vec[e.second], to);
+            }
+        }
+    }
+}
+
+void testSaveCOOStore() {
+    auto tensor = TensorStore::OpenForRead(products_options);
+    auto coo = COOStore(tensor.flatten(), 2449029);
+    int psize = 128;
+    auto partition = random_partition(coo, psize);
+    auto dcoo = BCOOStore::PartitionFrom2D(coo, partition);
+    long num_nodes;
+    TensorInfo src_info, dst_info;
+    std::tie(num_nodes, src_info, dst_info) = save_COOStore(dcoo, products_options.path() + ".p");
+    auto coo2 = COOStore(TensorStore::OpenForRead(src_info), TensorStore::OpenForRead(dst_info),
+        num_nodes);
+    auto dcoo2 = BCOOStore(coo2, dcoo.edge_pos(), partition);
+
+    // check BCOOStore consistency
+    LOG(INFO) << "Check BCOOStore";
+    const auto assigns_vec = partition.assignments().accessor<int, 1>();
+    for (int i = 0; i < psize; ++i) {
+        for (int j = 0; j < psize; ++j) {
+            int from = i, to = j;
+            auto block = dcoo2.coo_block(from * psize + to);
             auto accessor = block.accessor<long>();
             for (int eid = 0; eid < accessor.size(); ++eid) {
                 auto e = accessor[eid];
@@ -241,6 +273,7 @@ void testTorchMM() {
 
 int main() {
     torch::ShowLogInfoToStderr();
+    c10::InferenceMode guard(true);
 
     // RUN(getTorchInfo);
     // RUN(testTorchMM);
@@ -252,10 +285,11 @@ int main() {
     // RUN(testNodePartitions);
     // RUN(testCOOStorePartition1D);
     // RUN(testCOOStorePartition2D);
+    RUN(testSaveCOOStore);
     // RUN(testCOOToCSRStore);
     // RUN(testCSRToBCOO);
     // RUN(testBCOOSubgraph);
-    RUN(testGather);
+    // RUN(testGather);
 
     return 0;
 }

@@ -1,8 +1,6 @@
 #include <vector>
 #include <tuple>
 #include <unordered_map>
-#include <thread>
-#include <mutex>
 #include <torch/torch.h>
 #include "graph_io.hpp"
 
@@ -11,30 +9,26 @@ namespace gnnos {
 // COOStore methods
 
 COOArrays COOStore::tensor() const {
-    return {src_store_.tensor(), dst_store_.tensor()};
-}
-
-COOStore COOStore::clone(std::string path, bool fill) {
-    size_t src_nbytes = src_store_.numel() * src_store_.itemsize();
-    auto new_src_store = TensorStore::Create(
-        src_store_.metadata().offset(0).path(path));
-    auto new_dst_store = TensorStore::Open(
-        dst_store_.metadata().offset(src_nbytes).path(path));
-    if (fill) {
-        src_store_.copy_to(new_src_store);
-        dst_store_.copy_to(new_dst_store);
-    }
-    return COOStore(new_src_store, new_dst_store, num_nodes());
+    return {src_store.tensor(), dst_store.tensor()};
 }
 
 COOStore COOStore::slice(long start, long end) const {
     return COOStore(
-        this->src_store_.slice(start, end),
-        this->dst_store_.slice(start, end),
+        this->src_store.slice(start, end),
+        this->dst_store.slice(start, end),
         this->num_nodes());
 }
 
+std::tuple<long, TensorInfo, TensorInfo>
+save_COOStore(const COOStore &coo, std::string path) {
+    auto src_info = coo.src_store.save_to(path + ".coo_src");
+    auto dst_info = coo.dst_store.save_to(path + ".coo_dst");
+    return {coo.num_nodes(), src_info, dst_info};
+}
+
 // CSRStore methods
+
+// TODO: use external sort instead of random fetching
 CSRStore CSRStore::NewFrom(const COOStore &coo) {
     long num_nodes;
     TensorInfo dst_info;
@@ -50,7 +44,7 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
     auto edge_accessor = coo.accessor<long>();
     constexpr long BLOCK_EDGES = 1024 * 1024;
 
-    #pragma omp parallel for
+    #pragma omp parallel for num_threads(IO_THREADS)
     for (long i = 0; i < coo.num_edges(); i += BLOCK_EDGES) {
         auto start = i;
         auto end = i + BLOCK_EDGES;
@@ -79,8 +73,8 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
     auto ptr_current = ptr_current_.accessor<long, 1>();
     auto idx_accessor = idx_store.accessor<long>();
     // coarsened locks
-    std::vector<std::mutex> mutexes(64);
-    #pragma omp parallel for
+    // std::vector<std::mutex> mutexes(64);
+    #pragma omp parallel for schedule(dynamic) num_threads(IO_THREADS)
     for (long i = 0; i < coo.num_edges(); i += BLOCK_EDGES) {
         auto start = i;
         auto end = i + BLOCK_EDGES;
@@ -91,10 +85,12 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
             auto src_id = src[i];
             auto dst_id = dst[i];
             long idx_pos;
-            {
-                std::lock_guard<std::mutex> lock(mutexes[src_id%64]);
-                idx_pos = ptr_current[src_id]++;
-            }
+            #pragma omp atomic capture
+            idx_pos = ptr_current[src_id]++;
+            // {
+            //     std::lock_guard<std::mutex> lock(mutexes[src_id%64]);
+            //     idx_pos = ptr_current[src_id]++;
+            // }
             idx_accessor.put(dst_id, idx_pos);
         }
     }
@@ -109,9 +105,6 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
 
 }
 
-
-// CSRStore methods
-
 CSRArrays CSRStore::tensor() const {
     return {ptr_store.tensor(), idx_store.tensor()};
 }
@@ -119,7 +112,7 @@ CSRArrays CSRStore::tensor() const {
 torch::Tensor CSRStore::out_neighbors(long nid) {
     long start, end;
     // better dynamic dispatch?
-    if (ptr_store.itemsize() == 4) {
+    if (ptr_store.dtype() == torch::kInt) {
         start = ptr_store.at(nid).item<int>();
         end = ptr_store.at(nid+1).item<int>();
     } else {
@@ -130,5 +123,11 @@ torch::Tensor CSRStore::out_neighbors(long nid) {
     return idx_store.slice(start, end).tensor();
 }
 
+std::tuple<long, TensorInfo, TensorInfo>
+save_CSRStore(const CSRStore &csr, std::string path) {
+    auto ptr_info = csr.ptr_store.save_to(path + ".csr_ptr");
+    auto idx_info = csr.idx_store.save_to(path + ".idx_ptr");
+    return {csr.num_nodes(), ptr_info, idx_info};
 }
 
+}

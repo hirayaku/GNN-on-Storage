@@ -30,16 +30,16 @@ long Store::size() const {
     return statbuf.st_size;
 }
 
-int Store::persist(const std::string &path) {
+Store &Store::persist(const std::string &path) {
+    is_tmp_ = false;
+    char proc_name[255];
+    snprintf(proc_name, sizeof(proc_name), "/proc/self/fd/%d", fd_);
+    int rc = linkat(AT_FDCWD, proc_name, AT_FDCWD, path.data(), AT_SYMLINK_FOLLOW);
+    TORCH_CHECK(rc == 0, "Failed to persist Store (fd=", fd_, ") to ", path);
+    TORCH_CHECK(unlink(this->path_.data()) == 0, "Failed to unlink ",
+        this->path_, ": ", strerror(errno));
     this->path_ = path;
-    if (is_tmp_) {
-        is_tmp_ = false;
-        char proc_name[255];
-        snprintf(proc_name, sizeof(proc_name), "/proc/self/fd/%d", fd_);
-        return linkat(AT_FDCWD, proc_name, AT_FDCWD, path.data(), AT_SYMLINK_FOLLOW);
-    } else {
-        return linkat(AT_FDCWD, path_.data(), AT_FDCWD, path.data(), 0);
-    }
+    return *this;
 }
 
 Store::Handle Store::Open(const char *path, int flags) {
@@ -58,7 +58,7 @@ Store::Handle Store::OpenTemp(const char *path) {
     strncat(filename, "/gnnos-XXXXXX", 100);
     int fd = mkstemp(filename);
     TORCH_CHECK(fd >= 0, "Failed to open temp Store from ", path, ": ", strerror(errno));
-    LOG(INFO) << "Open " << filename << " (fd=" << fd << ")";
+    LOG(INFO) << "Open TempStore (fd=" << fd << ")";
     return std::shared_ptr<Store>(new Store(filename, fd, true));
 }
 
@@ -85,8 +85,6 @@ MmapStore::Handle MmapStore::Open(const char *path, int flags) {
     return std::shared_ptr<MmapStore>(new MmapStore(path, fd, is_tmp));
 }
 
-
-// TensorInfo methods
 
 TensorInfo TensorOptions() { return TensorInfo(); }
 TensorInfo TensorOptions(std::string path) { return TensorInfo().path(std::move(path)); }
@@ -125,7 +123,7 @@ TensorStore TensorStore::NewFrom(TensorInfo option, int flags) {
     auto tensor = TensorStore(Store::Open(option.path().data(), flags),
         option.shape(), option.dtype(), option.offset());
     long len = tensor.numel() * tensor.itemsize();
-    if (tensor.hdl->size() < tensor.seek_set + len) {
+    if ((flags & O_WRONLY) | (flags & O_RDWR) ) {
         int rc = tensor.hdl->alloc(tensor.seek_set, len);
         TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
     }
@@ -144,11 +142,24 @@ TensorStore TensorStore::CreateTemp(TensorInfo option) {
     auto tensor = TensorStore(Store::OpenTemp(option.path().data()),
         option.shape(), option.dtype(), option.offset());
     long len = tensor.numel() * tensor.itemsize();
-    if (tensor.hdl->size() < tensor.seek_set + len) {
-        int rc = tensor.hdl->alloc(tensor.seek_set, len);
-        TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
-    }
+    int rc = tensor.hdl->alloc(tensor.seek_set, len);
+    TORCH_CHECK(rc == 0, "Failed to alloc store: ", strerror(rc));
     return tensor;
+}
+
+TensorStore TensorStore::NewFrom(const torch::Tensor &tensor) {
+    auto option = TensorOptions(TMPDIR).shape(tensor.sizes()).dtype(tensor.scalar_type());
+    auto store = CreateTemp(option);
+    auto data_ptr = tensor.data_ptr();
+    store.pwrite(data_ptr, tensor.nbytes(), 0);
+    return store;
+}
+TensorStore TensorStore::NewFrom(const torch::Tensor &tensor, std::string path) {
+    auto option = TensorOptions(path).shape(tensor.sizes()).dtype(tensor.scalar_type());
+    auto store = Create(option);
+    auto data_ptr = tensor.data_ptr();
+    store.pwrite(data_ptr, tensor.nbytes(), 0);
+    return store;
 }
 
 torch::Tensor TensorStore::tensor() const {
@@ -166,7 +177,7 @@ torch::Tensor TensorStore::tensor(torch::ScalarType dtype) const {
         torch::dtype(dtype));
 }
 
-void TensorStore::copy_to(TensorStore &that) {
+void TensorStore::copy_to(TensorStore &that) const {
     TORCH_CHECK(torch::elementSize(dtype_) == torch::elementSize(that.dtype_),
         "Illegal dtype cast from ", dtype_, " to ", that.dtype_);
     constexpr size_t CHUNK_SIZE = 1024 * 1024;
@@ -182,6 +193,21 @@ void TensorStore::copy_to(TensorStore &that) {
         pread(buf, remains, CHUNK_SIZE * nchunks);
         that.pwrite(buf, remains, CHUNK_SIZE * nchunks);
     }
+}
+
+TensorInfo TensorStore::save_to(std::string path) const {
+    if (hdl->path() == path) {
+        // do nothing if copy to itself
+        return metadata();
+    }
+    auto option = metadata().path(path);
+    if (hdl->is_tmp()) {
+        hdl->persist(path);
+    } else {
+        auto new_store = TensorStore::Create(option);
+        this->copy_to(new_store);
+    }
+    return option;
 }
 
 TensorStore &TensorStore::reshape(c10::IntArrayRef new_shape) {

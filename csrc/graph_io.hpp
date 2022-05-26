@@ -12,8 +12,7 @@ namespace gnnos {
 using COOArrays = std::tuple<torch::Tensor, torch::Tensor>;
 using CSRArrays = std::tuple<torch::Tensor, torch::Tensor>;
 
-class COOStore {
-public:
+struct COOStore {
     COOStore() = default;
     COOStore(const COOStore &) = default;
     COOStore(COOStore &&) = default;
@@ -21,12 +20,12 @@ public:
 
     // initialize from two TensorStore's
     COOStore(TensorStore src_store, TensorStore dst_store, long num_nodes)
-        : src_store_(std::move(src_store)), dst_store_(std::move(dst_store))
+        : src_store(std::move(src_store)), dst_store(std::move(dst_store))
         , num_nodes_(num_nodes)
     {
-        TORCH_CHECK(src_store_.shape().size() == 1,
+        TORCH_CHECK(this->src_store.shape().size() == 1,
             "Expect flattened src/dst arrays");
-        TORCH_CHECK(src_store_.shape() == dst_store_.shape(),
+        TORCH_CHECK(this->src_store.shape() == this->dst_store.shape(),
             "Expect src/dst arrays to have the same shape");
     }
 
@@ -40,21 +39,20 @@ public:
     // read COOStore into COOArrays
     COOArrays tensor() const;
 
-    COOStore clone(std::string path, bool fill=true);
     COOStore slice(long start, long end) const;
     COOStore slice(long end) const { return this->slice(0, end); }
 
     long num_nodes() const { return num_nodes_; }
-    long num_edges() const { return src_store_.numel(); }
-    std::tuple<size_t, TensorInfo, TensorInfo> metadata() const {
-        return {num_nodes_, src_store_.metadata(), dst_store_.metadata()};
+    long num_edges() const { return src_store.numel(); }
+    std::tuple<long, TensorInfo, TensorInfo> metadata() const {
+        return {num_nodes_, src_store.metadata(), dst_store.metadata()};
     }
 
     template <typename S, typename D=S>
     class Accessor {
     public:
         Accessor(const COOStore &coo)
-        : src_accessor(coo.src_store_), dst_accessor(coo.dst_store_)
+        : src_accessor(coo.src_store), dst_accessor(coo.dst_store)
         {
             TORCH_CHECK(src_accessor.size() == dst_accessor.size(),
                 "Expect src and dst store to have the same size");
@@ -89,10 +87,15 @@ public:
     template <typename S, typename D=S>
     Accessor<S, D> accessor() && = delete;
 
+    TensorStore src_store, dst_store;
+
 protected:
-    TensorStore src_store_, dst_store_;
     long num_nodes_;
 };
+
+std::tuple<long, TensorInfo, TensorInfo>
+save_COOStore(const COOStore &, std::string);
+
 
 struct CSRStore {
     CSRStore() = default;
@@ -108,7 +111,7 @@ struct CSRStore {
 
     long num_nodes() const { return ptr_store.numel() - 1; }
     long num_edges() const { return idx_store.numel(); }
-    std::tuple<size_t, TensorInfo, TensorInfo> metadata() const {
+    std::tuple<long, TensorInfo, TensorInfo> metadata() const {
         return {num_nodes(), ptr_store.metadata(), idx_store.metadata()};
     }
 
@@ -119,6 +122,8 @@ struct CSRStore {
     TensorStore idx_store;
 };
 
+std::tuple<long, TensorInfo, TensorInfo>
+save_CSRStore(const CSRStore &, std::string);
 
 } // namespace gnnos
 

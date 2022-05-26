@@ -1,5 +1,4 @@
-import os, time
-from random import shuffle
+import os
 import os.path as osp
 from enum import Enum
 from functools import namedtuple
@@ -8,6 +7,7 @@ import dgl
 
 import utils
 import partition_utils as p_utils
+import datasets
 
 __all__ = [
     'PartitionMethod',
@@ -240,7 +240,7 @@ class PartitionedGraphLoader(GraphLoader):
         return torch.cat(feats)
 
 
-import dataset, gnnos
+import datasets, gnnos
 
 class HBatchGraphLoader:
     '''
@@ -258,61 +258,39 @@ class HBatchGraphLoader:
         self.p_size = p_size
         self.p_method = p_method
 
-        start_timer = time.time()
-
         if name == "oag-paper":
-            data = dataset.load_oag(self.dataset_dir)
+            data = datasets.load_oag(self.dataset_dir)
         elif name == "mag240m":
-            data = dataset.load_mag240m(self.dataset_dir)
+            data = datasets.load_mag240m(self.dataset_dir)
         elif name.startswith("ogbn"):
-            data = dataset.load_ogb(self.dataset_dir)
+            data = datasets.load_ogb(self.dataset_dir)
         else:
             raise ValueError("Unknown dataset, please choose from oag-paper, mag240m, or OGB")
         # unpack loaded data
-        graph, node_features, self.is_multilabel, self.labels, self.masks = data
+        graph, node_features, self.is_multilabel, labels, self.masks = data
 
-        load_timer = time.time()
-        print(f"Load dataset: {load_timer-start_timer:.2f}s")
+        print("Loaded dataset")
 
-        # TODO: cache partitions
         # try loading cached partition files: assignments, BCOO, features, labels
-        partition_dir = osp.join(self.dataset_dir, f'partitions/{p_method.name}')
-        assigns_file = osp.join(partition_dir, f'p{p_size}.pt')
-        if osp.exists(assigns_file):
-            assigns = torch.load(assigns_file)
-            self.partitions = gnnos.node_partitions(p_size, assigns)
-            print(f"Loaded cached partitioning from {assigns_file}")
-        else:
-            self.partitions = gnnos.random_partition(graph, self.p_size)
-            os.makedirs(partition_dir, exist_ok=True)
-            torch.save(self.partitions.assignments(), assigns_file)
+        create = False
+        data_dir = osp.join(self.dataset_dir, f'partitions/{p_method.name}/p{p_size}')
+        try:
+            pg, shuffled_features, shuffled_labels, partitions = \
+                datasets.load_partitions(data_dir)
+        except Exception as e:
+            print(e)
+            create = True
+            raise
+        if create:
+            os.makedirs(data_dir, exist_ok=True)
+            partitions = gnnos.random_partition(graph, self.p_size)
+            pg, shuffled_features, shuffled_labels, _ = datasets.create_partitions(
+                graph, node_features, labels, partitions, data_dir)
 
-
-        if isinstance(graph, gnnos.CSRStore):
-            pg = gnnos.BCOOStore.from_csr_2d(graph, self.partitions)
-        else:
-            pg = gnnos.BCOOStore.from_coo_2d(graph, self.partitions)
-        self.graph: gnnos.BCOOStore = pg
-
-        part_timer = time.time()
-        print(f"Partition graph: {part_timer-load_timer:.2f}s")
-
-        # shuffle data
-        shuffled_features = gnnos.tensor_store(
-            node_features.metadata.with_path(gnnos.get_tmp_dir()),
-            "r+", temp=True
-        )
-        gnnos.shuffle_store(shuffled_features, node_features, self.partitions.nodes())
+        self.graph = pg
+        self.partitions = partitions
         self.shuffled_features = shuffled_features
-        shuffled_labels = gnnos.tensor_store(
-            self.labels.metadata.with_path(gnnos.get_tmp_dir()),
-            "r+", temp=True
-        )
-        gnnos.shuffle_store(shuffled_labels, self.labels, self.partitions.nodes())
         self.shuffled_labels = shuffled_labels
-
-        shuffle_timer = time.time()
-        print(f"Shuffle data: {shuffle_timer-part_timer:.2f}s")
 
     def feature_dim(self):
         return self.shuffled_features.metadata.shape[1:]
@@ -353,6 +331,7 @@ if __name__ == "__main__":
         name="ogbn-products", root="/mnt/md0/inputs", p_size=16)
     print(using('after'))
     parts = torch.randint(16, (4,))
+    print(f"Fetch partitions: {parts}")
     feats = gloader.gather_feat_partitions(parts)
     nodes = gloader.gather_node_partitions(parts)
     print(feats)
@@ -366,6 +345,7 @@ if __name__ == "__main__":
         name="ogbn-products", root="/mnt/md0/graphs", p_size=16)
     print(using('after'))
     feats_ref = gloader.features(nodes)
+    assert (feats == feats_ref).all()
     print(feats_ref)
     print(using('tensor'))
     del gloader

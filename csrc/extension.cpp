@@ -24,13 +24,24 @@ using namespace gnnos;
   _(bool, Bool)                                  \
   _(bfloat16, BFloat16) 
 
+#define GNNOS_FORALL_LIBTORCH_SCALAR_TYPES(_) \
+  _(Byte, uint8)                                \
+  _(Char, int8)                                 \
+  _(Short, int16)                               \
+  _(Int, int32)                                     \
+  _(Long, int64)                                \
+  _(Half, float16)                               \
+  _(Float, float32)                                 \
+  _(Double, float64)                               \
+  _(Bool, bool)                                  \
+  _(BFloat16, bfloat16)
+
 static py::object pytorch = py::module_::import("torch");
-static py::object pytorch_dtype = pytorch.attr("dtype");
 
 // from pytorch dtype to libtorch dtype
 static torch::ScalarType libtorch_dtype(py::object dtype) {
     auto dtype_str = py::repr(dtype);
-    TORCH_CHECK(py::isinstance(dtype, pytorch_dtype),
+    TORCH_CHECK(py::isinstance(dtype, pytorch.attr("dtype")),
         "Unknown dtype for gnnos: ", dtype_str);
 
 #define DEFINE_ITEM(pytype, libtype) \
@@ -44,6 +55,19 @@ static torch::ScalarType libtorch_dtype(py::object dtype) {
     auto iter = lookup.find(py::repr(dtype));
     TORCH_CHECK(iter != lookup.end(), "Unsupported dtype for gnnos: ", dtype_str);
     return iter->second;
+}
+
+// from libtorch dtype to pytorch dtype
+static py::object pytorch_dtype(torch::ScalarType dtype) {
+#define DEFINE_CASE(libtype, pytype) \
+    case torch::k##libtype: \
+        return pytorch.attr(#pytype); \
+
+    switch (dtype) {
+        GNNOS_FORALL_LIBTORCH_SCALAR_TYPES(DEFINE_CASE)
+        default: throw std::invalid_argument("Unknown libtorch dtype");
+    }
+#undef DEFINE_CASE
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -61,8 +85,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             "path", py::overload_cast<>(&TensorInfo::path, py::const_))
         .def_property_readonly(
             "shape", py::overload_cast<>(&TensorInfo::shape, py::const_))
-        .def_property_readonly(
-            "dtype", py::overload_cast<>(&TensorInfo::dtype, py::const_))
+        .def_property_readonly("dtype", [](const TensorInfo &self) {
+            return pytorch_dtype(self.dtype());
+        })
         .def_property_readonly(
             "offset", py::overload_cast<>(&TensorInfo::offset, py::const_))
         .def("with_path", py::overload_cast<std::string>(&TensorInfo::path))
@@ -197,29 +222,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("edge_pos", &BCOOStore::edge_pos)
         .def("__getitem__", &BCOOStore::coo_block, "get the coo block", py::arg("idx"))
         .def("subgraph", &BCOOStore::cluster_subgraph,
-            "get the subgraph induced from node clusters", py::arg("clusters"))
+            "get the subgraph induced from node clusters", py::arg("clusters"));
 
-        .def_static("from_coo_1d", &BCOOStore::PartitionFrom1D,
-            "1D partitioning COOStore", py::arg("COOStore"), py::arg("partition"))
+    m.def("partition_coo_1d", &BCOOStore::PartitionFrom1D,
+        "1D partitioning COOStore", py::arg("COOStore"), py::arg("partition"));
 
-        .def_static("from_coo_2d",
-            py::overload_cast<const COOStore &, NodePartitions>(&BCOOStore::PartitionFrom2D),
-            "2D partitioning COOStore", py::arg("COOStore"), py::arg("partition"))
+    m.def("partition_coo_2d",
+        py::overload_cast<const COOStore &, NodePartitions>(&BCOOStore::PartitionFrom2D),
+        "2D partitioning COOStore", py::arg("COOStore"), py::arg("partition"));
 
-        .def_static("from_csr_2d",
-            [](const CSRStore &csr, NodePartitions p) {
-                auto ptr_sz = csr.ptr_store.itemsize();
-                auto idx_sz = csr.idx_store.itemsize();
-                if (ptr_sz == 4 && idx_sz == 4) {
-                    return BCOOStore::PartitionFrom2D<int, int>(csr, p);
-                } else if (ptr_sz == 8 && idx_sz == 4) {
-                    return BCOOStore::PartitionFrom2D<long, int>(csr, p);
-                } else if (ptr_sz == 8 && idx_sz == 8) {
-                    return BCOOStore::PartitionFrom2D<long, long>(csr, p);
-                } else {
-                    throw std::runtime_error("Invalid ptr_sz & idx_sz combination");
-                }
-            },
-            "2D partitioning COOStore", py::arg("COOStore"), py::arg("partition"));
+    m.def("partition_csr_2d",
+        [](const CSRStore &csr, NodePartitions p) {
+            auto ptr_sz = csr.ptr_store.itemsize();
+            auto idx_sz = csr.idx_store.itemsize();
+            if (ptr_sz == 4 && idx_sz == 4) {
+                return BCOOStore::PartitionFrom2D<int, int>(csr, p);
+            } else if (ptr_sz == 8 && idx_sz == 4) {
+                return BCOOStore::PartitionFrom2D<long, int>(csr, p);
+            } else if (ptr_sz == 8 && idx_sz == 8) {
+                return BCOOStore::PartitionFrom2D<long, long>(csr, p);
+            } else {
+                throw std::runtime_error("Invalid ptr_sz & idx_sz combination");
+            }
+        },
+        "2D partitioning COOStore", py::arg("COOStore"), py::arg("partition"));
 
 }

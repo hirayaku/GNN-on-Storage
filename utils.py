@@ -45,8 +45,23 @@ def memmap(path, random=False, dtype=np.int8, mode='r+', offset=0, shape=None, o
         data.madvise_random()
     return data
 
-import resource
+import json
+# https://stackoverflow.com/a/57915246
+class DtypeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, torch.dtype):
+            return str(obj).split('.')[-1]
+        if isinstance(obj, np.dtype):
+            return str(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray) or isinstance(obj, torch.Tensor):
+            return obj.tolist()
+        return super(DtypeEncoder, self).default(obj)
 
+import resource
 def using(point=""):
     usage=resource.getrusage(resource.RUSAGE_SELF)
     print('%s: mem=%s MB' % (point, usage[2]/1024.0 ))

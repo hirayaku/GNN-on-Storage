@@ -6,6 +6,7 @@ import numpy as np
 
 from ogb.nodeproppred import NodePropPredDataset
 import utils
+from utils import DtypeEncoder
 
 TensorInfo = namedtuple("TensorInfo", ("shape", "dtype", "path", "offset"))
 
@@ -38,17 +39,6 @@ def tensor_deserialize(info: TensorInfo):
         dtype=info.dtype, shape=info.shape, offset=info.offset)
 
 _directed_dataset = ['ogbn-arxiv', 'ogbn-papers100M']
-
-# https://stackoverflow.com/a/57915246
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super(NpEncoder, self).default(obj)
 
 def process_ogb(name: str, rootdir: str, add_reverse_edges: bool) -> dict:
     metadata = {"dataset": name}
@@ -85,7 +75,7 @@ def process_ogb(name: str, rootdir: str, add_reverse_edges: bool) -> dict:
 
     # serialize metadata at last
     with open(osp.join(serialize_dir, 'metadata.json'), 'w') as f:
-        f.write(json.dumps(metadata, indent=4, cls=NpEncoder))
+        f.write(json.dumps(metadata, indent=4, cls=DtypeEncoder))
     return metadata
 
 def process_ogb_lowmem(name: str, rootdir: str, add_reverse_edges: bool) -> dict:
@@ -137,7 +127,7 @@ def process_ogb_lowmem(name: str, rootdir: str, add_reverse_edges: bool) -> dict
 
     # serialize metadata at last
     with open(osp.join(serialize_dir, 'metadata.json'), 'w') as f:
-        f.write(json.dumps(metadata, indent=4, cls=NpEncoder))
+        f.write(json.dumps(metadata, indent=4, cls=DtypeEncoder))
     return metadata
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import os.path as osp
 import json
 import torch, gnnos
+from utils import DtypeEncoder
 
 def parse_meta(path):
     with open(osp.join(path, "graph.meta.txt")) as f:
@@ -25,16 +26,7 @@ def new_store(path, shape, dtype, offset=0):
         gnnos.options(path).with_shape(shape).with_dtype(dtype).with_offset(offset)
     )
 
-def int_dtype(itemsize: int) -> torch.dtype:
-    if itemsize == 1:
-        return torch.uint8
-    elif itemsize == 2:
-        return torch.int16
-    elif itemsize == 4:
-        return torch.int32
-    elif itemsize == 8:
-        return torch.int64
-    raise ValueError(f"Invalid integral size: {itemsize}")
+integral_types = {1: torch.uint8, 2: torch.int16, 4: torch.int32, 8: torch.int64}
 
 def load_oag(path):
     nv, ne, vbytes, ebytes, feat_sz, nclasses, multilabel, \
@@ -52,16 +44,16 @@ def load_oag(path):
     mask_files = [f"{name}.masks.bin" for name in ("train", "val", "test")]
 
     # graph topology
-    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], int_dtype(ebytes))
-    idx_store = new_store(osp.join(path, idx_file), [ne], int_dtype(vbytes))
+    ptr_store = new_store(osp.join(path, ptr_file), shape=[nv+1], dtype=integral_types[ebytes])
+    idx_store = new_store(osp.join(path, idx_file), shape=[ne], dtype=integral_types[vbytes])
     graph = gnnos.CSRStore(ptr_store, idx_store)
     # node features
-    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_dtype)
+    feats = new_store(osp.join(path, feat_file), shape=[nv, feat_sz], dtype=feat_dtype)
     # labels
     label_shape = [nv, nclasses] if multilabel else [nv, 1]
-    labels = new_store(osp.join(path, label_file), label_shape, label_dtype)
+    labels = new_store(osp.join(path, label_file), shape=label_shape, dtype=label_dtype)
     # masks
-    masks = [new_store(osp.join(path, file), [nv], mask_dtype).tensor().bool()
+    masks = [new_store(osp.join(path, file), shape=[nv], dtype=mask_dtype).tensor().bool()
         for file in mask_files]
     
     return graph, feats, multilabel, labels, masks
@@ -96,14 +88,14 @@ def load_mag240m(path):
     mask_files = ['train_idx.txt', 'valid_idx.txt', 'testdev_idx.txt']
 
     # graph topology
-    ptr_store = new_store(osp.join(path, ptr_file), [nv+1], int_dtype(ebytes))
-    idx_store = new_store(osp.join(path, idx_file), [ne], int_dtype(vbytes))
+    ptr_store = new_store(osp.join(path, ptr_file), shape=[nv+1], dtype=integral_types[ebytes])
+    idx_store = new_store(osp.join(path, idx_file), shape=[ne], dtype=integral_types[vbytes])
     graph = gnnos.CSRStore(ptr_store, idx_store)
     # node features
-    feats = new_store(osp.join(path, feat_file), [nv, feat_sz], feat_dtype)
+    feats = new_store(osp.join(path, feat_file), shape=[nv, feat_sz], dtype=feat_dtype)
     # labels
     label_shape = [nv, nclasses] if multilabel else [nv, 1]
-    labels = new_store(osp.join(path, label_file), label_shape, label_dtype)
+    labels = new_store(osp.join(path, label_file), shape=label_shape, dtype=label_dtype)
     # indices
     masks = [read_txt(osp.join(path, mask_f)) for mask_f in mask_files]
     assert [mask.size()[0] for mask in masks] == mask_sz
@@ -141,21 +133,95 @@ def load_ogb(path):
         masks = [idx2mask(graph.num_nodes, m) for m in masks]
     return graph, feats, multilabel, labels, masks
 
-def dataset_partition(graph, feats, labels, partitioning, out_dir):
+
+def metadata2dict(md):
+    '''TensorInfo metadata to dict'''
+    return {
+        "path": md.path, "shape": md.shape,
+        "dtype": md.dtype, "offset": md.offset
+    }
+
+def create_partitions(graph, feats, labels, partitioning: gnnos.NodePartitions, out_dir):
+    '''
+    Partition the graph, features and labels based on `partitioning`,
+    and save the partition data info as a json file `metadata.json`
+    {
+        "psize", "assigns": TensorInfo, "index_pos",
+        "graph": {"type": "COO", "num_nodes", "src_index", "dst_index"},
+        "feats": TensorInfo, "labels": TensorInfo
+    }
+    '''
     psize = partitioning.psize
+    pinfo = {'psize': psize}
+
+    def absf(name):
+        return osp.join(out_dir, name)
+
+    # save assignments
+    assign_store = gnnos.from_tensor(partitioning.assignments(), absf('assign'))
+    pinfo['assigns'] = metadata2dict(assign_store.metadata)
+
+    # save graph
     if isinstance(graph, gnnos.CSRStore):
-        pg = gnnos.BCOOStore.from_csr_2d(graph, partitioning)
+        pg = gnnos.partition_csr_2d(graph, partitioning)
     else:
-        pg = gnnos.BCOOStore.from_coo_2d(graph, partitioning)
-    print("Partitioning completed")
+        pg = gnnos.partition_coo_2d(graph, partitioning)
+    print("Graph partitioned")
+    index_pos = gnnos.from_tensor(pg.edge_pos(), absf('index_pos'))
+    pinfo['index_pos'] = metadata2dict(index_pos.metadata)
+    num_nodes, src_info, dst_info = pg.save(absf('bcoo'))
+    pinfo['graph'] = {
+        'type': 'COO', 'num_nodes': num_nodes,
+        'src_index': metadata2dict(src_info), 'dst_index': metadata2dict(dst_info)
+    }
 
-    feat_file = osp.join(out_dir, f'feat-{psize}')
-    label_file = osp.join(out_dir, f'label-{psize}')
-    shuffled_feats = gnnos.tensor_store(feats.metadata.with_path(feat_file), "x")
-    shuffled_labels = gnnos.tensor_store(labels.metadata.with_path(label_file), "x")
+    # save feats and labels
+    feat_file = osp.join(out_dir, 'feat')
+    shuffled_feats = gnnos.tensor_store(feats.metadata.with_offset(0).with_path(feat_file), "x")
     gnnos.shuffle_store(shuffled_feats, feats, partitioning.nodes())
+    print("Feats shuffled")
+    pinfo['feats'] = metadata2dict(shuffled_feats.metadata)
+    label_file = osp.join(out_dir, 'label')
+    shuffled_labels = gnnos.tensor_store(labels.metadata.with_offset(0).with_path(label_file), "x")
     gnnos.shuffle_store(shuffled_labels, labels, partitioning.nodes())
-    print("Shuffling completed")
+    print("Labels shuffled")
+    pinfo['labels'] = metadata2dict(shuffled_labels.metadata)
 
-    assign_file = osp.join(out_dir, f'assign-{psize}')
-    assign_store = gnnos.save(partitioning.assignment(), assign_file)
+    with open(absf('metadata.json'), 'w') as fp:
+        json.dump(pinfo, fp, indent=4, cls=DtypeEncoder)
+    return pg, shuffled_feats, shuffled_labels, partitioning
+
+def load_partitions(path):
+    '''
+    Load the partitioned graph, features and labels from `input_dir`
+    '''
+    def load_by_dict(d):
+        tinfo = d.copy()
+        # relative path
+        tinfo['path'] = osp.join(path, tinfo['path'])
+        tinfo['dtype'] = getattr(torch, tinfo['dtype'])
+        return new_store(**tinfo)
+
+    with open(osp.join(path, 'metadata.json')) as fp:
+        pinfo = json.load(fp)
+
+    # load partitioning
+    psize = pinfo['psize']
+    assignments = load_by_dict(pinfo['assigns']).tensor()
+    partitioning = gnnos.node_partitions(psize, assignments)
+
+    # load graph
+    index_pos = load_by_dict(pinfo['index_pos']).tensor()
+    ginfo = pinfo['graph']
+    assert ginfo['type'] == 'COO'
+    num_nodes = ginfo['num_nodes']
+    src = load_by_dict(ginfo['src_index'])
+    dst = load_by_dict(ginfo['dst_index'])
+    graph = gnnos.BCOOStore(gnnos.COOStore(src, dst, num_nodes), index_pos, partitioning)
+
+    # load feats and labels
+    feats = load_by_dict(pinfo['feats'])
+    labels = load_by_dict(pinfo['labels'])
+
+    return graph, feats, labels, partitioning
+

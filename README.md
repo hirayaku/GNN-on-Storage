@@ -1,7 +1,10 @@
 # GNN-on-Storage
 
-Prerequisites: `torch, torchmetrics, dgl, tqdm, pyinstrument, mypy`
+Prerequisites: python>=3.6, python modules: `torch, torchmetrics, dgl, tqdm, pyinstrument, mypy`
 
-Build `gnnos` module: `python3 -m pip install . && bash scripts/py_stubgen.sh gnnos`
+Build `gnnos` module:
+```bash
+bash scripts/build.sh
+```
 
 Experiments: see scripts under `sbatch` folder.

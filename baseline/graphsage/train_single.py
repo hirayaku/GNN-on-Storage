@@ -5,7 +5,7 @@ import sys
 sys.path.append(os.path.abspath("../../"))
 import utils
 
-from load_graph import load_reddit, load_ogb, inductive_split
+from load_graph import *
 
 def run(args, device, data):
     # Unpack data
@@ -13,19 +13,18 @@ def run(args, device, data):
     val_nfeat, val_labels, test_nfeat, test_labels = data
     in_feats = train_nfeat.shape[1]
     train_nid = th.nonzero(train_g.ndata['train_mask'], as_tuple=True)[0]
-    if args.disk_feat:
-        val_nid = th.nonzero(val_g.ndata['valid_mask'], as_tuple=True)[0]
-        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['valid_mask']), as_tuple=True)[0]
+    if args.disk_feat or args.dataset == 'mag240m':
+        val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
+        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
     else:
         val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
         test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
 
     # Create PyTorch DataLoader for constructing blocks
-    print("setup sampler")
+    #print("setup sampler")
     sampler = dgl.dataloading.MultiLayerNeighborSampler(
         [int(fanout) for fanout in args.fan_out.split(',')])
-    print("setup data loader")
-    dataloader = dgl.dataloading.NodeDataLoader(
+    dataloader = dgl.dataloading.DataLoader(
         train_g,
         train_nid,
         sampler,
@@ -41,7 +40,7 @@ def run(args, device, data):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     # Training loop
-    print("start training")
+    utils.using("Start training")
     avg = 0
     iter_tput = []
     for epoch in range(args.num_epochs):
@@ -56,7 +55,10 @@ def run(args, device, data):
             #print("dtype of train_labels is : ", train_labels.dtype)
             batch_inputs, batch_labels = load_subtensor(train_nfeat, train_labels,
                                                         seeds, input_nodes, device)
+            #print("dtype of batch_inputs is : ", batch_inputs.dtype)
             #print("dtype of batch_labels is : ", batch_labels.dtype)
+            if batch_inputs.dtype != th.float32:
+                batch_inputs = batch_inputs.float()
             if args.disk_feat:
                 batch_labels = batch_labels.reshape(-1,)
             blocks = [block.int().to(device) for block in blocks]
@@ -74,8 +76,9 @@ def run(args, device, data):
             if step % args.log_every == 0:
                 acc = compute_acc(batch_pred, batch_labels)
                 gpu_mem_alloc = th.cuda.max_memory_allocated() / 1000000 if th.cuda.is_available() else 0
-                print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
-                    epoch, step, loss.item(), acc.item(), np.mean(iter_tput[3:]), gpu_mem_alloc))
+                if len(iter_tput) > 3:
+                    print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
+                        epoch, step, loss.item(), acc.item(), np.mean(iter_tput[3:]), gpu_mem_alloc))
             tic_step = time.time()
         toc = time.time()
         print('Epoch Time(s): {:.4f}'.format(toc - tic))
@@ -93,16 +96,16 @@ def run(args, device, data):
     print('Avg epoch time: {:.5f}'.format(avg / epoch))
 
 if __name__ == '__main__':
-    argparser = argparse.ArgumentParser("multi-gpu training")
+    argparser = argparse.ArgumentParser("single-gpu training")
     argparser.add_argument('--gpu', type=int, default=0,
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='ogbn-products')
-    argparser.add_argument('--rootdir', type=str, default='/local/dataset/')
+    argparser.add_argument('--rootdir', type=str, default='../../dataset/')
     argparser.add_argument('--num-epochs', type=int, default=20)
     argparser.add_argument('--num-hidden', type=int, default=256)
     argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--fan-out', type=str, default='15,10,5')
-    argparser.add_argument('--batch-size', type=int, default=1000)
+    argparser.add_argument('--batch-size', type=int, default=1024)
     argparser.add_argument('--log-every', type=int, default=20)
     argparser.add_argument('--eval-every', type=int, default=5)
     argparser.add_argument('--lr', type=float, default=0.003)
@@ -120,63 +123,66 @@ if __name__ == '__main__':
     args = argparser.parse_args()
     print(args)
 
-    print(f'DGL version {dgl.__version__} from {dgl.__path__}')
-
     if args.gpu >= 0:
         device = th.device('cuda:%d' % args.gpu)
     else:
         device = th.device('cpu')
 
-    if args.disk_feat:
-        dataset_dir = args.rootdir + args.dataset
-        print(dataset_dir)
-        graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
-        g = graphs[0]
-        for k, v in g.ndata.items():
-            if k.endswith('_mask'):
-                g.ndata[k] = v.bool()
-        feat_shape_file = osp.join(dataset_dir, "feat.shape")
-        feat_file = osp.join(dataset_dir, "feat.feat")
-        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
-        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
-        labels = g.ndata['label']
-        n_classes = th.max(labels).item() + 1
-        if args.dataset == 'ogbn-papers100M':
-            n_classes = 172
-        feat_len = node_features.shape[1]
-        labels = labels.long()
-        g.ndata['label'] = labels
+    dataset_dir = osp.join(args.rootdir, args.dataset)
+    # load feature from file
+    feat_shape_file = osp.join(dataset_dir, "feat.shape")
+    shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
+    feat_file = osp.join(dataset_dir, "feat.feat")
+    print(f"Loading feature data from {feat_file}")
+    if not args.disk_feat:
+        count = 1
+        for s in shape:
+            count *= s
+        array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
+        node_features = th.from_numpy(array)
     else:
-        if args.dataset == 'reddit':
-            g, n_classes = load_reddit()
-        elif args.dataset.startswith('ogbn'):
-            g, n_classes = load_ogb(name=args.dataset, root=args.rootdir)
+        if args.dataset == 'mag240m':
+            node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float16', shape=shape)
         else:
-            raise Exception('unknown dataset')
-        #feat_len = g.ndata.pop('features').shape[1]
-        feat_len = g.ndata['feat'].shape[1]
-        print("The type of features is : ", type(g.ndata['feat']))
+            node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
+    print("Features: ", node_features.shape)
+    feat_len = node_features.shape[1]
+
+    utils.using("Features loaded")
+
+    print(f"Loading graph data from {dataset_dir}")
+    graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
+    g = graphs[0]
     nv = g.number_of_nodes()
     ne = g.number_of_edges()
+    if 'valid_mask' in g.ndata:
+        g.ndata['val_mask'] = g.ndata.pop('valid_mask')
+    for k, v in g.ndata.items():
+        if k.endswith('_mask'):
+            g.ndata[k] = v.bool()
+    labels = g.ndata.pop('label').flatten()
+    n_classes = len(th.unique(labels[th.logical_not(th.logical_or(th.isnan(labels), th.eq(labels, -1)))]))
+    labels = labels.long()
+    if args.dataset == 'ogbn-papers100M':
+        assert n_classes == 172
+    elif args.dataset == 'mag240m':
+        assert n_classes == 153
+
+    utils.using("Graph loaded")
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
 
-    if args.disk_feat:
+    if args.inductive:
+        train_g, val_g, test_g = inductive_split(g)
+        train_nfeat = train_g.ndata.pop('feat')
+        val_nfeat = val_g.ndata.pop('feat')
+        test_nfeat = test_g.ndata.pop('feat')
+        train_labels = train_g.ndata.pop('label')
+        val_labels = val_g.ndata.pop('label')
+        test_labels = test_g.ndata.pop('label')
+    else:
         train_g = val_g = test_g = g
         train_nfeat = val_nfeat = test_nfeat = node_features
-        train_labels = val_labels = test_labels = g.ndata['label']
-    else:
-        if args.inductive:
-            train_g, val_g, test_g = inductive_split(g)
-            train_nfeat = train_g.ndata.pop('feat')
-            val_nfeat = val_g.ndata.pop('feat')
-            test_nfeat = test_g.ndata.pop('feat')
-            train_labels = train_g.ndata.pop('label')
-            val_labels = val_g.ndata.pop('label')
-            test_labels = test_g.ndata.pop('label')
-        else:
-            train_g = val_g = test_g = g
-            train_nfeat = val_nfeat = test_nfeat = g.ndata.pop('feat')
-            train_labels = val_labels = test_labels = g.ndata.pop('label')
+        train_labels = val_labels = test_labels = labels
 
     #  if not args.data_cpu:
     #      train_nfeat = train_nfeat.to(device)
@@ -190,5 +196,6 @@ if __name__ == '__main__':
     test_g.create_formats_()
     data = n_classes, train_g, val_g, test_g, train_nfeat, train_labels, \
            val_nfeat, val_labels, test_nfeat, test_labels
+    utils.using("Graph format")
 
     run(args, device, data)

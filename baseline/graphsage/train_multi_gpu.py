@@ -6,6 +6,7 @@ import utils
 import torch.multiprocessing as mp
 import torch.distributed.optim
 import torchmetrics.functional as MF
+import tqdm
 
 def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
     th.cuda.set_device(rank)
@@ -17,22 +18,10 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
     opt = th.optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
     loss_fcn = nn.CrossEntropyLoss()
 
-    # re-assembly graph
-    adj, ndata = graph
-    graph = dgl.graph(('csc', adj))
-    for k, v in ndata.items():
-        graph.ndata[k] = v
-
     #train_idx, valid_idx, test_idx = split_idx['train'], split_idx['valid'], split_idx['test']
     train_idx = th.nonzero(graph.ndata['train_mask'], as_tuple=True)[0]
     valid_idx = th.nonzero(graph.ndata['val_mask'], as_tuple=True)[0]
     test_idx = th.nonzero(~(graph.ndata['train_mask'] | graph.ndata['val_mask']), as_tuple=True)[0]
-
-    # move ids to GPU
-    #train_idx = train_idx.to('cuda')
-    #valid_idx = valid_idx.to('cuda')
-    #test_idx = test_idx.to('cuda')
-    #feats = feats.to('cuda')
 
     # For training, each process/GPU will get a subset of the
     # train_idx/valid_idx, and generate mini-batches indepednetly. This allows
@@ -59,7 +48,7 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
         model.train()
         t0 = time.time()
         tic_step = time.time()
-        for it, (input_nodes, output_nodes, blocks) in enumerate(train_dataloader):
+        for it, (input_nodes, output_nodes, blocks) in tqdm.tqdm(enumerate(train_dataloader)):
             x = feats[input_nodes.cpu()].to('cuda')
             y = labels[output_nodes.cpu()].to('cuda')
             #  if args.disk_feat:
@@ -77,9 +66,9 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
             if it % args.log_every == 0 and rank == 0:
                 acc = MF.accuracy(y_hat, y)
                 mem = th.cuda.max_memory_allocated() / 1000000
-                #print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
-                print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
-                      epoch, it, loss.item(), acc.item(), np.mean(iter_tput[3:]), mem))
+                if len(iter_tput) > 3:
+                    print('Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB'.format(
+                          epoch, it, loss.item(), acc.item(), np.mean(iter_tput[3:]), mem))
             tic_step = time.time()
 
         tt = time.time()
@@ -94,7 +83,7 @@ def train(rank, world_size, graph, num_classes, feat_len, args, feats, labels):
             model.eval()
             ys = []
             y_hats = []
-            for it, (input_nodes, output_nodes, blocks) in enumerate(valid_dataloader):
+            for it, (input_nodes, output_nodes, blocks) in tqdm.tqdm(enumerate(valid_dataloader)):
                 with th.no_grad():
                     x = feats[input_nodes.cpu()].to('cuda')
                     ys.append(labels[output_nodes.cpu()].to('cuda'))
@@ -148,37 +137,50 @@ if __name__ == '__main__':
     print(args)
 
     dataset_dir = osp.join(args.rootdir, args.dataset)
-    print(f"Loading {args.dataset} from {dataset_dir}")
-    graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
-    g = graphs[0]
-    nv = g.number_of_nodes()
-    ne = g.number_of_edges()
-    labels = g.ndata.pop('label').flatten().long()
-    #  g.create_formats_()
-    adj = g.adj_sparse('csc')
-    n_classes = th.max(labels).item() + 1
-    ndata = dict()
-    if 'valid_mask' in g.ndata:
-        g.ndata['val_mask'] = g.ndata.pop('valid_mask')
-    for k, v in g.ndata.items():
-        if k.endswith('_mask'):
-            ndata[k] = v.bool()
-    g = (adj, ndata)
-
     # load feature from file
     feat_shape_file = osp.join(dataset_dir, "feat.shape")
     shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
     feat_file = osp.join(dataset_dir, "feat.feat")
     print(f"Loading feature data from {feat_file}")
-    node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
     if not args.disk_feat:
-        node_features = node_features.to('cpu')
+        count = 1
+        for s in shape:
+            count *= s
+        array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
+        node_features = torch.from_numpy(array).share_memory_()
+    else:
+        node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32', shape=shape)
     print("Features: ", node_features.shape)
     feat_len = node_features.shape[1]
+
+    utils.using("Features loaded")
+
+    print(f"Loading graph data from {dataset_dir}")
+    graphs, _ = dgl.load_graphs(osp.join(dataset_dir, "graph.dgl"))
+    g = graphs[0]
+    nv = g.number_of_nodes()
+    ne = g.number_of_edges()
+    if 'valid_mask' in g.ndata:
+        g.ndata['val_mask'] = g.ndata.pop('valid_mask')
+    for k, v in g.ndata.items():
+        if k.endswith('_mask'):
+            g.ndata[k] = v.bool()
+    labels = g.ndata.pop('label').flatten()
+    n_classes = len(th.unique(labels[th.logical_not(th.logical_or(th.isnan(labels), th.eq(labels, -1)))]))
+    labels = labels.long()
+    if args.dataset == 'ogbn-papers100M':
+        assert n_classes == 172
+    elif args.dataset == 'mag240m':
+        assert n_classes == 153
+
+    utils.using("Graph loaded")
 
     n_procs = args.n_procs
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}, num_GPUs: {}'.format(nv, ne, n_classes, feat_len, n_procs))
 
+    g.create_formats_()
+
+    utils.using("Graph format")
     # Tested with mp.spawn and fork.  Both worked and got 4s per epoch with 4 GPUs
     # and 3.86s per epoch with 8 GPUs on p2.8x, compared to 5.2s from official examples.
     mp.spawn(train, args=(n_procs, g, n_classes, feat_len, args, node_features, labels), nprocs=n_procs)

@@ -45,3 +45,9 @@ def memmap(path, random=False, dtype=np.int8, mode='r+', offset=0, shape=None, o
         data.madvise_random()
     return data
 
+import resource
+
+def using(point=""):
+    usage=resource.getrusage(resource.RUSAGE_SELF)
+    print('%s: mem=%s MB' % (point, usage[2]/1024.0 ))
+

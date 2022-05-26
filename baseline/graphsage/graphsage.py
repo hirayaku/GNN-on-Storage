@@ -97,6 +97,8 @@ class SAGE(nn.Module):
                 block = blocks[0]
                 block = block.int().to(device)
                 h = x[input_nodes].to(device)
+                if h.dtype != th.float32:
+                    h = h.float()
                 h = layer(block, h)
                 if l != len(self.layers) - 1:
                     h = self.activation(h)
@@ -159,8 +161,12 @@ class SAGE_DIST(nn.Module):
 
             for input_nodes, output_nodes, blocks in tqdm.tqdm(dataloader) \
                     if dist.get_rank() == 0 else dataloader:
-                #h = blocks[0].srcdata['h']
-                h = x[input_nodes].to(device)
+                if l == 0:
+                    h = x[input_nodes].to(device)
+                else:
+                    h = blocks[0].srcdata['h']
+                if h.dtype != th.float32:
+                    h = h.float()
                 h = self._forward_layer(l, blocks[0], h)
                 y[output_nodes] = h.to(y.device)
             # make sure all GPUs are done writing to 'y'

@@ -26,13 +26,36 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print('Building graph MAG240M')
-    dataset = MAG240MDataset(root = '/jet/home/xhchen/datasets/dgl-data/')
-    print('number of paper nodes: {d}'.format(dataset.num_papers))
-    print('number of author nodes: {d}'.format(dataset.num_authors))
-    print('number of institution nodes: {d}'.format(dataset.num_institutions))
-    print('dimensionality of paper features: {d}'.format(dataset.num_paper_features))
-    print('number of subject area classes: {d}'.format(dataset.num_classes))
+    rootdir = '/jet/home/xhchen/datasets/dgl-data/'
+    dataset = MAG240MDataset(root = rootdir)
+    print('number of paper nodes: {:d}'.format(dataset.num_papers))
+    print('number of author nodes: {:d}'.format(dataset.num_authors))
+    print('number of institution nodes: {:d}'.format(dataset.num_institutions))
+    print('dimensionality of paper features: {:d}'.format(dataset.num_paper_features))
+    print('number of subject area classes: {:d}'.format(dataset.num_classes))
 
+    #'''
+    # features are separated from the graph
+    print('Writing features into file')
+    if args.feat_output_dir is None:
+        args.feat_output_dir = data_dir
+    feat_name = 'paper_feat'
+    feat_tensor = dataset.paper_feat
+    feat_output_path = osp.join(args.feat_output_dir, f'{feat_name}.feat')
+    shape_output_path = osp.join(args.feat_output_dir, f'{feat_name}.shape')
+
+    print(f'save feature[{feat_name}] to {shape_output_path}')
+    shape_mmap = np.memmap(shape_output_path, mode='w+', dtype='int64', shape=(len(feat_tensor.shape),))
+    shape_mmap[:] = np.array(feat_tensor.shape)
+    shape_mmap.flush()
+    print(f'save feature[{feat_name}] to {feat_output_path}')
+    feat_mmap = np.memmap(feat_output_path, mode='w+', dtype='float16',
+                          shape=tuple(feat_tensor.shape)) # shape must be tuple
+    feat_mmap[:] = feat_tensor[:]
+    feat_mmap.flush()
+    print('done')
+
+    '''
     ei_writes = dataset.edge_index('author', 'writes', 'paper')
     ei_cites = dataset.edge_index('paper', 'paper')
     ei_affiliated = dataset.edge_index('author', 'institution')
@@ -41,55 +64,37 @@ if __name__ == "__main__":
     #inst_offset = author_offset + dataset.num_authors
     #paper_offset = inst_offset + dataset.num_institutions
 
+    graph = dgl.heterograph({('paper', 'cite', 'paper'): (ei_cites[0], ei_cites[1])}, num_nodes_dict={'paper': dataset.num_papers})
     #graph = dgl.heterograph({
-    graph = dgl.graph({
-            ('paper', 'cite', 'paper'): (np.concatenate([ei_cites[0], ei_cites[1]]), np.concatenate([ei_cites[1], ei_cites[0]]))
+            #('paper', 'cite', 'paper'): (np.concatenate([ei_cites[0], ei_cites[1]]), np.concatenate([ei_cites[1], ei_cites[0]]))
             #('author', 'write', 'paper'): (ei_writes[0], ei_writes[1]),
             #('paper', 'write-by', 'author'): (ei_writes[1], ei_writes[0]),
             #('author', 'affiliate-with', 'institution'): (ei_affiliated[0], ei_affiliated[1]),
             #('institution', 'affiliate', 'author'): (ei_affiliated[1], ei_affiliated[0]),
-            })
-    labels = dataset.paper_label
-    graph.ndata['label'] = labels[:graph.num_nodes()]
+            #})
+    print("label type: ", type(dataset.paper_label))
+    print("label dtype: ", dataset.paper_label.dtype)
+    labels = th.from_numpy(dataset.paper_label)
+    n_classes = len(th.unique(labels[th.logical_not(th.isnan(labels))]))
+    nv = graph.number_of_nodes()
+    ne = graph.number_of_edges()
+    print('|V|: {}, |E|: {}, #classes: {}'.format(nv, ne, n_classes))
+    assert dataset.num_papers == nv
 
-    keySet = {'train', 'valid', 'test'}
+    keySet = {'train', 'valid', 'test-dev', 'test-challenge', 'test-whole'}
     try:
         splitted_idx = dataset.get_idx_split()
-        assert(set(splitted_idx.keys()) == keySet)
+        kset = set(splitted_idx.keys())
+        print(kset)
+        assert(kset == keySet)
     except:
-        print("No train/val/test idx in dataset " + args.dataset)
+        print("No train/val/test idx")
         raise
-    for key in keySet:
-        idx = splitted_idx[key]
-        mask = th.zeros(graph.num_nodes(), dtype=th.bool)
-        mask[idx] = True
-        graph.ndata[f'{key}_mask'] = mask
 
-    # features are separated from the graph
-    data_dir = osp.join(args.rootdir, dataset.dir_name)
+    data_dir = osp.join(rootdir, 'mag240m')
+
     if args.graph_output_dir is None:
         args.graph_output_dir = data_dir
-    if args.feat_output_dir is None:
-        args.feat_output_dir = data_dir
-
-    # node feat -> npy files
-    #feat_keys = {'paper-feat'}
-    #for feat_name in set(graph.ndata.keys()):
-    feat_name = 'paper_feat'
-    feat_tensor = dataset.paper_feat
-    feat_output_path = osp.join(args.feat_output_dir, f'{feat_name}.feat')
-    shape_output_path = osp.join(args.feat_output_dir, f'{feat_name}.shape')
-
-    print(f'save feature[{feat_name}] to {feat_output_path}')
-    shape_mmap = np.memmap(shape_output_path, mode='w+', dtype='int64', shape=(len(feat_tensor.shape),))
-    shape_mmap[:] = np.array(feat_tensor.shape)
-    shape_mmap.flush()
-    feat_mmap = np.memmap(feat_output_path, mode='w+', dtype='float32',
-                          shape=tuple(feat_tensor.shape)) # shape must be tuple
-    feat_mmap[:] = feat_tensor[:]
-    feat_mmap.flush()
-    #del graph.ndata[feat_name]
-    
     if args.to_bidirected:
         graph_output_path = osp.join(args.graph_output_dir, 'graph_bidirected.dgl')
         graph = dgl.to_bidirected(graph)
@@ -99,6 +104,16 @@ if __name__ == "__main__":
     if args.graph_formats != "":
         graph = graph.formats(args.graph_formats.split(','))
 
+    for key in keySet:
+        idx = splitted_idx[key]
+        mask = th.zeros(graph.num_nodes(), dtype=th.bool)
+        mask[idx] = True
+        graph.ndata[f'{key}_mask'] = mask
+    graph.ndata['test_mask'] = graph.ndata['test-dev_mask']
+
+    graph.ndata['label'] = labels
+    print("graph type: ", type(graph))
+    print(graph.ndata.keys())
     print(f'save graph to {graph_output_path}')
     save_graphs(graph_output_path, [graph])
-
+    #'''

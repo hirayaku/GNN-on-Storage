@@ -66,6 +66,23 @@ class SAGE(nn.Module):
                 h = self.dropout(h)
         return h
 
+    def inference_batched(self, g, x, idx, device, batch_size, n_workers):
+        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
+        print(idx)
+        print(batch_size)
+        dataloader = dgl.dataloading.DataLoader(g, idx,
+                     sampler, batch_size=batch_size, shuffle=True, 
+                     drop_last=False, num_workers=n_workers)
+        y = th.zeros(g.num_nodes(), self.n_classes)
+        #for step, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
+        for (input_nodes, output_nodes, blocks) in tqdm.tqdm(dataloader):
+            batch_inputs = x[input_nodes].to(device)
+            if batch_inputs.dtype != th.float32:
+                batch_inputs = batch_inputs.float()
+            blocks = [block.int().to(device) for block in blocks]
+            y[output_nodes] = self.forward(blocks, batch_inputs).cpu()
+        return y
+
     def inference(self, g, x, device, batch_size, n_workers=0):
         """
         Inference with the GraphSAGE model on full neighbors (i.e. without neighbor sampling).
@@ -84,13 +101,8 @@ class SAGE(nn.Module):
         for l, layer in enumerate(self.layers):
             y = th.zeros(g.num_nodes(), self.n_hidden if l != len(self.layers) - 1 else self.n_classes)
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-            dataloader = dgl.dataloading.NodeDataLoader(
-                g,
-                th.arange(g.num_nodes()),
-                sampler,
-                batch_size=batch_size,
-                shuffle=True,
-                drop_last=False,
+            dataloader = dgl.dataloading.NodeDataLoader(g, th.arange(g.num_nodes()),
+                sampler, batch_size=batch_size, shuffle=True, drop_last=False,
                 num_workers=n_workers)
 
             for input_nodes, output_nodes, blocks in tqdm.tqdm(dataloader):
@@ -103,9 +115,7 @@ class SAGE(nn.Module):
                 if l != len(self.layers) - 1:
                     h = self.activation(h)
                     h = self.dropout(h)
-
                 y[output_nodes] = h.cpu()
-
             x = y
         return y
 
@@ -134,7 +144,7 @@ class SAGE_DIST(nn.Module):
         for l, (layer, block) in enumerate(zip(self.layers, blocks)):
             h = self._forward_layer(l, blocks[l], h)
         return h
-
+ 
     def inference(self, g, x, device, batch_size, n_workers=0):
         """
         Perform inference in layer-major order rather than batch-major order.
@@ -203,7 +213,8 @@ def evaluate(model, g, nfeat, labels, val_nid, device, batch_size, num_workers):
     """
     model.eval()
     with th.no_grad():
-        pred = model.inference(g, nfeat, device, batch_size, num_workers)
+        pred = model.inference_batched(g, nfeat, val_nid, device, 102400, num_workers)
+        #pred = model.inference(g, nfeat, device, batch_size, num_workers)
     model.train()
     # return compute_f1(pred[val_nid], labels[val_nid])
     return compute_acc(pred[val_nid], labels[val_nid].to(pred.device))

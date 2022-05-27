@@ -15,10 +15,11 @@ def run(args, device, data):
     train_nid = th.nonzero(train_g.ndata['train_mask'], as_tuple=True)[0]
     if args.disk_feat or args.dataset == 'mag240m':
         val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
-        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
     else:
         val_nid = th.nonzero(val_g.ndata['val_mask'], as_tuple=True)[0]
-        test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
+
+    #test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
+    test_nid = th.nonzero(test_g.ndata['test_mask'], as_tuple=True)[0]
 
     # Create PyTorch DataLoader for constructing blocks
     #print("setup sampler")
@@ -138,7 +139,10 @@ if __name__ == '__main__':
         count = 1
         for s in shape:
             count *= s
-        array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
+        if args.dataset == 'mag240m':
+            array = np.fromfile(feat_file, dtype='float16', count=count).reshape(shape)
+        else:
+            array = np.fromfile(feat_file, dtype='float32', count=count).reshape(shape)
         node_features = th.from_numpy(array)
     else:
         if args.dataset == 'mag240m':

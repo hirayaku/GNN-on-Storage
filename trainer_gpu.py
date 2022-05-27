@@ -176,15 +176,18 @@ def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
         dist.barrier()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='HieBatching DDP Trainer')
-    parser.add_argument("--dataset", type=str, default="ogbn-products")
-    parser.add_argument("--root", type=str, default="datasets")
+    parser = argparse.ArgumentParser(description='HieBatching DDP Trainer',
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--dataset", type=str, default="ogbn-products", help="Dataset")
+    parser.add_argument("--root", type=str, default="datasets", help="Dataset location")
     parser.add_argument("--tmpdir", type=str, default=".",
                         help="Location to save intermediate data (prefer fast storage)")
     parser.add_argument("--n-layers", type=int, default=3,
-                    help="Number of GNN layers")
-    parser.add_argument('--num-hidden', type=int, default=256)
-    parser.add_argument('--lr', type=float, default=0.003)
+                        help="Number of GNN layers")
+    parser.add_argument('--num-hidden', type=int, default=256,
+                        help="Numer of hidden feature dimensions")
+    parser.add_argument('--lr', type=float, default=0.003,
+                        help="Learning rate")
     parser.add_argument("--n-procs", type=int, default=1,
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
@@ -198,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument("--recycle", type=int, default=0,
                         help="Number of training passes over the host data before recycling")
     parser.add_argument("--sampling", type=str, default="NS",
-                        help="Choose sampling method for host-gpu hierarchy")
+                        help="Choose sampling method for host-gpu hierarchy (NS | Block)")
     parser.add_argument("--fanout", type=str, default="15,10,5",
                         help="Choose sampling method for host-gpu hierarchy")
     parser.add_argument("--num-workers", type=int, default=4,

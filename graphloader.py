@@ -280,7 +280,6 @@ class HBatchGraphLoader:
         except Exception as e:
             print(e)
             create = True
-            raise
         if create:
             os.makedirs(data_dir, exist_ok=True)
             partitions = gnnos.random_partition(graph, self.p_size)
@@ -299,7 +298,7 @@ class HBatchGraphLoader:
         if self.is_multilabel:
             return self.labels.metadata.shape[1]
         else:
-            labels: torch.Tensor = self.labels.tensor()
+            labels: torch.Tensor = self.shuffled_labels.tensor()
             return torch.max(labels[~labels.isnan()]).long().item() + 1
 
     def partition_idx(self):

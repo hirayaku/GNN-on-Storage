@@ -256,6 +256,27 @@ void testGather() {
     std::cout << "Gathered:\n" << GatherSlices(tensor, {{2, 4}, {123718280+2, 123718280+4}});
 }
 
+void testStoreIntTensor() {
+    long num_edges = 2595497852;
+    const TensorInfo options =
+    TensorOptions("/mnt/md0/inputs/mag240m/graph.edge.bin")
+        .shape({num_edges}).dtype(torch::kInt);
+    auto store = TensorStore::OpenForRead(options);
+    auto last_10 = store.slice(num_edges-10, num_edges).tensor();
+    std::cout << last_10 << "\n";
+
+    size_t sz = store.numel() * store.itemsize();
+    int *buf = (int*)(new char[sz]);
+    ssize_t nbytes = store.pread(buf, sz, 0);
+    std::cout << store.metadata() << "\n";
+    std::cout << "request " << sz << " Bytes; read out " << nbytes << " Bytes\n";
+    for (size_t i = num_edges - 10; i < num_edges; ++i) {
+        std::cout << buf[i] << " ";
+    }
+    std::cout << '\n';
+    delete []buf;
+}
+
 void getTorchInfo() {
     std::cout << "CUDA available: " << (torch::cuda::is_available() ? "yes": "no") << '\n';
     std::cout << torch::get_parallel_info();
@@ -285,11 +306,12 @@ int main() {
     // RUN(testNodePartitions);
     // RUN(testCOOStorePartition1D);
     // RUN(testCOOStorePartition2D);
-    RUN(testSaveCOOStore);
+    // RUN(testSaveCOOStore);
     // RUN(testCOOToCSRStore);
     // RUN(testCSRToBCOO);
     // RUN(testBCOOSubgraph);
     // RUN(testGather);
+    RUN(testStoreIntTensor);
 
     return 0;
 }

@@ -206,16 +206,8 @@ public:
     }
 
     // store-flavored read/write
-    inline ssize_t pread(void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
-            "Store read out of bound: ", std::make_pair(offset, nbytes+offset));
-        return hdl->pread(buf, nbytes, this->seek_set + offset);
-    }
-    inline ssize_t pwrite(const void *buf, size_t nbytes, long offset) const {
-        TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
-            "Store write out of bound: ", std::make_pair(offset, nbytes+offset));
-        return hdl->pwrite(buf, nbytes, this->seek_set + offset);
-    }
+    ssize_t pread(void *buf, size_t nbytes, long offset) const;
+    ssize_t pwrite(const void *buf, size_t nbytes, long offset) const;
 
     template <typename T>
     class Accessor {

@@ -218,6 +218,34 @@ TensorStore &TensorStore::reshape(c10::IntArrayRef new_shape) {
     return *this;
 }
 
+ssize_t TensorStore::pread(void *buf, size_t nbytes, long offset) const {
+    TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
+        "Store read out of bound: ", std::make_pair(offset, nbytes+offset));
+    ssize_t bytes = 0;
+    do {
+        auto read_bytes = hdl->pread((char *)buf + bytes, nbytes - bytes,
+            seek_set + offset + bytes);
+        TORCH_CHECK(read_bytes > 0, "Store read terminated early at ",
+            bytes, "(requested ", nbytes, ")");
+        bytes += read_bytes;
+    } while (bytes < nbytes);
+    return bytes;
+}
+
+ssize_t TensorStore::pwrite(const void *buf, size_t nbytes, long offset) const {
+    TORCH_CHECK(offset + (long)nbytes <= seek_set + size_ * itemsize(),
+        "Store write out of bound: ", std::make_pair(offset, nbytes+offset));
+    ssize_t bytes = 0;
+    do {
+        auto write_bytes = hdl->pwrite((char *)buf + bytes, nbytes - bytes,
+            seek_set + offset + bytes);
+        TORCH_CHECK(write_bytes > 0, "Store write terminated early at ",
+            bytes, "(requested ", nbytes, ")");
+        bytes += write_bytes;
+    } while (bytes < nbytes);
+    return bytes;
+}
+
 torch::Tensor GatherSlices(
     const TensorStore &store,
     const std::vector<std::pair<long, long>> &ranges)

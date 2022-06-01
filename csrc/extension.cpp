@@ -3,26 +3,9 @@
 #include "graph_io.hpp"
 #include "graph_partition.hpp"
 #include <torch/extension.h>
+#include <torch/python.h>
 
 using namespace gnnos;
-
-#define GNNOS_FORALL_PYTORCH_SCALAR_TYPES(_) \
-  _(uint8, Byte)                                \
-  _(int8, Char)                                 \
-  _(int16, Short)                               \
-  _(short, Short)                               \
-  _(int, Int)                                     \
-  _(int32, Int)                                     \
-  _(int64, Long)                                \
-  _(long, Long)                                \
-  _(half, Half)                               \
-  _(float16, Half)                               \
-  _(float, Float)                                 \
-  _(float32, Float)                                 \
-  _(double, Double)                               \
-  _(float64, Double)                               \
-  _(bool, Bool)                                  \
-  _(bfloat16, BFloat16) 
 
 #define GNNOS_FORALL_LIBTORCH_SCALAR_TYPES(_) \
   _(Byte, uint8)                                \
@@ -37,25 +20,6 @@ using namespace gnnos;
   _(BFloat16, bfloat16)
 
 static py::object pytorch = py::module_::import("torch");
-
-// from pytorch dtype to libtorch dtype
-static torch::ScalarType libtorch_dtype(py::object dtype) {
-    auto dtype_str = py::repr(dtype);
-    TORCH_CHECK(py::isinstance(dtype, pytorch.attr("dtype")),
-        "Unknown dtype for gnnos: ", dtype_str);
-
-#define DEFINE_ITEM(pytype, libtype) \
-    { py::repr(pytorch.attr(#pytype)), torch::k##libtype }, \
-
-    static std::unordered_map<std::string, torch::ScalarType> lookup {
-        GNNOS_FORALL_PYTORCH_SCALAR_TYPES(DEFINE_ITEM)
-    };
-#undef DEFINE_ITEM
-
-    auto iter = lookup.find(py::repr(dtype));
-    TORCH_CHECK(iter != lookup.end(), "Unsupported dtype for gnnos: ", dtype_str);
-    return iter->second;
-}
 
 // from libtorch dtype to pytorch dtype
 static py::object pytorch_dtype(torch::ScalarType dtype) {
@@ -93,7 +57,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("with_path", py::overload_cast<std::string>(&TensorInfo::path))
         .def("with_shape", py::overload_cast<c10::IntArrayRef>(&TensorInfo::shape))
         .def("with_dtype", [](TensorInfo &tinfo, py::object dtype) {
-            return tinfo.dtype(libtorch_dtype(dtype));
+            return tinfo.dtype(torch::python::detail::py_object_to_dtype(dtype));
         }, py::arg("dtype"))
         .def("with_offset", py::overload_cast<long>(&TensorInfo::offset))
         .def("__repr__", [](const TensorInfo &tinfo) {
@@ -119,7 +83,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("tensor", py::overload_cast<>(&TensorStore::tensor, py::const_),
             "read TensorStore into an in-memory Tensor")
         .def("tensor", [](const TensorStore &self, py::object dtype) {
-                return self.tensor(libtorch_dtype(dtype));
+                return self.tensor(torch::python::detail::py_object_to_dtype(dtype));
             },"read TensorStore into an in-memory Tensor and cast into dtype",
             py::arg("dtype"))
         .def("save", &TensorStore::save_to,

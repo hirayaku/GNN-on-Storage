@@ -1,6 +1,7 @@
 import os.path as osp
 import json
 import torch, gnnos
+import numpy as np
 from utils import DtypeEncoder
 
 def parse_meta(path):
@@ -20,7 +21,7 @@ def parse_meta(path):
 
 def new_store(path, shape, dtype, offset=0):
     '''
-    return a new TensorStore given the four parameters 
+    return a new TensorStore given the four parameters
     '''
     return gnnos.tensor_store(
         gnnos.options(path).with_shape(shape).with_dtype(dtype).with_offset(offset)
@@ -55,15 +56,12 @@ def load_oag(path):
     # masks
     masks = [new_store(osp.join(path, file), shape=[nv], dtype=mask_dtype).tensor().bool()
         for file in mask_files]
-    
+
     return graph, feats, multilabel, labels, masks
 
 
 def read_txt(mask_file) -> torch.Tensor:
-    array = []
-    with open(mask_file) as f:
-        array.append(int(f.readline()))
-    return torch.tensor(array, dtype=torch.long)
+    return torch.from_numpy(np.loadtxt(mask_file, dtype='long'))
 
 def idx2mask(num_nodes, idx) -> torch.Tensor:
     '''

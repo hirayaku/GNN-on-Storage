@@ -6,8 +6,7 @@ import torch
 import dgl
 
 import utils
-import partition_utils as p_utils
-import datasets
+import datasets, gnnos
 
 __all__ = [
     'PartitionMethod',
@@ -22,6 +21,15 @@ def _args(**kwargs):
     default_args = {'mmap': False, 'root': '.'}
     return GraphLoaderArgs(**{**default_args, **kwargs})
 
+def external_partition(graph, psize):
+    '''
+    Partition graph from external assignments
+    '''
+    graph_path = graph.metadata[1].path
+    data_dir = osp.join(graph_path, f"partitions/EXTERNAL/p{psize}")
+    assigns = torch.load(osp.join(data_dir, f"p{psize}.pt")).int()
+    return gnnos.node_partitions(psize, assigns)
+
 class PartitionMethod(Enum):
     RANDOM = 0
     METIS = 1
@@ -29,13 +37,12 @@ class PartitionMethod(Enum):
     EXTERNAL = 3
 
     @staticmethod
-    def select(p_method):
+    def fn(p_method):
         fn_list = [
-            p_utils.get_rand_partition_list,
-            p_utils.get_partition_list,
-            # TODO: change to get_nev_partition_list
-            p_utils.get_rand_partition_list_clusterseed,
-            None,
+            gnnos.random_partition,
+            dgl.metis_partition_assignment,
+            gnnos.good_partition,
+            external_partition
         ]
         return fn_list[p_method.value]
 
@@ -158,7 +165,7 @@ class PartitionedGraphLoader(GraphLoader):
         super(PartitionedGraphLoader, self).__init__(**kwargs)
         self.p_size = p_size
         self.p_method = p_method
-        p_func = PartitionMethod.select(p_method)
+        p_func = PartitionMethod.fn(p_method)
 
         partition_dir = osp.join(self.dataset_dir, f"partitions/{self.p_method.name}")
         os.makedirs(partition_dir, exist_ok=True)
@@ -234,13 +241,11 @@ class PartitionedGraphLoader(GraphLoader):
             return torch.from_numpy(self.shuffled_features[self.offsets[pid]:self.offsets[pid+1]])
         else:
             return self.features(self.partitions[pid])
-    
+
     def gather_feat_partitions(self, indices):
         feats = [self.feat_partition(i) for i in indices]
         return torch.cat(feats)
 
-
-import datasets, gnnos
 
 class HBatchGraphLoader:
     '''
@@ -282,7 +287,7 @@ class HBatchGraphLoader:
             create = True
         if create:
             os.makedirs(data_dir, exist_ok=True)
-            partitions = gnnos.random_partition(graph, self.p_size)
+            partitions = PartitionMethod.fn(self.p_method)(graph, self.p_size)
             pg, shuffled_features, shuffled_labels, _ = datasets.create_partitions(
                 graph, node_features, labels, partitions, data_dir)
 

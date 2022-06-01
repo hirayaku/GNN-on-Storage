@@ -14,7 +14,7 @@ import dgl
 from modules import SAGE
 
 from graphloader import (
-    split_tensor,
+    split_tensor, PartitionMethod,
     PartitionSampler, PartitionedGraphLoader,
     HBatchGraphLoader)
 
@@ -63,21 +63,21 @@ def train_block_batching(model, opt, g, train_set, batch_size, num_workers, use_
 
 def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers, use_ddp=False, passes=1):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    sampler = dgl.dataloading.MultiLayerNeighborSampler(
-            fanout, prefetch_node_feats=['feat'], prefetch_labels=['label'])
+    # sampler = dgl.dataloading.MultiLayerNeighborSampler(
+    #        fanout, prefetch_node_feats=['feat'], prefetch_labels=['label'])
+    sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout)
     train_dataloader = dgl.dataloading.DataLoader(
             g, train_set, sampler, device=device,
             batch_size=batch_size, shuffle=True, drop_last=False,
-            use_ddp=use_ddp, num_workers=num_workers)
+            use_ddp=use_ddp, num_workers=num_workers,
+            use_prefetch_thread=False, pin_prefetcher=False)
 
-    profiler = Profiler()
-    profiler.start()
     t0 = time.time()
 
     model.train()
     for _ in range(passes):
         for it, (_, _, blocks) in enumerate(train_dataloader):
-            x = blocks[0].srcdata['feat']
+            x = blocks[0].srcdata['feat'].float()
             y = blocks[-1].dstdata['label']
             y_hat = model(blocks, x)
             loss = F.cross_entropy(y_hat, y)
@@ -87,18 +87,17 @@ def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers,
             if it % 20 == 0:
                 acc = MF.accuracy(y_hat, y)
                 mem = torch.cuda.max_memory_allocated() / 1000000
-                print('Loss', loss.item(), 'Acc', acc.item(), 'GPU Mem', mem, 'MB')
+                print(f'Loss {loss.item():.5f} | Acc {acc.item():.4f} | GPU Mem {mem:.2f} MB')
         dist.barrier()
 
     tt = time.time()
-    profiler.stop()
-    print(profiler.output_text(unicode=True, color=True))
 
     # validate with current graph
     val_mask = g.ndata['val_mask']
     val_set = g.nodes()[val_mask]
+    val_sampler = dgl.dataloading.MultiLayerFullNeighborSampler(len(fanout))
     val_dataloader = dgl.dataloading.DataLoader(
-            g, val_set, sampler, device=device,
+            g, val_set, val_sampler, device=device,
             batch_size=batch_size, shuffle=True, drop_last=False,
             use_ddp=use_ddp, num_workers=num_workers)
     model.eval()
@@ -106,7 +105,7 @@ def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers,
     y_hats = []
     for it, (_, _, blocks) in enumerate(val_dataloader):
         with torch.no_grad():
-            x = blocks[0].srcdata['feat']
+            x = blocks[0].srcdata['feat'].float()
             ys.append(blocks[-1].dstdata['label'])
             y_hats.append(model(blocks, x))
     acc = MF.accuracy(torch.cat(y_hats), torch.cat(ys))
@@ -116,7 +115,7 @@ def train_ns_batching(model, opt, g, train_set, batch_size, fanout, num_workers,
 
 
 def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
-    subgraph_queue: multiprocessing.Queue, args):
+        subgraph_queue: multiprocessing.Queue, resp_queue, args):
 
     torch.cuda.set_device(rank)
     dist.init_process_group('nccl', 'tcp://127.0.0.1:12347', world_size=world_size, rank=rank)
@@ -149,12 +148,14 @@ def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
 
         if rank == 0:
             print(f"Trainer got MegaBatch {mega_batch}")
+            profiler = Profiler()
+            profiler.start()
         mega_batch += 1
 
         start = time.time()
 
         adj, train_mask, val_mask, labels, features, intervals = msg
-        g = dgl.graph(('csr', adj))
+        g = dgl.graph(('csc', adj))
         g.ndata['train_mask'] = train_mask
         g.ndata['val_mask'] = val_mask
         g.ndata['label'] = labels
@@ -171,8 +172,9 @@ def train_gpu_ddp(rank, world_size, feature_dim, num_classes,
 
         end = time.time()
         if rank == 0:
-            print(f"Val acc: {val_acc}")
-            print(f"MegaBatch time: {end-start:.2f}s, train: {tt:.2f}s, val: {tv:.2f}s")
+            print(f"Val acc: {val_acc:.4f} | MegaBatch time: {end-start:.2f}s, train: {tt:.2f}s, val: {tv:.2f}s")
+            profiler.stop()
+            print(profiler.output_text(unicode=True, color=True))
         dist.barrier()
 
 if __name__ == '__main__':
@@ -223,7 +225,8 @@ if __name__ == '__main__':
     gnnos.verbose()
     gnnos.set_tmp_dir(args.tmpdir)
 
-    gloader = HBatchGraphLoader(name=args.dataset, root=args.root, p_size=args.psize)
+    gloader = HBatchGraphLoader(name=args.dataset, root=args.root, p_size=args.psize,
+            p_method=PartitionMethod.EXTERNAL)
     dataloader = HBatchDataLoader(gloader, batch_size=args.bsize)
 
     import torch.multiprocessing as mp
@@ -232,11 +235,12 @@ if __name__ == '__main__':
     queues = []
     trainers = []
 
+    resp_queue = context.Queue(maxsize=1)
     for rank in range(n_procs):
         q = context.Queue(maxsize=1)
         w = context.Process(
             target=train_gpu_ddp,
-            args=(rank, n_procs, gloader.feature_dim(), gloader.num_classes(), q, args))
+            args=(rank, n_procs, gloader.feature_dim(), gloader.num_classes(), q, resp_queue, args))
         w.start()
 
         queues.append(q)
@@ -248,15 +252,16 @@ if __name__ == '__main__':
         for i, (sg, features, intervals) in enumerate(dataloader):
             # NB: be careful, don't send DGLGraph directly over the queue, otherwise confusing bugs
             # or even segfaults will emerge. DGLGraph seems not 100% compatible with multiprocessing
-            adj = sg.adj_sparse('csr')
+            adj = sg.adj_sparse('csc')
             train_mask, val_mask = sg.ndata['train_mask'], sg.ndata['val_mask']
+            num_train = torch.nonzero(train_mask).shape[0]
             labels = sg.ndata['label'].flatten().long()
             print(f"Load batch: {time.time()-loop_start:.2f}s")
 
             for q in queues:
                 q.put((adj, train_mask, val_mask, labels, features, intervals))
             print(f"Loader sent MegaBatch {mega_batch} "
-                f"(num_nodes={sg.num_nodes()}, num_edges={sg.num_edges()})")
+                f"(num_nodes={sg.num_nodes()}, num_edges={sg.num_edges()}, num_train={num_train})")
             mega_batch += 1
             del sg
             loop_start = time.time()

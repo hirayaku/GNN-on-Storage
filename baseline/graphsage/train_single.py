@@ -192,12 +192,10 @@ if __name__ == '__main__':
     #      train_nfeat = train_nfeat.to(device)
     #      train_labels = train_labels.to(device)
 
-    # Create csr/coo/csc formats before launching training processes with multi-gpu.
-    # This avoids creating certain formats in each sub-process, which saves momory and CPU.
     print("Create csr/coo/csc formats")
-    train_g.create_formats_()
-    val_g.create_formats_()
-    test_g.create_formats_()
+    train_g.formats(['coo', 'csc'])
+    val_g.formats(['coo', 'csc'])
+    test_g.formats(['coo', 'csc'])
     data = n_classes, train_g, val_g, test_g, train_nfeat, train_labels, \
            val_nfeat, val_labels, test_nfeat, test_labels
     utils.using("Graph format")

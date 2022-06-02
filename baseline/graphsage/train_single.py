@@ -21,6 +21,11 @@ def run(args, device, data):
     #test_nid = th.nonzero(~(test_g.ndata['train_mask'] | test_g.ndata['val_mask']), as_tuple=True)[0]
     test_nid = th.nonzero(test_g.ndata['test_mask'], as_tuple=True)[0]
 
+    if args.pure_gpu:
+        train_nid = train_nid.to('cuda')
+        val_nid = val_nid.to('cuda')
+        test_nid = test_nid.to('cuda')
+
     # Create PyTorch DataLoader for constructing blocks
     #print("setup sampler")
     sampler = dgl.dataloading.MultiLayerNeighborSampler(
@@ -102,7 +107,7 @@ if __name__ == '__main__':
                            help="GPU device ID. Use -1 for CPU training")
     argparser.add_argument('--dataset', type=str, default='ogbn-products')
     argparser.add_argument('--rootdir', type=str, default='../../dataset/')
-    argparser.add_argument('--num-epochs', type=int, default=20)
+    argparser.add_argument('--num-epochs', type=int, default=2)
     argparser.add_argument('--num-hidden', type=int, default=256)
     argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--fan-out', type=str, default='15,10,5')
@@ -111,7 +116,7 @@ if __name__ == '__main__':
     argparser.add_argument('--eval-every', type=int, default=5)
     argparser.add_argument('--lr', type=float, default=0.003)
     argparser.add_argument('--dropout', type=float, default=0.5)
-    argparser.add_argument('--num-workers', type=int, default=4,
+    argparser.add_argument('--num-workers', type=int, default=0,
                            help="Number of sampling processes. Use 0 for no extra process.")
     argparser.add_argument('--inductive', action='store_true',
                            help="Inductive learning setting")
@@ -121,6 +126,9 @@ if __name__ == '__main__':
                                 "be undesired if they cannot fit in GPU memory at once. "
                                 "This flag disables that.")
     argparser.add_argument('--disk-feat', action='store_true', help="Put features on disk")
+    argparser.add_argument('--pure-gpu', action='store_true',
+                           help='Perform both sampling and training on GPU.')
+
     args = argparser.parse_args()
     print(args)
 
@@ -174,6 +182,10 @@ if __name__ == '__main__':
 
     utils.using("Graph loaded")
     print('|V|: {}, |E|: {}, #classes: {}, feat_length: {}'.format(nv, ne, n_classes, feat_len))
+
+    if args.pure_gpu:
+        g = g.to('cuda') 
+        node_features = node_features.to('cuda')
 
     if args.inductive:
         train_g, val_g, test_g = inductive_split(g)

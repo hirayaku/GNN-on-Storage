@@ -161,10 +161,12 @@ def create_partitions(graph, feats, labels, partitioning: gnnos.NodePartitions, 
 
     # save graph
     if isinstance(graph, gnnos.CSRStore):
-        pg = gnnos.partition_csr_2d(graph, partitioning)
+        pg = gnnos.partition_csr_1d(graph, partitioning)
     else:
-        pg = gnnos.partition_coo_2d(graph, partitioning)
+        pg = gnnos.partition_coo_1d(graph, partitioning)
     print("Graph partitioned")
+    # dumps the partition type by its enum value
+    pinfo['partition'] = gnnos.PartitionType.P_1D.value
     index_pos = gnnos.from_tensor(pg.edge_pos(), absf('index_pos'))
     pinfo['index_pos'] = metadata2dict(index_pos.metadata)
     num_nodes, src_info, dst_info = pg.save(absf('bcoo'))
@@ -210,12 +212,16 @@ def load_partitions(path):
 
     # load graph
     index_pos = load_by_dict(pinfo['index_pos']).tensor()
+    if 'partition' in pinfo:
+        ptype = gnnos.PartitionType(pinfo['partition'])
+    else:
+        ptype = gnnos.PartitionType.P_2D
     ginfo = pinfo['graph']
     assert ginfo['type'] == 'COO'
     num_nodes = ginfo['num_nodes']
     src = load_by_dict(ginfo['src_index'])
     dst = load_by_dict(ginfo['dst_index'])
-    graph = gnnos.BCOOStore(gnnos.COOStore(src, dst, num_nodes), index_pos, partitioning)
+    graph = gnnos.BCOOStore(gnnos.COOStore(src, dst, num_nodes), index_pos, partitioning, ptype)
 
     # load feats and labels
     feats = load_by_dict(pinfo['feats'])

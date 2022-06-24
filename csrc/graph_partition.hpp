@@ -45,6 +45,10 @@ NodePartitions random_partition(const CSRStore &graph, int psize);
 NodePartitions random_partition(const COOStore &graph, int psize);
 NodePartitions good_partition(const CSRStore &graph, int psize);
 
+enum PartitionType {
+    P_1D,
+    P_2D,
+};
 
 // Blocked COO Store
 class BCOOStore: public COOStore {
@@ -52,7 +56,7 @@ public:
     BCOOStore() = default;
     // build a BCOOStore on top of COOStore
     // edge_pos represents the edge blocks from COO partitioning
-    BCOOStore(COOStore coo, torch::Tensor edge_pos, NodePartitions partition);
+    BCOOStore(COOStore, torch::Tensor edge_pos, NodePartitions, PartitionType);
 
     // partition by the src node, expects COOStore to have dtype kLong
     // TODO: use template to allow more COOStore dtype
@@ -66,11 +70,12 @@ public:
     // constant methods
     int psize() const { return partition.psize; }
     int num_blocks() const { return edge_pos_.size() - 1; }
+    PartitionType ptype() const { return ptype_; }
     torch::Tensor edge_pos() const { return vector_to_tensor<long>(edge_pos_); }
 
     // return an edge block as a COOStore
     COOStore coo_block(int blkid);
-    // return a subgraph induced by the specified vertex clusters (2D partition only)
+    // return a subgraph induced by the specified vertex clusters
     COOArrays cluster_subgraph(const std::vector<int> &cluster_ids);
 
 private:
@@ -82,6 +87,8 @@ private:
 
     // current node partition
     NodePartitions partition;
+    // partition type: 1D or 2D
+    PartitionType ptype_;
 };
 
 template <typename PtrT, typename IdxT>
@@ -197,7 +204,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current
 
-    return BCOOStore(bcoo, pos_, std::move(partition));
+    return BCOOStore(bcoo, pos_, std::move(partition), P_2D);
 }
 
 // Blocked CSR Store

@@ -67,9 +67,9 @@ NodePartitions good_partition(const CSRStore &graph, int psize) {
 
 // BCOOStore methods
 
-BCOOStore::BCOOStore(COOStore coo, torch::Tensor edge_pos, NodePartitions partition)
+BCOOStore::BCOOStore(COOStore coo, torch::Tensor edge_pos, NodePartitions partition, PartitionType ptype)
     : COOStore(std::move(coo)), edge_pos_(edge_pos.numel())
-    , partition(std::move(partition))
+    , partition(std::move(partition)), ptype_(ptype)
 {
     TORCH_CHECK(coo.num_nodes() == this->partition.num_nodes(),
         "Invalid partition assignments: ", this->partition.num_nodes());
@@ -163,7 +163,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
                     src_buffers[bufid].data(), dst_buffers[bufid].data(),
                     reserved_pos, reserved_pos + BUF_EDGES);
                 src_buffers[bufid].clear();
-                src_buffers[bufid].clear();
+                dst_buffers[bufid].clear();
             }
         }
     }
@@ -188,7 +188,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers
 
-    return BCOOStore(coo_copy, pos_, std::move(partition));
+    return BCOOStore(coo_copy, pos_, std::move(partition), P_1D);
 }
 
 BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partition) {
@@ -303,7 +303,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current
 
-    return BCOOStore(coo_copy, pos_, std::move(partition));
+    return BCOOStore(coo_copy, pos_, std::move(partition), P_2D);
 }
 
 COOStore BCOOStore::coo_block(int blkid) {
@@ -325,96 +325,118 @@ COOArrays BCOOStore::cluster_subgraph(const std::vector<int> &cluster_ids) {
     }
 
 
-    // collect subgraph info
-    std::vector<long> blk_pos(nclusters * nclusters + 1);
-    blk_pos[0] = 0;
-    for (int i = 0; i < nclusters; ++i) {
-        auto from_cid = cluster_ids[i];
-        for (int j = 0; j < nclusters; ++j) {
-            auto to_cid = cluster_ids[j];
-            auto blkid = from_cid * psize() + to_cid;
-            auto sg_blkid = i * nclusters + j;
-            blk_pos[sg_blkid+1] = edge_pos_[blkid+1] - edge_pos_[blkid];
+    if (ptype() == P_2D) {
+        // collect subgraph info
+        std::vector<long> blk_pos(nclusters * nclusters + 1);
+        blk_pos[0] = 0;
+        for (int i = 0; i < nclusters; ++i) {
+            auto from_cid = cluster_ids[i];
+            for (int j = 0; j < nclusters; ++j) {
+                auto to_cid = cluster_ids[j];
+                auto blkid = from_cid * psize() + to_cid;
+                auto sg_blkid = i * nclusters + j;
+                blk_pos[sg_blkid+1] = edge_pos_[blkid+1] - edge_pos_[blkid];
+            }
         }
-    }
-    for (size_t i = 1; i < blk_pos.size(); ++i) {
-        blk_pos[i] += blk_pos[i-1];
-    }
-    long sg_num_edges = blk_pos[nclusters*nclusters];
+        for (size_t i = 1; i < blk_pos.size(); ++i) {
+            blk_pos[i] += blk_pos[i-1];
+        }
+        long sg_num_edges = blk_pos[nclusters*nclusters];
 
-    // create COO tensors
-    torch::Tensor sg_src_ = torch::empty(
-        {sg_num_edges}, torch::TensorOptions(torch::kLong));
-    torch::Tensor sg_dst_ = torch::empty_like(sg_src_);
-    long *sg_src = sg_src_.data_ptr<long>();
-    long *sg_dst = sg_dst_.data_ptr<long>();
+        // create COO tensors
+        torch::Tensor sg_src_ = torch::empty(
+            {sg_num_edges}, torch::TensorOptions(torch::kLong));
+        torch::Tensor sg_dst_ = torch::empty_like(sg_src_);
+        long *sg_src = sg_src_.data_ptr<long>();
+        long *sg_dst = sg_dst_.data_ptr<long>();
 
-    // map coo blocks and fill into tensors
-    #pragma omp parallel for
-    for (int i = 0; i < nclusters; ++i) {
-        auto from_cid = cluster_ids[i];
-        for (int j = 0; j < nclusters; ++j) {
-            auto to_cid = cluster_ids[j];
-            auto blkid = from_cid * psize() + to_cid;
-            auto sg_blkid = i * nclusters + j;
+        // map coo blocks and fill into tensors
+        #pragma omp parallel for
+        for (int i = 0; i < nclusters; ++i) {
+            auto from_cid = cluster_ids[i];
+            for (int j = 0; j < nclusters; ++j) {
+                auto to_cid = cluster_ids[j];
+                auto blkid = from_cid * psize() + to_cid;
+                auto sg_blkid = i * nclusters + j;
 
+                auto coo = coo_block(blkid);
+                TORCH_CHECK(coo.num_edges() == blk_pos[sg_blkid+1]-blk_pos[sg_blkid]);
+                std::vector<long> src, dst;
+                std::tie(src, dst) = coo.accessor<long>().slice(0, coo.num_edges());
+
+                for (auto &src_id : src) src_id = node_map.at(src_id);
+                for (auto &dst_id : dst) dst_id = node_map.at(dst_id);
+                std::copy(src.begin(), src.end(), sg_src + blk_pos[sg_blkid]);
+                std::copy(dst.begin(), dst.end(), sg_dst + blk_pos[sg_blkid]);
+            }
+        }
+
+        return {std::move(sg_src_), std::move(sg_dst_)};
+
+    } else {
+        std::vector<long> blk_pos(nclusters+1);
+        blk_pos[0] = 0;
+        for (int i = 0; i < nclusters; ++i) {
+            auto blkid = cluster_ids[i];
+            blk_pos[i+1] = edge_pos_[blkid+1] - edge_pos_[blkid];
+        }
+        for (size_t i = 1; i < blk_pos.size(); ++i) {
+            blk_pos[i] += blk_pos[i-1];
+        }
+        long sg_num_edges = blk_pos[nclusters];
+
+        // create COO tensors
+        torch::Tensor sg_src_ = torch::empty(
+            {sg_num_edges}, torch::dtype(torch::kLong));
+        torch::Tensor sg_dst_ = torch::empty_like(sg_src_);
+        long *sg_src = sg_src_.data_ptr<long>();
+        long *sg_dst = sg_dst_.data_ptr<long>();
+        std::vector<long> blk_pos2 = blk_pos;
+
+        long num_edges_all = 0;
+        #pragma omp parallel for
+        for (int i = 0; i < nclusters; ++i) {
+            auto blkid = cluster_ids[i];
             auto coo = coo_block(blkid);
-            TORCH_CHECK(coo.num_edges() == blk_pos[sg_blkid+1]-blk_pos[sg_blkid]);
+            auto num_edges = coo.num_edges();
+            TORCH_CHECK(num_edges == blk_pos[i+1]-blk_pos[i]);
             std::vector<long> src, dst;
-            std::tie(src, dst) = coo.accessor<long>().slice(0, coo.num_edges());
+            std::tie(src, dst) = coo.accessor<long>().slice(0, num_edges);
 
-            for (auto &src_id : src) src_id = node_map.at(src_id);
-            for (auto &dst_id : dst) dst_id = node_map.at(dst_id);
-            std::copy(src.begin(), src.end(), sg_src + blk_pos[sg_blkid]);
-            std::copy(dst.begin(), dst.end(), sg_dst + blk_pos[sg_blkid]);
+            for (size_t ei = 0; ei < src.size(); ei++) {
+                auto dst_iter = node_map.find(dst[ei]);
+                if (dst_iter != node_map.end()) {
+                    auto src_id = node_map.at(src[ei]);
+                    sg_src[blk_pos2[i]] = src_id;
+                    sg_dst[blk_pos2[i]] = dst_iter->second;
+                    blk_pos2[i]++;
+                    num_edges_all++;
+                }
+            }
         }
-    }
 
-    return {std::move(sg_src_), std::move(sg_dst_)};
+        // compact sg_src and sg_dst
+        std::vector<long> compact_blk_pos(nclusters + 1);
+        for (int i = 0; i < nclusters; ++i) {
+            compact_blk_pos[i+1] = blk_pos2[i] - blk_pos[i];
+        }
+        for (size_t i = 1; i < nclusters + 1; ++i) {
+            compact_blk_pos[i] += compact_blk_pos[i-1];
+        }
+        long compact_num_edges = compact_blk_pos[nclusters];
+
+        torch::Tensor compact_src_ = torch::empty({compact_num_edges}, torch::dtype(torch::kLong));
+        torch::Tensor compact_dst_ = torch::empty_like(compact_src_);
+        long *compact_src = compact_src_.data_ptr<long>();
+        long *compact_dst = compact_dst_.data_ptr<long>();
+        #pragma omp parallel for
+        for (int i = 0; i < nclusters; ++i) {
+            TORCH_CHECK(blk_pos2[i]-blk_pos[i], compact_blk_pos[i+1]-compact_blk_pos[i]);
+            std::copy(sg_src+blk_pos[i], sg_src+blk_pos2[i], compact_src+compact_blk_pos[i]);
+            std::copy(sg_dst+blk_pos[i], sg_dst+blk_pos2[i], compact_dst+compact_blk_pos[i]);
+        }
+
+        return {std::move(compact_src_), std::move(compact_dst_)};
+    }
 }
-
-BCSRStore BCSRStore::PartitionFrom1D(const CSRStore &coo, NodePartitions partition) {
-    
-    /*
-    auto assigns_vec = assigns.accessor<int, 1>();
-    auto ptr_accessor = csr.ptr_store.accessor<long>();
-    auto idx_accessor = csr.idx_store.accessor<long>();
-    auto p_counts_ = torch::zeros({psize}, torch::TensorOptions(torch::kLong));
-    auto p_counts = p_counts_.accessor<long, 1>();
-    std::vector<std::vector<long>> clusters;
-
-    // count edges in each partition
-    auto ptr_vec = ptr_accessor.slice(0, csr.num_nodes()+1);
-    for (long i = 0; i < csr.num_nodes(); i++) {
-        long degree = ptr_vec[i+1] - ptr_vec[i];
-        auto blkid = assigns_vec[i];
-        clusters[blkid].push_back(i);
-        p_counts[blkid] += degree;
-    }
-    CHECK_EQ(torch::sum(p_counts_).item<long>(), csr.num_edges());
-    LOG(INFO) << "Counting complete";
-
-    // create CSR blocks
-    std::vector<CSRStore> csr_blocks;
-    for (int i = 0; i < psize; ++i) {
-        long p_num_nodes = clusters[i].size();
-        long p_num_edges = p_counts[i];
-        csr_blocks.push_back({
-            TensorStore::CreateTemp(TensorOptions(TMPDIR).shape({p_num_nodes+1})),
-            TensorStore::CreateTemp(TensorOptions(TMPDIR).shape({p_num_edges}))
-        });
-    }
-
-    // map edges into csr blocks
-    #pragma omp parallel for
-    for (long nid = 0; nid < csr.num_nodes(); ++nid) {
-        long start = ptr_vec[nid];
-        long deg = ptr_vec[nid+1] - ptr_vec[nid];
-        auto blkid = assigns_vec[nid];
-        auto &blk = csr_blocks[blkid];
-    }
-    */
-
-}
-
 }

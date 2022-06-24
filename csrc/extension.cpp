@@ -178,9 +178,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("good_partition", &good_partition,
         "generate a good node paritioning", py::arg("CSRStore"), py::arg("psize"));
 
+    py::enum_<PartitionType>(m, "PartitionType")
+        .value("P_1D", PartitionType::P_1D)
+        .value("P_2D", PartitionType::P_2D);
+
     py::class_<BCOOStore, COOStore>(m, "BCOOStore")
         .def(py::init<>())
-        .def(py::init<COOStore, torch::Tensor, NodePartitions>())
+        .def(py::init<COOStore, torch::Tensor, NodePartitions, PartitionType>())
         .def_property_readonly("psize", &BCOOStore::psize)
         .def_property_readonly("num_blocks", &BCOOStore::num_blocks)
         .def("edge_pos", &BCOOStore::edge_pos)

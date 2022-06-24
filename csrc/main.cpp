@@ -17,6 +17,17 @@ static const TensorInfo products_options =
 TensorOptions("/mnt/md0/inputs/ogbn_products/edge_index")
     .shape({2, 123718280}).dtype(torch::kLong);
 
+static std::vector<long> degreesOf(const COOStore &coo) {
+    std::vector<long> degrees(coo.num_nodes());
+    auto accessor = coo.accessor<long>();
+    std::vector<long> src, dst;
+    std::tie(src, dst) = accessor.slice(0, coo.num_edges());
+    for (const auto id : dst) {
+        degrees[id]++;
+    }
+    return degrees;
+}
+
 void testCOOStore() {
     auto tensor = TensorStore::OpenForRead(products_options);
 
@@ -112,13 +123,20 @@ void testCOOStorePartition1D() {
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
     auto partition = random_partition(coo, psize);
-    auto dcoo = BCOOStore::PartitionFrom1D(coo, partition);
+    auto bcoo = BCOOStore::PartitionFrom1D(coo, partition);
 
     // check BCOOStore consistency
     LOG(INFO) << "Check BCOOStore";
+    auto degrees_coo = degreesOf(coo);
+    auto degrees_bcoo = degreesOf(bcoo);
+    for (long vid = 0; vid < coo.num_nodes(); ++vid) {
+        CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
+    }
+
+    LOG(INFO) << "Degrees match; check COO blocks randomly next";
     const auto assigns_vec = partition.assignments().accessor<int, 1>();
-    for (int i = 0; i < psize; ++i) {
-        auto block = dcoo.coo_block(i);
+    for (int i = 0; i < psize; i += psize / 100 + 1) {
+        auto block = bcoo.coo_block(i);
         auto accessor = block.accessor<long>();
         for (int eid = 0; eid < accessor.size(); ++eid) {
             auto e = accessor[eid];
@@ -132,15 +150,22 @@ void testCOOStorePartition2D() {
     auto coo = COOStore(tensor.flatten(), 2449029);
     int psize = 128;
     auto partition = random_partition(coo, psize);
-    auto dcoo = BCOOStore::PartitionFrom2D(coo, partition);
+    auto bcoo = BCOOStore::PartitionFrom2D(coo, partition);
 
     // check BCOOStore consistency
     LOG(INFO) << "Check BCOOStore";
+    auto degrees_coo = degreesOf(coo);
+    auto degrees_bcoo = degreesOf(bcoo);
+    for (long vid = 0; vid < coo.num_nodes(); ++vid) {
+        CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
+    }
+
+    LOG(INFO) << "Degrees match; check COO blocks randomly next";
     const auto assigns_vec = partition.assignments().accessor<int, 1>();
-    for (int i = 0; i < psize; ++i) {
-        for (int j = 0; j < psize; ++j) {
+    for (int i = 0; i < psize; i += psize / 10 + 1) {
+        for (int j = 0; j < psize; j += psize / 10 + 1) {
             int from = i, to = j;
-            auto block = dcoo.coo_block(from * psize + to);
+            auto block = bcoo.coo_block(from * psize + to);
             auto accessor = block.accessor<long>();
             for (int eid = 0; eid < accessor.size(); ++eid) {
                 auto e = accessor[eid];
@@ -162,7 +187,7 @@ void testSaveCOOStore() {
     std::tie(num_nodes, src_info, dst_info) = save_COOStore(dcoo, products_options.path() + ".p");
     auto coo2 = COOStore(TensorStore::OpenForRead(src_info), TensorStore::OpenForRead(dst_info),
         num_nodes);
-    auto dcoo2 = BCOOStore(coo2, dcoo.edge_pos(), partition);
+    auto dcoo2 = BCOOStore(coo2, dcoo.edge_pos(), partition, P_2D);
 
     // check BCOOStore consistency
     LOG(INFO) << "Check BCOOStore";
@@ -241,14 +266,36 @@ void testNodePartitions() {
 void testBCOOSubgraph() {
     auto tensor = TensorStore::OpenForRead(products_options);
     auto coo = COOStore(tensor.flatten(), 2449029);
-    int psize = 128;
+    int psize = 8;
     auto partition = random_partition(coo, psize);
-    auto bcoo = BCOOStore::PartitionFrom2D(coo, partition);
-    LOG(INFO) << "get subgraphs...";
-    bcoo.cluster_subgraph({1});
-    bcoo.cluster_subgraph({100});
-    bcoo.cluster_subgraph({0, 1});
-    bcoo.cluster_subgraph({0, 1, 9, 127});
+    auto bcoo_2d = BCOOStore::PartitionFrom2D(coo, partition);
+    auto bcoo_1d = BCOOStore::PartitionFrom1D(coo, partition);
+
+    auto edge_pos = bcoo_2d.edge_pos();
+    for (int pid = 0; pid < psize; ++pid) {
+        auto degrees_1d = degreesOf(bcoo_1d.coo_block(pid));
+        auto bcoo_2d_blocks = bcoo_2d.slice(
+            edge_pos[pid*psize].item<long>(),
+            edge_pos[pid*psize+psize].item<long>()
+        );
+        auto degrees_2d = degreesOf(bcoo_2d_blocks);
+        LOG(INFO) << "Checking Partition " << pid;
+        for (long vid = 0; vid < coo.num_nodes(); ++vid) {
+            CHECK_EQ(degrees_1d[vid], degrees_2d[vid]) << "vid=" << vid;
+        }
+        CHECK_EQ(std::accumulate(degrees_1d.begin(), degrees_1d.end(), 0),
+            bcoo_1d.coo_block(pid).num_edges());
+    }
+
+    LOG(INFO) << "Getting subgraphs...";
+    auto sg_2d = bcoo_2d.cluster_subgraph({0, 1});
+    auto sg_1d = bcoo_1d.cluster_subgraph({0, 1});
+    CHECK_EQ(std::get<0>(sg_2d).numel(), std::get<0>(sg_1d).numel());
+    CHECK_EQ(std::get<1>(sg_2d).numel(), std::get<1>(sg_1d).numel());
+
+    // bcoo_2d.cluster_subgraph({1});
+    // bcoo_2d.cluster_subgraph({100});
+    // bcoo_2d.cluster_subgraph({0, 1, 9, 127});
 }
 
 void testGather() {
@@ -309,9 +356,9 @@ int main() {
     // RUN(testSaveCOOStore);
     // RUN(testCOOToCSRStore);
     // RUN(testCSRToBCOO);
-    // RUN(testBCOOSubgraph);
+    RUN(testBCOOSubgraph);
     // RUN(testGather);
-    RUN(testStoreIntTensor);
+    // RUN(testStoreIntTensor);
 
     return 0;
 }

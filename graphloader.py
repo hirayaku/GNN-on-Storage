@@ -2,6 +2,7 @@ import os
 import os.path as osp
 from enum import Enum
 from functools import namedtuple
+import numpy as np
 import torch
 import dgl
 
@@ -13,7 +14,6 @@ __all__ = [
     'GraphLoader',
     'PartitionSampler',
     'PartitionedGraphLoader',
-    'HBatchSampler',
     'HBatchGraphLoader']
 
 GraphLoaderArgs = namedtuple("args", ["name", "root", "mmap"])
@@ -46,6 +46,32 @@ class PartitionMethod(Enum):
         ]
         return fn_list[p_method.value]
 
+def load_mag240m_citation(root, mmap=False):
+    from ogb.lsc import MAG240MDataset
+    dataset = MAG240MDataset(root=root)
+    num_classes = dataset.num_classes
+    ei_cites = dataset.edge_index('paper', 'cites', 'paper')
+    graph = dgl.graph((np.concatenate([ei_cites[0], ei_cites[1]]), np.concatenate([ei_cites[1], ei_cites[0]])), num_nodes=dataset.num_papers)
+    print(graph)
+    graph.ndata["label"] = torch.tensor(dataset.all_paper_label)
+
+    train_idx = dataset.get_idx_split('train')
+    val_idx = dataset.get_idx_split('valid')
+    test_idx = dataset.get_idx_split('valid')
+
+    train_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
+    train_mask[train_idx] = True
+    val_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
+    val_mask[val_idx] = True
+    test_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
+    test_mask[test_idx] = True
+    graph.ndata['train_mask'] = train_mask
+    graph.ndata['valid_mask'] = val_mask
+    graph.ndata['test_mask'] = test_mask
+    paper_feat = dataset.paper_feat if mmap else dataset.all_paper_feat
+    del dataset
+    return graph, num_classes, paper_feat
+
 class GraphLoader(object):
     '''
     GraphLoader loads the stored graph dataset from the given folder.
@@ -62,22 +88,30 @@ class GraphLoader(object):
         self.mmap = args.mmap
         self.dataset_dir = osp.join(self.root, self.canonical_name)
 
-        graphs, _ = dgl.load_graphs(osp.join(self.dataset_dir, "graph.dgl"))
-        self.graph = graphs[0]
+        if "mag240m" in self.name:
+            self.graph, num_classes, feats = load_mag240m_citation(self.root, self.mmap)
+            if not self.mmap:
+                self.node_features = torch.from_numpy(feats)
+                self.node_features.share_memory_()
+        else:
+            graphs, _ = dgl.load_graphs(osp.join(self.dataset_dir, "graph.dgl"))
+            self.graph = graphs[0]
+
+            feat_shape_file = osp.join(self.dataset_dir, "feat.shape")
+            feat_file = osp.join(self.dataset_dir, "feat.feat")
+            shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
+            if self.mmap:
+                self.node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32',
+                    shape=shape)
+            else:
+                feat_size  = torch.prod(torch.tensor(shape, dtype=torch.long)).item()
+                self.node_features = torch.from_file(
+                    feat_file, size=feat_size, dtype=torch.float32).reshape(shape)
+                self.node_features.share_memory_()
+
         for k, v in self.graph.ndata.items():
             if k.endswith('_mask'):
                 self.graph.ndata[k] = v.bool()
-
-        feat_shape_file = osp.join(self.dataset_dir, "feat.shape")
-        feat_file = osp.join(self.dataset_dir, "feat.feat")
-        shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
-        if self.mmap:
-            self.node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32',
-                shape=shape)
-        else:
-            feat_size  = torch.prod(torch.tensor(shape, dtype=torch.long)).item()
-            self.node_features = torch.from_file(feat_file, size=feat_size,
-                dtype=torch.float32).reshape(shape)
 
     def formats(self, formats):
         self.graph = self.graph.formats(formats)
@@ -100,20 +134,21 @@ class GraphLoader(object):
         return self.graph.ndata['label']
 
     def num_classes(self):
-        return torch.max(self.graph.ndata['label']).item()
+        labels = self.labels()
+        return torch.max(labels[~labels.isnan()]).long().item() + 1
 
     @staticmethod
     def _nonzero_idx(tensor_1d):
         return torch.nonzero(tensor_1d, as_tuple=True)[0]
 
     def train_idx(self):
-        return GraphLoader._nonzero_idx(self.graph['train_mask'])
+        return GraphLoader._nonzero_idx(self.graph.ndata['train_mask'])
 
     def valid_idx(self):
-        return GraphLoader._nonzero_idx(self.graph['valid_mask'])
+        return GraphLoader._nonzero_idx(self.graph.ndata['valid_mask'])
 
     def test_idx(self):
-        return GraphLoader._nonzero_idx(self.graph['test_mask'])
+        return GraphLoader._nonzero_idx(self.graph.ndata['test_mask'])
 
     def get_idx_split(self):
         return self.train_idx(), self.valid_idx(), self.test_idx()

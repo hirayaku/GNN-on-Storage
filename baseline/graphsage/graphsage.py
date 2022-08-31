@@ -67,18 +67,17 @@ class SAGE(nn.Module):
         return h
 
     def inference_batched(self, g, x, idx, device, batch_size, n_workers):
-        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
+        #  sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
+        sampler = dgl.dataloading.MultiLayerNeighborSampler([32]*self.n_layers)
         print(idx)
         print(batch_size)
         dataloader = dgl.dataloading.DataLoader(g, idx,
-                     sampler, batch_size=batch_size, shuffle=True, 
+                     sampler, batch_size=batch_size, shuffle=True,
                      drop_last=False, num_workers=n_workers)
         y = th.zeros(g.num_nodes(), self.n_classes)
         #for step, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
         for (input_nodes, output_nodes, blocks) in tqdm.tqdm(dataloader):
-            batch_inputs = x[input_nodes].to(device)
-            if batch_inputs.dtype != th.float32:
-                batch_inputs = batch_inputs.float()
+            batch_inputs = x[input_nodes].float().to(device)
             blocks = [block.int().to(device) for block in blocks]
             y[output_nodes] = self.forward(blocks, batch_inputs).cpu()
         return y
@@ -213,8 +212,8 @@ def evaluate(model, g, nfeat, labels, val_nid, device, batch_size, num_workers):
     """
     model.eval()
     with th.no_grad():
-        pred = model.inference_batched(g, nfeat, val_nid, device, 102400, num_workers)
-        #pred = model.inference(g, nfeat, device, batch_size, num_workers)
+        #  pred = model.inference_batched(g, nfeat, val_nid, device, 102400, num_workers)
+        pred = model.inference(g, nfeat, device, batch_size, num_workers)
     model.train()
     # return compute_f1(pred[val_nid], labels[val_nid])
     return compute_acc(pred[val_nid], labels[val_nid].to(pred.device))

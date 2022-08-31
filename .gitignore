@@ -8,6 +8,9 @@
 **/lib
 **/*.egg-info
 
+.ipynb_checkpoints
+*.out
+**/stats
 **/traces
 **/runs
 **/runs-archive

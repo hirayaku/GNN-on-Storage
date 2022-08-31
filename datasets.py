@@ -135,7 +135,7 @@ def load_ogb(path):
 def metadata2dict(md):
     '''TensorInfo metadata to dict'''
     return {
-        "path": md.path, "shape": md.shape,
+        "path": osp.basename(md.path), "shape": md.shape,
         "dtype": md.dtype, "offset": md.offset
     }
 

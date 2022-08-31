@@ -94,10 +94,10 @@ def run(args, device, data):
         if epoch >= 1:
             avg += toc - tic
         if epoch % args.eval_every == 0 and epoch != 0:
-            eval_acc = evaluate(model, val_g, val_nfeat, val_labels, val_nid, device, args.batch_size, args.num_workers)
+            eval_acc = evaluate(model, val_g, val_nfeat, val_labels, val_nid, device, args.val_batch_size, args.num_workers)
             print('Eval Acc {:.4f}'.format(eval_acc))
 
-    test_acc = evaluate(model, test_g, test_nfeat, test_labels, test_nid, device, args.batch_size, args.num_workers)
+    test_acc = evaluate(model, test_g, test_nfeat, test_labels, test_nid, device, args.val_batch_size, args.num_workers)
     print('Test Acc: {:.6f}'.format(test_acc))
     print('Avg epoch time: {:.5f}'.format(avg / epoch))
 
@@ -112,6 +112,7 @@ if __name__ == '__main__':
     argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--fan-out', type=str, default='15,10,5')
     argparser.add_argument('--batch-size', type=int, default=1024)
+    argparser.add_argument('--val-batch-size', type=int, default=512)
     argparser.add_argument('--log-every', type=int, default=20)
     argparser.add_argument('--eval-every', type=int, default=5)
     argparser.add_argument('--lr', type=float, default=0.003)

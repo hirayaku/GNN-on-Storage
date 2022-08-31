@@ -63,11 +63,10 @@ if __name__ == "__main__":
 
         del graph.ndata[feat_name]
 
+    graph_output_path = osp.join(args.graph_output_dir, 'graph.dgl')
     if args.to_bidirected:
-        graph_output_path = osp.join(args.graph_output_dir, 'graph_bidirected.dgl')
         graph = dgl.to_bidirected(graph)
-    else:
-        graph_output_path = osp.join(args.graph_output_dir, 'graph.dgl')
+        #  graph_output_path = osp.join(args.graph_output_dir, 'graph_bidirected.dgl')
 
     if args.graph_formats != "":
         graph = graph.formats(args.graph_formats.split(','))

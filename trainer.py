@@ -15,9 +15,8 @@ import dgl
 from modules import SAGE, SAGE_mlp, SAGE_res_incep
 from graphloader import GraphLoader, PartitionMethod, PartitionSampler, PartitionedGraphLoader
 from dataloader import PartitionDataLoader
-from sampler import ClusterIterV2
-from sampler import rand_partition_assignment, metis_partition_assignment
-#  from samplerV2 import degree_bucket_assignment
+import sampler as HBSampler
+#  from sampler import ClusterIterV2
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
 
@@ -87,19 +86,16 @@ def train(args, tb_writer):
            n_test_samples))
     print("#Labels shape:", g.ndata['label'].shape)
     print("#Features shape:", g.ndata['feat'].shape)
-
-    torch.cuda.set_device(0)
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
 
     if args.part == "metis":
-        part_fn = lambda g, psize: metis_partition_assignment(g, psize, train_mask)
+        partitioner = HBSampler.MetisBalancedPartitioner()
     elif args.part == "rand":
-        part_fn = rand_partition_assignment
-    elif args.part == "deg-bucket":
-        part_fn = degree_bucket_assignment
-    part_fn.__name__ = args.part
-    cluster_iterator = ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.hsize, part_fn=part_fn,
-            sample_topk=not args.popular_sample, popular_ratio=args.popular_ratio)
+        partitioner = HBSampler.RandomNodePartitioner()
+    else:
+        raise NotImplementedError
+    cluster_iterator = HBSampler.ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.hsize,
+            partitioner=partitioner, sample_topk=not args.popular_sample, popular_ratio=args.popular_ratio)
 
     if args.use_incep:
         model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
@@ -208,6 +204,8 @@ def train(args, tb_writer):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='HieBatching DDP Trainer',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="GPU device index")
     parser.add_argument("--dataset", type=str, default="ogbn-products",
                         help="Dataset")
     parser.add_argument("--root", type=str, default=f"{os.environ['DATASETS']}/baseline",
@@ -294,6 +292,9 @@ if __name__ == '__main__':
     assert args.n_layers == len(args.fanout)
     assert args.n_layers == len(args.test_fanout)
     assert args.part in ["metis", "rand", "deg-bucket"]
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
+    print(f"Training with GPU: {device}")
 
     model = "plain"
     if args.use_incep:

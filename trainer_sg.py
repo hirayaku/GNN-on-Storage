@@ -83,7 +83,6 @@ def train(args, tb_writer):
     print("#Labels shape:", g.ndata['label'].shape)
     print("#Features shape:", g.ndata['feat'].shape)
 
-    torch.cuda.set_device(0)
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
 
     if args.use_incep:
@@ -129,8 +128,7 @@ def train(args, tb_writer):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                if args.lr_sched:
-                    lr_scheduler.step(loss)
+                lr_scheduler.step(loss)
 
                 global_iter += 1
                 epoch_iter += 1
@@ -148,8 +146,8 @@ def train(args, tb_writer):
             if (epoch + 1) % args.eval_every == 0:
                 train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
                         args.fanout, args.num_workers, use_ddp=False)
-                val_acc, val_loss, _ = eval_ns_batching(model, g, val_nid, args.bsize3,
-                        args.test_fanout, args.num_workers, use_ddp=False)
+                val_acc, val_loss, _ = eval_ns_batching(model, g, val_nid, args.bsize2,
+                        args.fanout, args.num_workers, use_ddp=False)
                 test_acc, test_loss, _ = eval_ns_batching(model, g, test_nid, args.bsize3,
                         args.test_fanout, args.num_workers, use_ddp=False)
                 if run == 0:
@@ -170,6 +168,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Baseline minibatch-based GNN training",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="GPU device index")
     parser.add_argument("--dataset", type=str, default="ogbn-products",
                         help="Dataset name")
     parser.add_argument("--root", type=str, default="datasets",
@@ -189,8 +189,6 @@ if __name__ == '__main__':
                         help="Dropout")
     parser.add_argument("--lr", type=float, default=0.003,
                         help="Learning rate")
-    parser.add_argument("--lr-sched", action="store_true",
-                        help="Enable the lr scheduler")
     parser.add_argument("--lr-decay", type=float, default=0.9999,
                         help="Learning rate decay")
     parser.add_argument('--wt-decay', type=float, default=0,
@@ -255,6 +253,9 @@ if __name__ == '__main__':
     args.test_fanout = list(map(int, args.test_fanout.split(',')))
     assert args.n_layers == len(args.fanout)
     assert args.n_layers == len(args.test_fanout)
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
+    print(f"Training with GPU: {device}")
 
     model = "plain"
     if args.use_incep:

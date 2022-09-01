@@ -4,11 +4,33 @@ import numpy as np
 import torch, dgl
 import dgl.function as fn
 
-def rand_partition_assignment(g, psize):
-    return torch.randint(psize, (g.num_nodes(),))
+class NodePartitioner(object):
+    def __init__(self, name):
+        self.name = name
 
-def metis_partition_assignment(g, psize, mask=None):
-    return dgl.metis_partition_assignment(g, psize, balance_ntypes=mask.int())
+    def __call__(self, g, psize):
+        raise NotImplementedError
+
+class RandomNodePartitioner(NodePartitioner):
+    def __init__(self):
+        super().__init__('rand')
+
+    def __call__(self, g, psize):
+        return torch.randint(psize, (g.num_ndoes(),))
+
+class MetisNodePartitioner(NodePartitioner):
+    def __init__(self):
+        super().__init__('metis')
+
+    def __call__(self, g, psize, mask=None):
+        return dgl.metis_partition_assignment(g, psize, mask)
+
+class MetisBalancedPartitioner(MetisNodePartitioner):
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, g, psize):
+        return super()(g, psize, g.ndata['train_mask'].int())
 
 def partition_from(ids, assigns, psize):
     '''
@@ -62,7 +84,7 @@ class ClusterIterV2(object):
     The metis/other partitioners is used as the graph partition backend.
     The sampler returns a subgraph induced by a batch of clusters
     '''
-    def __init__(self, dataset, g, psize, bsize, hsize, part_fn=rand_partition_assignment,
+    def __init__(self, dataset, g, psize, bsize, hsize, partitioner=RandomNodePartitioner(),
             sample_helpers=False, sample_topk=False, popular_ratio=0):
         self.g = g
         self.psize = psize
@@ -71,8 +93,9 @@ class ClusterIterV2(object):
         self.sample_topk = sample_topk
         self.sample_helpers = sample_helpers
 
+
         cache_folder = os.path.join(os.environ['DATASETS'], "partition",
-                dataset, part_fn.__name__)
+                dataset, partitioner.name)
         os.makedirs(cache_folder, exist_ok=True)
         cache_file = f'{cache_folder}/p{psize}.pt'
 
@@ -81,7 +104,7 @@ class ClusterIterV2(object):
         if os.path.exists(cache_file):
             self.assigns = torch.load(cache_file)
         else:
-            self.assigns = part_fn(g, psize)
+            self.assigns = partitioner(g, psize)
             torch.save(self.assigns, cache_file)
         nontrain_mask = ~g.ndata['train_mask']
         self.parts = partition_from(nids[nontrain_mask], self.assigns[nontrain_mask], psize)
@@ -180,11 +203,4 @@ class ClusterIterV2(object):
             self.train_pids = torch.randperm(self.psize)
             self.node_cache_parts = self.__get_popular_nodes__()
             raise StopIteration
-
-if __name__ == "__main__":
-    ids = torch.randint(8, (10,))
-    psize = 4
-    assigns = rand_partition_assignment(ids, psize)
-    print(ids, assigns)
-    print(partition_from(ids, assigns))
 

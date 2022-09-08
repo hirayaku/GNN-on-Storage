@@ -151,10 +151,10 @@ def train(args, tb_writer):
                 test_acc, test_loss, _ = eval_ns_batching(model, g, test_nid, args.bsize3,
                         args.test_fanout, args.num_workers, use_ddp=False)
                 if run == 0:
-                    tb_writer.add_scalar('Valid/accu', val_acc, global_iter)
-                    tb_writer.add_scalar('Valid/loss', val_loss, global_iter)
-                    tb_writer.add_scalar('test/accu', test_acc, global_iter)
-                    tb_writer.add_scalar('test/loss', test_loss, global_iter)
+                    tb_writer.add_scalar('Valid/accu', val_acc, epoch)
+                    tb_writer.add_scalar('Valid/loss', val_loss, epoch)
+                    tb_writer.add_scalar('test/accu', test_acc, epoch)
+                    tb_writer.add_scalar('test/loss', test_loss, epoch)
                 print(f"Val acc: {val_acc:.4f}")
                 print(f"Test acc: {test_acc:.4f}")
                 logger.add_result(run, (train_acc, val_acc, test_acc))
@@ -274,8 +274,9 @@ if __name__ == '__main__':
         raise
 
     tb_writer.add_hparams({
-        'lr': args.lr, 'num_hidden': args.num_hidden, 'dropout': args.dropout, 'fanout': str(args.fanout),
-        'bsize2': args.bsize2, 'seed': seed, 'use_incep': args.use_incep, 'mlp': args.mlp,
+        'seed': seed,'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
+        'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'dropout': args.dropout, 'weight-decay': args.wt_decay,
+        'bsize2': args.bsize2,
         },
         {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
         )

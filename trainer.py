@@ -49,7 +49,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     return acc, loss, tv - t0
 
 # return: (highest_train, highest_valid, final_train, final_test)
-def train(args, tb_writer):
+def train(args, partitioner, tb_writer):
     assert args.sampling == "NS"
 
     data = GraphLoader(name=args.dataset, root=args.root, mmap=False)
@@ -88,14 +88,8 @@ def train(args, tb_writer):
     print("#Features shape:", g.ndata['feat'].shape)
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
 
-    if args.part == "metis":
-        partitioner = HBSampler.MetisBalancedPartitioner()
-    elif args.part == "rand":
-        partitioner = HBSampler.RandomNodePartitioner()
-    else:
-        raise NotImplementedError
     cluster_iterator = HBSampler.ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.hsize,
-            partitioner=partitioner, sample_topk=not args.popular_sample, popular_ratio=args.popular_ratio)
+            partitioner=partitioner, sample_topk=args.popular_sample, popular_ratio=args.popular_ratio)
 
     if args.use_incep:
         model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
@@ -121,7 +115,7 @@ def train(args, tb_writer):
             print(f"Epoch {epoch+1}/{args.n_epochs}, Recycle: {recycle_factor:.2f}")
             model.train()
             for j, (subgraph, train_nids) in enumerate(cluster_iterator):
-                if j == 0 or j == len(cluster_iterator)-1:
+                if j == 0:
                     print(f'#nodes:{subgraph.num_nodes()}, #edges:{subgraph.num_edges()}')
                     print(f'#train:{train_nids.shape[0]}')
 
@@ -142,8 +136,11 @@ def train(args, tb_writer):
                 while batch_iter < len(dataloader) * recycle_factor:
                     try:
                         batch_iter += 1
-                        step, (_, _, blocks) = next(iterator)
-                    #  for step, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
+                        _, (input_nodess, output_nodes, blocks) = next(iterator)
+                        # skip batches with too few training nodes
+                        if len(output_nodes) < 0.1 * args.bsize2:
+                            print(f"skip {len(output_nodes)} nodes")
+                            continue
                         # Load the input features as well as output labels
                         x = blocks[0].srcdata['feat'].float()
                         y = blocks[-1].dstdata['label'].flatten().long()
@@ -163,22 +160,24 @@ def train(args, tb_writer):
                             tb_writer.add_scalar('Train/lr', optimizer.param_groups[0]['lr'], global_iter)
                             tb_writer.add_scalar('Train/loss', loss.item(), global_iter)
                             tb_writer.add_scalar('Train/accu', train_acc, global_iter)
+                            tb_writer.add_scalar('Train/recycle', recycle_factor, global_iter)
 
                         if (epoch_iter+1) % args.log_every == 0:
                             print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1}",
                                 f"train acc: {train_acc:.4f}, nodes: {subgraph.num_nodes()}")
                     except StopIteration:
-                        dataloader = dgl.dataloading.DataLoader(
-                            subgraph,
-                            train_nids,
-                            sampler,
-                            device=device,
-                            batch_size=args.bsize2,
-                            shuffle=True,
-                            drop_last=False,
-                            num_workers=args.num_workers,
-                            use_prefetch_thread=False, pin_prefetcher=False)
-                        iterator = enumerate(dataloader)
+                        if batch_iter < len(dataloader) * recycle_factor:
+                            dataloader = dgl.dataloading.DataLoader(
+                                subgraph,
+                                train_nids,
+                                sampler,
+                                device=device,
+                                batch_size=args.bsize2,
+                                shuffle=True,
+                                drop_last=False,
+                                num_workers=args.num_workers,
+                                use_prefetch_thread=False, pin_prefetcher=False)
+                            iterator = enumerate(dataloader)
 
             if (epoch + 1) % args.eval_every == 0:
                 train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
@@ -188,10 +187,10 @@ def train(args, tb_writer):
                 test_acc, test_loss, _ = eval_ns_batching(model, g, test_nid, args.bsize3,
                         args.test_fanout, args.num_workers, use_ddp=False)
                 if run == 0:
-                    tb_writer.add_scalar('Valid/accu', val_acc, global_iter)
-                    tb_writer.add_scalar('Valid/loss', val_loss, global_iter)
-                    tb_writer.add_scalar('test/accu', test_acc, global_iter)
-                    tb_writer.add_scalar('test/loss', test_loss, global_iter)
+                    tb_writer.add_scalar('Valid/accu', val_acc, epoch)
+                    tb_writer.add_scalar('Valid/loss', val_loss, epoch)
+                    tb_writer.add_scalar('test/accu', test_acc, epoch)
+                    tb_writer.add_scalar('test/loss', test_loss, epoch)
                 logger.add_result(run, (train_acc, val_acc, test_acc))
                 print(f"Train acc: {train_acc:.4f}, Val acc: {val_acc:.4f}, Test acc: {test_acc:.4f}")
                 print(f"Best val: {logger.best_val:.4f}")
@@ -291,17 +290,27 @@ if __name__ == '__main__':
     args.test_fanout = list(map(int, args.test_fanout.split(',')))
     assert args.n_layers == len(args.fanout)
     assert args.n_layers == len(args.test_fanout)
-    assert args.part in ["metis", "rand", "deg-bucket"]
     torch.cuda.set_device(args.gpu)
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     print(f"Training with GPU: {device}")
 
+    # choose model
     model = "plain"
     if args.use_incep:
         model = "incep"
     elif args.mlp:
         model = "mlp+bn"
+    # choose partitioner
     partition = args.part
+    if args.part == "metis" or args.part == "metis-cut":
+        partitioner = HBSampler.MetisMinCutBalanced()
+    elif args.part == "metis-vol":
+        partitioner = HBSampler.MetisMinVolBalanced()
+    elif args.part == "rand":
+        partitioner = HBSampler.RandomNodePartitioner()
+    else:
+        raise NotImplementedError
+
     if args.popular_sample:
         popular = 'sample'
     else:
@@ -309,53 +318,20 @@ if __name__ == '__main__':
     log_path = f"log/{args.dataset}/{model}-{partition}-{popular}-c{args.popular_ratio}" \
             + f"-r{args.recycle}*{args.rho}-p{args.psize}-h{args.hsize}-b{args.bsize}-{time_stamp}"
     tb_writer = SummaryWriter(log_path, flush_secs=5)
+
     try:
-        accu = train(args, tb_writer)
+        accu = train(args, partitioner, tb_writer)
     except:
         shutil.rmtree(log_path)
         print("** removed tensorboard log dir **")
         raise
+
     tb_writer.add_hparams({
-        'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
-        'lr': args.lr, 'dropout': args.dropout, 'rho': args.rho, 'recycle': args.recycle,
-        'partition': args.part, 'psize': args.psize, 'hsize': args.hsize, 'bsize': args.bsize, 'bsize2': args.bsize2,
-        'seed': seed, 'popular_ratio': args.popular_ratio, 'popular_nodes': popular
+        'seed': seed,'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
+        'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'dropout': args.dropout, 'weight-decay': args.wt_decay,
+        'partition': args.part, 'psize': args.psize, 'bsize': args.bsize, 'bsize2': args.bsize2,
+        'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio, 'popular_method': popular,
         },
         {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
         )
     tb_writer.close()
-
-    '''
-    print("Step", step)
-    # 0-hop nodes
-    nodes = output_nodes.cpu()
-    deg_sum, deg2_sum = 0, 0
-    for node in nodes:
-        adjs = subgraph.in_edges(node)[0]
-        deg = adjs.shape
-        node_g = subgraph.ndata[dgl.NID][node]
-        adjs2 = g.in_edges(node_g)[0]
-        deg2 = adjs2.shape
-        deg_sum += deg[0]
-        deg2_sum += deg2[0]
-        if deg[0] > deg2[0]:
-            raise Exception
-    print(f"0-hop: {nodes.shape[0]}")
-    print(f"avg_deg={deg_sum/nodes.shape[0]:.2f}, {deg_sum/deg2_sum*100:.2f}%")
-    # 1-hop nodes
-    nodes = blocks[0].srcnodes()
-    nodes = blocks[0].srcdata[dgl.NID][nodes].cpu()
-    deg_sum, deg2_sum = 0, 0
-    for node in nodes:
-        adjs = subgraph.in_edges(node)[0]
-        deg = adjs.shape
-        node_g = subgraph.ndata[dgl.NID][node]
-        adjs2 = g.in_edges(node_g)[0]
-        deg2 = adjs2.shape
-        deg_sum += deg[0]
-        deg2_sum += deg2[0]
-        if deg[0] > deg2[0]:
-            raise Exception
-    print(f"1-hop: {nodes.shape[0]}")
-    print(f"avg_deg={deg_sum/nodes.shape[0]:.2f}, {deg_sum/deg2_sum*100:.2f}%")
-    '''

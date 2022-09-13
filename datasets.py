@@ -218,18 +218,18 @@ def serialize_data(name: str, rootdir: str, outdir: str) -> dict:
                 assert data_dict['edge_feat'] is None, "Can't add inverse edges to graph with edge features"
                 disk_index = utils.memmap(path, dtype=src.dtype,
                     mode='w+', shape=(4, num_edges))
-                disk_index[:num_edges] = src[:]
-                disk_index[num_edges:2*num_edges] = dst[:]
-                disk_index[2*num_edges:3*num_edges] = dst[:]
-                disk_index[3*num_edges:] = src[:]
+                disk_index[0][:] = src[:]
+                disk_index[1][:] = dst[:]
+                disk_index[2][:] = dst[:]
+                disk_index[3][:] = src[:]
                 disk_index.flush()
                 meta_info['graph']['edge_index'] = TensorInfo(shape=(2, 2*num_edges),
                     dtype=str(src.dtype), path=path, offset=0)._asdict()
             else:
                 disk_index = utils.memmap(path, dtype=src.dtype,
                     mode='w+', shape=(2, num_edges))
-                disk_index[:num_edges] = src[:]
-                disk_index[num_edges:] = dst[:]
+                disk_index[0][:] = src[:]
+                disk_index[1][:] = dst[:]
                 disk_index.flush()
                 meta_info['graph']['edge_index'] = TensorInfo(shape=(2, num_edges),
                     dtype=str(src.dtype), path=path, offset=0)._asdict()

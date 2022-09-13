@@ -45,6 +45,10 @@ def memmap(path, random=False, dtype=np.int8, mode='r+', offset=0, shape=None, o
         data.madvise_random()
     return data
 
+def mask2index(mask: torch.BoolTensor):
+    return torch.nonzero(mask, as_tuple=True)[0]
+
+# serialize various dtypes to string
 import json
 # https://stackoverflow.com/a/57915246
 class DtypeEncoder(json.JSONEncoder):
@@ -60,6 +64,34 @@ class DtypeEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray) or isinstance(obj, torch.Tensor):
             return obj.tolist()
         return super(DtypeEncoder, self).default(obj)
+
+# lookup torch dtype from numpy dtype
+numpy_to_torch_dtype_dict = {
+    np.dtype('bool')       : torch.bool,
+    np.dtype('uint8')      : torch.uint8,
+    np.dtype('int8')       : torch.int8,
+    np.dtype('int16')      : torch.int16,
+    np.dtype('int32')      : torch.int32,
+    np.dtype('int64')      : torch.int64,
+    np.dtype('float16')    : torch.float16,
+    np.dtype('float32')    : torch.float32,
+    np.dtype('float64')    : torch.float64,
+    np.dtype('complex64')  : torch.complex64,
+    np.dtype('complex128') : torch.complex128
+}
+
+def torch_dtype(dtype):
+    return numpy_to_torch_dtype_dict[np.dtype(dtype)]
+
+from contextlib import contextmanager
+@contextmanager
+def cwd(path):
+    oldpwd = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(oldpwd)
 
 import resource
 def using(point=""):

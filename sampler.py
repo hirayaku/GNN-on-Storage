@@ -1,4 +1,5 @@
-import os, random
+import os
+import utils
 
 import numpy as np
 import torch, dgl
@@ -23,7 +24,9 @@ class MetisNodePartitioner(NodePartitioner):
         super().__init__(name)
 
     def partition(self, g, psize, mask=None, objtype='cut'):
-        return dgl.metis_partition_assignment(g, psize, mask, objtype=objtype)
+        # change cwd to dataset dir to ensure fast intermediate data access
+        with utils.cwd(os.environ['DATASETS']):
+            return dgl.metis_partition_assignment(g, psize, mask, objtype=objtype)
 
 class MetisMinCutBalanced(MetisNodePartitioner):
     def __init__(self):
@@ -31,7 +34,7 @@ class MetisMinCutBalanced(MetisNodePartitioner):
 
     def partition(self, g, psize):
         return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='cut')
-    
+
 class MetisMinVolBalanced(MetisNodePartitioner):
     def __init__(self):
         super().__init__(name='metis-vol')
@@ -110,7 +113,7 @@ class ClusterIterV2(object):
         if os.path.exists(cache_file):
             self.assigns = torch.load(cache_file)
         else:
-            self.assigns = partitioner(g, psize)
+            self.assigns = partitioner.partition(g, psize)
             torch.save(self.assigns, cache_file)
         nontrain_mask = ~g.ndata['train_mask']
         self.parts = partition_from(nids[nontrain_mask], self.assigns[nontrain_mask], psize)

@@ -1,393 +1,136 @@
-import os
+import os, json
 import os.path as osp
 from enum import Enum
 from functools import namedtuple
 import numpy as np
-import torch
-import dgl
+import torch, dgl
 
 import utils
-import datasets, gnnos
 
-__all__ = [
-    'PartitionMethod',
-    'GraphLoader',
-    'PartitionSampler',
-    'PartitionedGraphLoader',
-    'HBatchGraphLoader']
-
-GraphLoaderArgs = namedtuple("args", ["name", "root", "mmap"])
-def _args(**kwargs):
-    default_args = {'mmap': False, 'root': '.'}
-    return GraphLoaderArgs(**{**default_args, **kwargs})
-
-def external_partition(graph, psize):
+class BaselineNodePropPredDataset(object):
     '''
-    Partition graph from external assignments
+    Baseline, mmap-based dataset
+    Loosely follows the interface of NodePropPredDataset in ogb.
+    Requires the following inputs:
+        dataset dir contains metadata.json;
+        metadata.json gives input data locations:
+        - graph
+        - label
+        - node_feat
+        - edge_feat
+        - train/val/test idx
+        extra attributes:
+        - num_nodes, num_tasks, task_type, num_classes, is_hetero
     '''
-    graph_path = graph.metadata[1].path
-    data_dir = osp.join(graph_path, f"partitions/EXTERNAL/p{psize}")
-    assigns = torch.load(osp.join(data_dir, f"p{psize}.pt")).int()
-    return gnnos.node_partitions(psize, assigns)
-
-class PartitionMethod(Enum):
-    RANDOM = 0
-    METIS = 1
-    HBATCH = 2
-    EXTERNAL = 3
-
-    @staticmethod
-    def fn(p_method):
-        fn_list = [
-            gnnos.random_partition,
-            dgl.metis_partition_assignment,
-            gnnos.good_partition,
-            external_partition
-        ]
-        return fn_list[p_method.value]
-
-def load_mag240m_citation(root, mmap=False):
-    from ogb.lsc import MAG240MDataset
-    dataset = MAG240MDataset(root=root)
-    num_classes = dataset.num_classes
-    ei_cites = dataset.edge_index('paper', 'cites', 'paper')
-    graph = dgl.graph((np.concatenate([ei_cites[0], ei_cites[1]]), np.concatenate([ei_cites[1], ei_cites[0]])), num_nodes=dataset.num_papers)
-    print(graph)
-    graph.ndata["label"] = torch.tensor(dataset.all_paper_label)
-
-    train_idx = dataset.get_idx_split('train')
-    val_idx = dataset.get_idx_split('valid')
-    test_idx = dataset.get_idx_split('valid')
-
-    train_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
-    train_mask[train_idx] = True
-    val_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
-    val_mask[val_idx] = True
-    test_mask = torch.zeros((graph.number_of_nodes(),), dtype=torch.bool)
-    test_mask[test_idx] = True
-    graph.ndata['train_mask'] = train_mask
-    graph.ndata['valid_mask'] = val_mask
-    graph.ndata['test_mask'] = test_mask
-    paper_feat = dataset.paper_feat if mmap else dataset.all_paper_feat
-    del dataset
-    return graph, num_classes, paper_feat
-
-class GraphLoader(object):
-    '''
-    GraphLoader loads the stored graph dataset from the given folder.
-    It could provide an in-memory version of the dataset or an mmap view
-    - graph topology: in-memory
-    - node features: in-memory (mmap=False) or on-storage (mmap=True)
-    - paritioned graph: no
-    '''
-    def __init__(self, **kwargs):
-        args = _args(**kwargs)
-        self.name = args.name
-        self.canonical_name = self.name.replace('-', '_')
-        self.root = args.root
-        self.mmap = args.mmap
-        self.dataset_dir = osp.join(self.root, self.canonical_name)
-
-        if "mag240m" in self.name:
-            self.graph, num_classes, feats = load_mag240m_citation(self.root, self.mmap)
-            if not self.mmap:
-                self.node_features = torch.from_numpy(feats)
-                self.node_features.share_memory_()
+    def __init__(self, name, root = 'dataset', mmap_feat=False, meta_dict = None):
+        if meta_dict is None:
+            self.dir_name = '_'.join(name.split('-'))
+            self.original_root = root
+            self.root = osp.join(root, self.dir_name)
+            with open(osp.join(self.root, 'metadata.json')) as f_meta:
+                self.meta_info = json.load(f_meta)
         else:
-            graphs, _ = dgl.load_graphs(osp.join(self.dataset_dir, "graph.dgl"))
-            self.graph = graphs[0]
+            self.dir_name = meta_dict['dir_path']
+            self.original_root = ''
+            self.root = meta_dict['dir_path']
+            self.meta_info = meta_dict
 
-            feat_shape_file = osp.join(self.dataset_dir, "feat.shape")
-            feat_file = osp.join(self.dataset_dir, "feat.feat")
-            shape = tuple(utils.memmap(feat_shape_file, mode='r', dtype='int64', shape=(2,)))
-            if self.mmap:
-                self.node_features = utils.memmap(feat_file, random=True, mode='r', dtype='float32',
-                    shape=shape)
+        self.num_tasks = int(self.meta_info['num_tasks'])
+        self.task_type = self.meta_info['task_type']
+        self.num_classes = self.meta_info['num_classes']
+        self.is_hetero = self.meta_info['is_hetero']
+        self.mmap_feat = mmap_feat
+
+        super(BaselineNodePropPredDataset, self).__init__()
+        self.load_data()
+
+    def tensor_from_dict(self, dict, inmem=True):
+        full_path = osp.join(self.root, dict['path'])
+        shape = dict['shape']
+        size = torch.prod(torch.LongTensor(shape)).item()
+        if inmem:
+            dtype = utils.torch_dtype(dict['dtype'])
+            return torch.from_file(full_path, size=size, dtype=dtype).reshape(shape)
+        else:
+            return utils.memmap(full_path, random=True, dtype=dict['dtype'], 
+                mode='r', offset=0, shape=shape)
+
+    def load_graph(self, graph_dict):
+        if graph_dict['format'] == 'coo':
+            edge_index = self.tensor_from_dict(graph_dict['edge_index'])
+            src_nodes, dst_nodes = edge_index[0], edge_index[1]
+            return dgl.graph(data=(src_nodes, dst_nodes),
+                num_nodes=self.num_nodes, device='cpu')
+        elif graph_dict['format'] in ('csc', 'csr'):
+            row_ptr = self.tensor_from_dict(graph_dict['row_ptr'])
+            col_idx = self.tensor_from_dict(graph_dict['col_idx'])
+            if 'edge_ids' in graph_dict:
+                edge_ids = self.tensor_from_dict(graph_dict['edge_ids'])
             else:
-                feat_size  = torch.prod(torch.tensor(shape, dtype=torch.long)).item()
-                self.node_features = torch.from_file(
-                    feat_file, size=feat_size, dtype=torch.float32).reshape(shape)
-                self.node_features.share_memory_()
-
-        for k, v in self.graph.ndata.items():
-            if k.endswith('_mask'):
-                self.graph.ndata[k] = v.bool()
-
-    def formats(self, formats):
-        self.graph = self.graph.formats(formats)
-
-    def feature_dim(self):
-        return self.node_features.shape[1:]
-
-    def features(self, indices) -> torch.Tensor:
-        tensor = self.node_features[indices]
-        if self.mmap:
-            # where most accesses to the storage happens
-            # torch.from_numpy returns zerocopy view of underlying DiskTensor
-            # PyTorch would complain about DiskTensor being not writable
-            # If there's any write to the tensor, the program would segfault
-            return torch.from_numpy(tensor)
+                edge_ids = torch.LongTensor()
+            return dgl.graph(data=('csc', (row_ptr, col_idx, edge_ids)))
         else:
-            return tensor
+            raise NotImplementedError("Only support coo,csc,csr graph formats")
 
-    def labels(self):
-        return self.graph.ndata['label']
+    def load_labels(self):
+        return self.tensor_from_dict(self.meta_info['labels'], inmem=not self.mmap_feat)
 
-    def num_classes(self):
-        labels = self.labels()
-        return torch.max(labels[~labels.isnan()]).long().item() + 1
-
-    @staticmethod
-    def _nonzero_idx(tensor_1d):
-        return torch.nonzero(tensor_1d, as_tuple=True)[0]
-
-    def train_idx(self):
-        return GraphLoader._nonzero_idx(self.graph.ndata['train_mask'])
-
-    def valid_idx(self):
-        return GraphLoader._nonzero_idx(self.graph.ndata['valid_mask'])
-
-    def test_idx(self):
-        return GraphLoader._nonzero_idx(self.graph.ndata['test_mask'])
+    def load_data(self):
+        self.num_nodes = self.meta_info['num_nodes']
+        self.graph = self.load_graph(self.meta_info['graph'])
+        self.labels = self.load_labels()
+        self.node_feat = self.tensor_from_dict(self.meta_info['node_feat'],
+            inmem=not self.mmap_feat)
+        if self.meta_info['edge_feat'] is not None:
+            self.edge_feat = self.tensor_from_dict(self.meta_info['edge_feat'],
+                inmem=not self.mmap_feat)
+        if self.is_hetero:
+            self.edge_type = self.tensor_from_dict(self.meta_info['edge_type'],
+                inmem=not self.mmap_feat)
 
     def get_idx_split(self):
-        return self.train_idx(), self.valid_idx(), self.test_idx()
+        idx_dict = self.meta_info['idx']
+        train_idx = self.tensor_from_dict(idx_dict['train'])
+        valid_idx = self.tensor_from_dict(idx_dict['valid'])
+        test_idx = self.tensor_from_dict(idx_dict['test'])
+        return {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 
+    def __getitem__(self, idx):
+        assert idx == 0, 'This dataset has only one graph'
+        return self.graph, self.labels
 
-def partition_offsets(partitions):
-    return torch.cumsum(
-        torch.tensor([0] + [len(part) for part in partitions], dtype=torch.long), dim=0)
-
-def split_tensor(tensor, intervals):
-    return [tensor[intervals[i]:intervals[i+1]] for i in range(len(intervals)-1)]
-
-
-class PartitionSampler(dgl.dataloading.Sampler):
-    def __init__(self, partitions, device='cpu', prefetch_ndata=None, prefetch_edata=None):
-        super().__init__()
-        self.partitions = partitions
-        self.device = device
-        self.prefetch_ndata = prefetch_ndata or []
-        self.prefetch_edata = prefetch_edata or []
-
-    def sample(self, g, partition_ids):
-        '''
-        sample partitions and generate subgraphs without features attached
-        '''
-        partitions = [self.partitions[i] for i in partition_ids]
-        node_ids = torch.cat(partitions)
-        sg = g.subgraph(node_ids, relabel_nodes=True, output_device=self.device)
-        dgl.dataloading.set_node_lazy_features(sg, self.prefetch_ndata)
-        dgl.dataloading.set_edge_lazy_features(sg, self.prefetch_edata)
-
-        intervals = partition_offsets(partitions)
-        return intervals, partition_ids, sg
-
-
-
-class PartitionedGraphLoader(GraphLoader):
-    '''
-    PartitionedGraphLoader loads a partitioned graph dataset
-    under the "partitions" folder.
-    If the graph is not yet partitioned, it generates a new partitioning,
-    reshuffles the node features if needed and cache the results
-    under the "partitions" folder.
-    - graph topology: in-memory
-    - node features: on-storage
-    - paritioned graph: yes
-    '''
-    def __init__(self, p_size, p_method=PartitionMethod(0), overwrite=False, **kwargs):
-        super(PartitionedGraphLoader, self).__init__(**kwargs)
-        self.p_size = p_size
-        self.p_method = p_method
-        p_func = PartitionMethod.fn(p_method)
-
-        partition_dir = osp.join(self.dataset_dir, f"partitions/{self.p_method.name}")
-        os.makedirs(partition_dir, exist_ok=True)
-        partition_file = osp.join(partition_dir, f"p{p_size}.pt")
-        partition_features_file = osp.join(partition_dir, f"features{p_size}")
-        partition_features_shape = osp.join(partition_dir, "features.shape")
-        if not overwrite:
-            try:
-                self.partitions = torch.load(partition_file)
-                if self.mmap:
-                    shape = tuple(utils.memmap(partition_features_shape, mode='r', dtype='int64'))
-                    self.shuffled_features = utils.memmap(partition_features_file, mode='r',
-                        dtype='float32', shape=shape)
-            except Exception as e:
-                print(f"[{type(self).__name__}] Exception thrown when loading "
-                    f"cached {self.p_method.name}-partitioning results:\n\t{e}")
-                overwrite = True
-
-        if overwrite:
-            # generate new partitions and shuffled features
-            print(f"[{type(self).__name__}] Partition {self.name} with {self.p_method.name}")
-            self.partitions = p_func(self.graph, self.p_size,
-                mask=self.graph.ndata['train_mask'].int())
-            torch.save(self.partitions, partition_file)
-            if self.mmap:
-                shuffled_features = PartitionedGraphLoader.shuffle(self.node_features,
-                    self.partitions, partition_features_file)
-                shape_mmap = utils.memmap(partition_features_shape, mode='w+', dtype='int64',
-                    shape=(len(shuffled_features.shape),))
-                shape_mmap[:] = shuffled_features.shape
-                shape_mmap.flush()
-                self.shuffled_features = shuffled_features
-
-        self.offsets = partition_offsets(self.partitions)
-
-    @staticmethod
-    def shuffle(features, partition_list, new_file):
-        '''
-        given a partition list, input node features, generate a shuffled feature file
-        where node features in the same partition are put adjacent,
-        '''
-        new_features = utils.memmap(new_file, mode='w+', dtype='float32', shape=features.shape)
-        offset = 0
-        for partition in partition_list:
-            partition_len = len(partition)
-            # dgl.subgraph(nodes) keeps the order of nodes in the returned subgraph
-            new_features[offset:offset+partition_len, :] = features[partition, :]
-            offset += partition_len
-
-        new_features.flush()
-        # prevent any future writes on the mmap file
-        new_features = utils.memmap(new_file, mode='r', dtype='float32', shape=features.shape)
-        return new_features
-
-    '''
-    def check_shuffle(self):
-        assert self.mmap, "Features are not shuffled if mmap is False"
-        for i, (nodes, features) in enumerate(self.pg):
-            nodes = torch.cat(nodes)
-            features = torch.cat(features)
-            assert (features == self.get_features(nodes)).all(), \
-                f"Inconsistent results for Partition {i}"
-    '''
-
-    def partition_idx(self):
-        return torch.arange(0, self.p_size)
-
-    def feat_partition(self, pid):
-        '''
-        Get the feature tensor of the pid-th partition
-        '''
-        if self.mmap:
-            return torch.from_numpy(self.shuffled_features[self.offsets[pid]:self.offsets[pid+1]])
-        else:
-            return self.features(self.partitions[pid])
-
-    def gather_feat_partitions(self, indices):
-        feats = [self.feat_partition(i) for i in indices]
-        return torch.cat(feats)
-
-
-class HBatchGraphLoader:
-    '''
-    Load partitioned graph and features backed by gnnos.TensorStore
-    - graph topology: on-storage
-    - node features: on-storage
-    - paritioned graph: yes
-    The only data in the CPU memory are train/val/test masks
-    '''
-    def __init__(self, name: str, root: str, p_size, p_method=PartitionMethod(0)):
-        self.name = name
-        self.canonical_name = self.name.replace('-', '_')
-        self.root = root
-        self.dataset_dir = osp.join(root, self.canonical_name)
-        self.p_size = p_size
-        self.p_method = p_method
-
-        if name == "oag-paper":
-            data = datasets.load_oag(self.dataset_dir)
-        elif name == "mag240m":
-            data = datasets.load_mag240m(self.dataset_dir)
-        elif name.startswith("ogbn"):
-            data = datasets.load_ogb(self.dataset_dir)
-        else:
-            raise ValueError("Unknown dataset, please choose from oag-paper, mag240m, or OGB")
-        # unpack loaded data
-        graph, node_features, self.is_multilabel, labels, self.masks = data
-
-        print("Loaded dataset")
-
-        # try loading cached partition files: assignments, BCOO, features, labels
-        create = False
-        data_dir = osp.join(self.dataset_dir, f'partitions/{p_method.name}/p{p_size}')
-        try:
-            pg, shuffled_features, shuffled_labels, partitions = \
-                datasets.load_partitions(data_dir)
-        except Exception as e:
-            print(e)
-            create = True
-        if create:
-            os.makedirs(data_dir, exist_ok=True)
-            partitions = PartitionMethod.fn(self.p_method)(graph, self.p_size)
-            pg, shuffled_features, shuffled_labels, _ = datasets.create_partitions(
-                graph, node_features, labels, partitions, data_dir)
-
-        self.graph = pg
-        self.partitions = partitions
-        self.shuffled_features = shuffled_features
-        self.shuffled_labels = shuffled_labels
-
-    def feature_dim(self):
-        return self.shuffled_features.metadata.shape[1:]
-
-    def num_classes(self):
-        if self.is_multilabel:
-            return self.labels.metadata.shape[1]
-        else:
-            labels: torch.Tensor = self.shuffled_labels.tensor()
-            return torch.max(labels[~labels.isnan()]).long().item() + 1
-
-    def partition_idx(self):
-        return torch.arange(0, self.p_size)
-
-    def gather_node_partitions(self, indices):
-        nodes = [self.partitions[i] for i in indices]
-        return torch.cat(nodes)
-
-    def gather_feat_partitions(self, indices):
-        slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
-        return gnnos.gather_slices(self.shuffled_features, slices)
-
-    def gather_label_partitions(self, indices):
-        slices = [(self.partitions.pos(idx), self.partitions.pos(idx+1)) for idx in indices]
-        return gnnos.gather_slices(self.shuffled_labels, slices).long()
+    def __len__(self):
+        return 1
 
 
 if __name__ == "__main__":
-    import gc, resource
-    def using(point=""):
-        usage=resource.getrusage(resource.RUSAGE_SELF)
-        return '%s: mem=%s MB' % (point, usage[2]/1024.0 )
+    dataset_dir = osp.join(os.environ['DATASETS'], 'gnnos')
+    data = BaselineNodePropPredDataset(name='ogbn-papers100M', root=dataset_dir,
+        mmap_feat=True)
+    g = data.graph
+    node_feat = data.node_feat
+    labels = data.labels
 
-    gnnos.verbose()
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    n_train_samples = len(train_nid)
+    n_val_samples = len(val_nid)
+    n_test_samples = len(test_nid)
 
-    print(using('before'))
-    gloader = HBatchGraphLoader(
-        name="ogbn-products", root="/mnt/md0/inputs", p_size=16)
-    print(using('after'))
-    parts = torch.randint(16, (4,))
-    print(f"Fetch partitions: {parts}")
-    feats = gloader.gather_feat_partitions(parts)
-    nodes = gloader.gather_node_partitions(parts)
-    print(feats)
-    print(using('tensor'))
-    del gloader
-    gc.collect()
-    print(using('collect'))
+    n_classes = data.num_classes
+    n_nodes = g.num_nodes()
+    n_edges = g.num_edges()
+    in_feats = node_feat.shape[1]
 
-    print(using('before'))
-    gloader = PartitionedGraphLoader(
-        name="ogbn-products", root="/mnt/md0/graphs", p_size=16)
-    print(using('after'))
-    feats_ref = gloader.features(nodes)
-    assert (feats == feats_ref).all()
-    print(feats_ref)
-    print(using('tensor'))
-    del gloader
-    gc.collect()
-    print(using('collect'))
-
+    print(f"""----Data statistics------'
+    #Nodes {n_nodes}
+    #Edges {n_edges}
+    #Classes/Labels (multi binary labels) {n_classes}
+    #Train samples {n_train_samples}
+    #Val samples {n_val_samples}
+    #Test samples {n_test_samples}
+    #Labels     {labels.shape}
+    #Features   {node_feat.shape}"""
+    )

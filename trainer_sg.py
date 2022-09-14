@@ -1,5 +1,4 @@
-import multiprocessing
-import sys, os, argparse, time, random, gc
+import sys, os, argparse, time, random
 import shutil
 import tqdm
 
@@ -13,7 +12,7 @@ import torchmetrics.functional as MF
 import dgl
 
 from modules import SAGE, SAGE_mlp, SAGE_res_incep
-from graphloader import GraphLoader
+from graphloader import BaselineNodePropPredDataset
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
 
@@ -46,44 +45,18 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     return acc, loss, tv - t0
 
 # return: (highest_train, highest_valid, final_train, final_test)
-def train(args, tb_writer):
-
-    data = GraphLoader(name=args.dataset, root=args.root, mmap=False)
-    g = data.graph
-    g.ndata['feat'] = data.node_features
-    train_mask = g.ndata['train_mask']
-    val_mask = g.ndata['val_mask'] if 'val_mask' in g.ndata else g.ndata['valid_mask']
-    test_mask = g.ndata['test_mask']
-    labels = g.ndata['label']
-
-    train_nid = g.nodes()[train_mask]
-    val_nid = g.nodes()[val_mask]
-    test_nid = g.nodes()[test_mask]
-
-    in_feats = g.ndata['feat'].shape[1]
-    n_classes = data.num_classes()
-    n_nodes = g.num_nodes()
-    n_edges = g.num_edges()
-
-    n_train_samples = train_mask.int().sum().item()
-    n_val_samples = val_mask.int().sum().item()
-    n_test_samples = test_mask.int().sum().item()
-
-    print("""----Data statistics------'
-    #Nodes %d
-    #Edges %d
-    #Classes/Labels (multi binary labels) %d
-    #Train samples %d
-    #Val samples %d
-    #Test samples %d""" %
-          (n_nodes, n_edges, n_classes,
-           n_train_samples,
-           n_val_samples,
-           n_test_samples))
-    print("#Labels shape:", g.ndata['label'].shape)
-    print("#Features shape:", g.ndata['feat'].shape)
-
+def train(args, data, tb_writer):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
+
+    g = data.graph
+    g.ndata['feat'] = data.node_feat
+    g.ndata['label'] = data.labels
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    n_classes = data.num_classes
+    in_feats = node_feat.shape[1]
 
     if args.use_incep:
         model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
@@ -93,8 +66,8 @@ def train(args, tb_writer):
         model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
     model.cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wt_decay)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=args.lr_decay,
-                                                              patience=args.patience, verbose=True)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer=optimizer, factor=args.lr_decay, patience=args.patience, verbose=True)
 
     logger = Logger(args.runs, args)
     for run in range(args.runs):
@@ -172,7 +145,7 @@ if __name__ == '__main__':
                         help="GPU device index")
     parser.add_argument("--dataset", type=str, default="ogbn-products",
                         help="Dataset name")
-    parser.add_argument("--root", type=str, default="datasets",
+    parser.add_argument("--root", type=str, default=f"{os.environ['DATASETS']}/gnnos",
                         help="Dataset location")
     parser.add_argument("--logdir", type=str, default="log",
                         help="Log location")
@@ -199,16 +172,6 @@ if __name__ == '__main__':
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
                         help="Number of training epochs")
-    #  parser.add_argument("--part", type=str, default="metis",
-    #                      help="Partitioning method to use")
-    #  parser.add_argument("--psize", type=int, default=256,
-    #                      help="Number of node partitions")
-    #  parser.add_argument("--bsize", type=int, default=16,
-    #                      help="Batch size for storage-host hierarchy")
-    #  parser.add_argument("--hsize", type=int, default=16,
-    #                      help="Helper partition size")
-    #  parser.add_argument("--sampling", type=str, default="NS",
-    #                      help="Choose sampling method for host-gpu hierarchy (NS | Block | None)")
     parser.add_argument("--bsize2", type=int, default=1024,
                         help="Batch size for training")
     parser.add_argument("--bsize3", type=int, default=128,
@@ -221,10 +184,6 @@ if __name__ == '__main__':
                         help="Number of graph sampling workers for host-gpu hierarchy")
     parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
     parser.add_argument("--use-incep", action="store_true", help="use SAGE_res_incep model")
-    #  parser.add_argument("--recycle", type=int, default=0,
-    #                      help="Number of training passes over the host data before recycling")
-    #  parser.add_argument("--sample-topk", action="store_true")
-    #  parser.add_argument("--popular-ratio", type=float, default=0)
     parser.add_argument("--progress", action="store_true", help="show training progress bar")
     parser.add_argument("--comment", type=str, help="Extra comments to print out to the trace")
     args = parser.parse_args()
@@ -263,11 +222,41 @@ if __name__ == '__main__':
     elif args.mlp:
         model = "mlp+bn"
 
+    # load dataset and statistics
+    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+    g = data.graph
+    node_feat = data.node_feat
+    labels = data.labels
+
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    n_train_samples = len(train_nid)
+    n_val_samples = len(val_nid)
+    n_test_samples = len(test_nid)
+
+    n_classes = data.num_classes
+    n_nodes = g.num_nodes()
+    n_edges = g.num_edges()
+    in_feats = node_feat.shape[1]
+
+    print(f"""----Data statistics------'
+    #Nodes {n_nodes}
+    #Edges {n_edges}
+    #Classes/Labels (multi binary labels) {n_classes}
+    #Train samples {n_train_samples}
+    #Val samples {n_val_samples}
+    #Test samples {n_test_samples}
+    #Labels     {labels.shape}
+    #Features   {node_feat.shape}"""
+    )
+
     log_path = f"{args.logdir}/{args.dataset}/sage-{model}-{time_stamp}"
     tb_writer = SummaryWriter(log_path)
 
     try:
-        accu = train(args, tb_writer)
+        accu = train(args, data, tb_writer)
     except:
         print("** Unable to finish training due to error, removing tensorboard log **")
         shutil.rmtree(log_path)

@@ -10,15 +10,13 @@
 source $HOME/.bashrc
 conda activate gnn
 cd $HOME/proj/GNNoS
-mkdir -p traces/products
+mkdir -p traces/$DATASET
 date
 
 set -eu
 
-# helpers = trainers
-srun --output=traces/products/sg.b$BSIZE2.out --open-mode=append \
-    python3 -u trainer_sg.py --dataset ogbn-products --root $DATASETS/baseline --comment "$COMMENT" \
+srun --output=traces/$DATASET/sg.b$BSIZE2.out --open-mode=append \
+    python3 -u trainer_sg.py --dataset ogbn-products --root $DATASETS/gnnos --model $MODEL --comment "$COMMENT" \
     --bsize2 $BSIZE2 --bsize3 1024 --fanout 15,10,5 --test-fanout 20,20,20 --lr $LR --lr-decay $LRD \
-    --n-epochs 50 --log-every 100 --eval-every 1 --lr-decay $LRD --num-workers 16
-    # --wt-decay 5e-4 --n-epochs 50 --log-every 100 --eval-every 1 --lr-decay $LRD --num-workers 16
+    --wt-decay $WD --n-epochs 50 --log-every 100 --eval-every 1 --num-workers 16
 

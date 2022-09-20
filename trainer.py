@@ -12,15 +12,17 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep
-from graphloader import GraphLoader, PartitionMethod, PartitionSampler, PartitionedGraphLoader
-from dataloader import PartitionDataLoader
+from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
+from graphloader import BaselineNodePropPredDataset
 import sampler as HBSampler
-#  from sampler import ClusterIterV2
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
 
 def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_ddp=False):
+    '''
+    run evaluation on eval_set, using neighbor sampling of fanout
+    requires full access on the dataset
+    '''
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     t0 = time.time()
 
@@ -29,7 +31,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     #  eval_sampler = dgl.dataloading.MultiLayerFullNeighborSampler(len(fanout))
     eval_dataloader = dgl.dataloading.DataLoader(
             g, eval_set, eval_sampler, device=device,
-            batch_size=batch_size, shuffle=True, drop_last=False,
+            batch_size=batch_size, shuffle=False, drop_last=False,
             use_ddp=use_ddp, num_workers=num_workers,
             use_prefetch_thread=False, pin_prefetcher=False)
 
@@ -48,60 +50,74 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     tv = time.time()
     return acc, loss, tv - t0
 
-# return: (highest_train, highest_valid, final_train, final_test)
-def train(args, partitioner, tb_writer):
-    assert args.sampling == "NS"
-
-    data = GraphLoader(name=args.dataset, root=args.root, mmap=False)
-    g = data.graph
-    g.ndata['feat'] = data.node_features
-    train_mask = g.ndata['train_mask']
-    val_mask = g.ndata['val_mask'] if 'val_mask' in g.ndata else g.ndata['valid_mask']
-    test_mask = g.ndata['test_mask']
-    labels = g.ndata['label']
-
-    train_nid = g.nodes()[train_mask]
-    val_nid = g.nodes()[val_mask]
-    test_nid = g.nodes()[test_mask]
-
-    in_feats = g.ndata['feat'].shape[1]
-    n_classes = data.num_classes()
-    n_nodes = g.num_nodes()
-    n_edges = g.num_edges()
-
-    n_train_samples = train_mask.int().sum().item()
-    n_val_samples = val_mask.int().sum().item()
-    n_test_samples = test_mask.int().sum().item()
-
-    print("""----Data statistics------'
-    #Nodes %d
-    #Edges %d
-    #Classes/Labels (multi binary labels) %d
-    #Train samples %d
-    #Val samples %d
-    #Test samples %d""" %
-          (n_nodes, n_edges, n_classes,
-           n_train_samples,
-           n_val_samples,
-           n_test_samples))
-    print("#Labels shape:", g.ndata['label'].shape)
-    print("#Features shape:", g.ndata['feat'].shape)
+# TODO
+def eval_hier_batching(model, cluster_iter, eval_name, batch_size, fanout, num_workers):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
+    t0 = time.time()
+
+    megabatches = tqdm.tqdm(enumerate(cluster_iter)) if args.progress else enumerate(cluster_iter)
+    eval_sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout)
+
+    model.eval()
+    ys = []
+    y_hats = []
+
+    with torch.no_grad():
+        for j, (subgraph, _) in megabatches:
+            eval_mask = subgraph.ndata[eval_name] & (~subgraph.ndata['cache_mask'])
+            eval_nids = subgraph.nodes()[eval_mask]
+            if j == 0:
+                print(f'#nodes:{subgraph.num_nodes()}, #edges:{subgraph.num_edges()}')
+                print(f'#eval: {eval_nids.shape[0]}')
+
+            dataloader = dgl.dataloading.DataLoader(
+                subgraph, eval_nids, eval_sampler, device=device,
+                batch_size=batch_size, shuffle=False, drop_last=False,
+                num_workers=num_workers,
+                use_prefetch_thread=False, pin_prefetcher=False)
+
+            for  _, _, blocks in dataloader:
+                x = blocks[0].srcdata['feat'].float()
+                ys.append(blocks[-1].dstdata['label'].flatten().long())
+                y_hats.append(model(blocks, x))
+
+        y_hats, ys = torch.cat(y_hats), torch.cat(ys)
+        acc = MF.accuracy(y_hats, ys)
+        loss = F.nll_loss(y_hats, ys)
+        tv = time.time()
+        return acc, loss, tv - t0
+
+# return: (highest_train, highest_valid, final_train, final_test)
+def train(args, data, partitioner, tb_writer):
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
+
+    g = data.graph
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    n_classes = data.num_classes
+    in_feats = g.ndata['feat'].shape[1]
 
     cluster_iterator = HBSampler.ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.hsize,
             partitioner=partitioner, sample_topk=args.popular_sample, popular_ratio=args.popular_ratio)
 
-    if args.use_incep:
-        model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
-    elif args.mlp:
-        model = SAGE_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
-    else:
-        model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
+    if args.model == 'gat':
+        model = GAT(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers,heads=4)
+    elif args.model == 'gin':
+        model = GIN(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers)
+    elif args.model == 'sage':
+        if args.use_incep:
+            model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
+        elif args.mlp:
+            model = SAGE_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
+        else:
+            model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
     model.cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                 betas=(args.beta1, 0.999), weight_decay=args.wt_decay)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=args.lr_decay,
-                                                              patience=1000, verbose=True)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wt_decay)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
 
     logger = Logger(args.runs, args)
 
@@ -114,11 +130,9 @@ def train(args, partitioner, tb_writer):
             recycle_factor = min(max(args.recycle * args.rho**epoch, 1), 5)
             print(f"Epoch {epoch+1}/{args.n_epochs}, Recycle: {recycle_factor:.2f}")
             model.train()
-            for j, (subgraph, train_nids) in enumerate(cluster_iterator):
-                if j == 0:
-                    print(f'#nodes:{subgraph.num_nodes()}, #edges:{subgraph.num_edges()}')
-                    print(f'#train:{train_nids.shape[0]}')
-
+            megabatches = tqdm.tqdm(enumerate(cluster_iterator)) if args.progress \
+                else enumerate(cluster_iterator)
+            for j, (subgraph, train_nids) in megabatches:
                 sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
                 dataloader = dgl.dataloading.DataLoader(
                     subgraph,
@@ -132,11 +146,14 @@ def train(args, partitioner, tb_writer):
                     use_prefetch_thread=False, pin_prefetcher=False)
                 iterator = enumerate(dataloader)
 
+                batch_start = time.time()
                 batch_iter = 0
                 while batch_iter < len(dataloader) * recycle_factor:
                     try:
                         batch_iter += 1
                         _, (input_nodess, output_nodes, blocks) = next(iterator)
+                        if batch_iter == 1:
+                            first_minibatch = time.time()
                         # skip batches with too few training nodes
                         if len(output_nodes) < 0.1 * args.bsize2:
                             print(f"skip {len(output_nodes)} nodes")
@@ -178,6 +195,10 @@ def train(args, partitioner, tb_writer):
                                 num_workers=args.num_workers,
                                 use_prefetch_thread=False, pin_prefetcher=False)
                             iterator = enumerate(dataloader)
+                batch_end = time.time()
+                # print(f"    mega-batch overall: {batch_end-batch_start:.2f}s")
+                # print(f"    mega-batch compute: {batch_end-first_minibatch:.2f}s")
+                # print(f"    num_iters={batch_iter}, num_workers={args.num_workers}")
 
             if (epoch + 1) % args.eval_every == 0:
                 train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
@@ -193,7 +214,6 @@ def train(args, partitioner, tb_writer):
                     tb_writer.add_scalar('test/loss', test_loss, epoch)
                 logger.add_result(run, (train_acc, val_acc, test_acc))
                 print(f"Train acc: {train_acc:.4f}, Val acc: {val_acc:.4f}, Test acc: {test_acc:.4f}")
-                print(f"Best val: {logger.best_val:.4f}")
         logger.print_statistics(run)
     logger.print_statistics()
 
@@ -207,9 +227,12 @@ if __name__ == '__main__':
                         help="GPU device index")
     parser.add_argument("--dataset", type=str, default="ogbn-products",
                         help="Dataset")
-    parser.add_argument("--root", type=str, default=f"{os.environ['DATASETS']}/baseline",
+    parser.add_argument("--root", type=str, default=f"{os.environ['DATASETS']}/gnnos",
                         help="Dataset location")
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--model", type=str, default="sage", help="GNN model (sage|gat|gin)")
+    parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
+    parser.add_argument("--use-incep", action="store_true")
     parser.add_argument("--n-layers", type=int, default=3,
                         help="Number of GNN layers")
     parser.add_argument('--num-hidden', type=int, default=256,
@@ -225,6 +248,8 @@ if __name__ == '__main__':
                         help='beta_1 in Adam optimizer')
     parser.add_argument('--lr-decay', type=float, default=0.9999,
                         help="Learning rate decay")
+    parser.add_argument('--lr-step', type=int, default=1000,
+                        help="Learning rate scheduler steps")
     parser.add_argument('--wt-decay', type=float, default=0,
                         help="Model parameter weight decay")
     parser.add_argument("--n-procs", type=int, default=1,
@@ -247,16 +272,12 @@ if __name__ == '__main__':
                         help="Number of training passes over the host data before recycling")
     parser.add_argument("--rho", type=float, default=1,
                         help="recycling increasing factor")
-    parser.add_argument("--sampling", type=str, default="NS",
-                        help="Choose sampling method for host-gpu hierarchy (NS | Block)")
     parser.add_argument("--log-every", type=int, default=10,
                         help="number of steps of logging training acc/loss")
     parser.add_argument("--eval-every", type=int, default=5,
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of graph sampling workers for host-gpu hierarchy")
-    parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
-    parser.add_argument("--use-incep", action="store_true")
     parser.add_argument("--popular-ratio", type=float, default=0)
     parser.add_argument("--popular-sample", action="store_true")
     parser.add_argument("--progress", action="store_true", help="show training progress bar")
@@ -282,10 +303,7 @@ if __name__ == '__main__':
     print(time_stamp)
     print(args)
     print(f"Storage-Host batching: {(args.psize, args.bsize)}")
-    if args.sampling == "NS":
-        print(f"Host-GPU batching: NeighborSampling {args.bsize2}, [{args.fanout}]")
-    else:
-        print(f"Host-GPU batching: BlockSampling {(args.bsize, args.bsize2)}")
+    print(f"Host-GPU batching: NeighborSampling {args.bsize2}, [{args.fanout}]")
     args.fanout = list(map(int, args.fanout.split(',')))
     args.test_fanout = list(map(int, args.test_fanout.split(',')))
     assert args.n_layers == len(args.fanout)
@@ -295,11 +313,12 @@ if __name__ == '__main__':
     print(f"Training with GPU: {device}")
 
     # choose model
-    model = "plain"
-    if args.use_incep:
-        model = "incep"
-    elif args.mlp:
-        model = "mlp+bn"
+    model = args.model
+    if args.model == 'sage':
+        if args.use_incep:
+            model = "sage-ri"
+        elif args.mlp:
+            model = "sage-mlp+bn"
     # choose partitioner
     partition = args.part
     if args.part == "metis" or args.part == "metis-cut":
@@ -311,16 +330,51 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
+    # load dataset and statistics
+    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+    g = data.graph
+    g.ndata['feat'] = data.node_feat
+    g.ndata['label'] = data.labels
+    n_classes = data.num_classes
+    n_nodes = g.num_nodes()
+    n_edges = g.num_edges()
+    in_feats = g.ndata['feat'].shape[1]
+
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    g.ndata['train_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['train_mask'][train_nid] = True
+    g.ndata['valid_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['valid_mask'][val_nid] = True
+    g.ndata['test_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['test_mask'][test_nid] = True
+    n_train_samples = len(train_nid)
+    n_val_samples = len(val_nid)
+    n_test_samples = len(test_nid)
+
+    print(f"""----Data statistics------
+    #Nodes {n_nodes}
+    #Edges {n_edges}
+    #Classes/Labels (multi binary labels) {n_classes}
+    #Train samples {n_train_samples}
+    #Val samples {n_val_samples}
+    #Test samples {n_test_samples}
+    #Labels     {g.ndata['label'].shape}
+    #Features   {g.ndata['feat'].shape}"""
+    )
+
     if args.popular_sample:
         popular = 'sample'
     else:
         popular = 'fixed'
-    log_path = f"log/{args.dataset}/{model}-{partition}-{popular}-c{args.popular_ratio}" \
-            + f"-r{args.recycle}*{args.rho}-p{args.psize}-h{args.hsize}-b{args.bsize}-{time_stamp}"
+    log_path = f"log/{args.dataset}/HB-{model}-{partition}-{popular}-c{args.popular_ratio}" \
+            + f"-r{args.recycle}*{args.rho}-p{args.psize}-b{args.bsize}-{time_stamp}"
     tb_writer = SummaryWriter(log_path, flush_secs=5)
 
     try:
-        accu = train(args, partitioner, tb_writer)
+        accu = train(args, data, partitioner, tb_writer)
     except:
         shutil.rmtree(log_path)
         print("** removed tensorboard log dir **")

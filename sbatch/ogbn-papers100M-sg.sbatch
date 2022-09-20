@@ -10,13 +10,12 @@
 source $HOME/.bashrc
 conda activate gnn
 cd $HOME/proj/GNNoS
-mkdir -p traces/papers100M
+mkdir -p traces/$DATASET
 date
 
 set -eu
 
-# helpers = trainers
-srun --output=traces/papers100M/sg.b$BSIZE2.out --open-mode=append \
-    python3 -u trainer_sg.py --dataset ogbn-papers100M --root $DATASETS/baseline --comment "$COMMENT" \
-    --bsize2 $BSIZE2 --fanout 15,10,5 --lr $LR --n-epochs 25 --log-every 100 --eval-every 1 \
-    --lr-decay $LRD --num-workers 20 
+srun --output=traces/$DATASET/sg.b$BSIZE2.out --open-mode=append \
+    python3 -u trainer_sg.py --dataset ogbn-papers100M --root $ROOT --model $MODEL --comment "$COMMENT" \
+    --num-hidden 1024 --bsize2 $BSIZE2 --fanout 15,10,5 --lr $LR --n-epochs 25 --log-every 100 --eval-every 1 \
+    --dropout $DPOUT --lr-decay $LRD --lr-step $LRS --num-workers 20 --use-incep

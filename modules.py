@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import Linear as Lin
+from torch.nn import Linear, Sequential, BatchNorm1d, ReLU
 
 import dgl
 import dgl.nn as dglnn
-from dgl.multiprocessing import shared_tensor
 
 class SAGE(nn.Module):
     def __init__(self,
@@ -218,4 +219,150 @@ class SAGE_res_incep(nn.Module):
         #  return self.mlp(torch.cat(collect, -1))
         return torch.log_softmax(self.mlp(torch.cat(collect, -1)), dim=-1)
 
+class GAT(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 heads):
+        super().__init__()
+
+        self.num_layers = num_layers
+
+        self.convs = torch.nn.ModuleList()
+        self.convs.append(dglnn.GATConv(in_channels, hidden_channels,
+                                  heads,allow_zero_in_degree=True))
+        for _ in range(num_layers - 2):
+            self.convs.append(
+                dglnn.GATConv(heads * hidden_channels, hidden_channels, heads,allow_zero_in_degree=True))
+        self.convs.append(
+            dglnn.GATConv(heads * hidden_channels, out_channels, heads,allow_zero_in_degree=True))
+        print(out_channels)
+        self.skips = torch.nn.ModuleList()
+        self.skips.append(Lin(in_channels, hidden_channels * heads))
+        for _ in range(num_layers - 2):
+            self.skips.append(
+                Lin(hidden_channels * heads, hidden_channels * heads))
+        self.skips.append(Lin(hidden_channels * heads, out_channels))
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for skip in self.skips:
+            skip.reset_parameters()
+    
+    def forward(self, blocks, x):
+        h = x
+        num_output_nodes = blocks[-1].num_dst_nodes()
+        for l, (layer, block) in enumerate(zip(self.convs, blocks)):
+            h_res = h[:block.num_dst_nodes()]
+            if l != self.num_layers - 1:
+                h = layer(block, (h,h_res)).flatten(start_dim=1)
+            else:
+                h = layer(block, (h,h_res)).mean(dim=1)
+            h = h + self.skips[l](h_res)
+            if l != self.num_layers - 1:
+                h = F.elu(h)
+                h = F.dropout(h, p=0.5, training=self.training)
+            
+        return torch.log_softmax(h, dim=-1)
+        
+
+        
+class GIN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+        kwargs = dict()
+        super().__init__()
+        self.num_layers = num_layers
+        self.convs = torch.nn.ModuleList()
+        self.hidden_channels = hidden_channels
+
+        self.convs.append(dglnn.GINConv(Sequential(
+            Linear(in_channels, hidden_channels),
+            BatchNorm1d(hidden_channels), ReLU(),
+            Linear(hidden_channels, hidden_channels), ReLU())))
+        for _ in range(num_layers - 2):
+            self.convs.append(dglnn.GINConv(Sequential(
+                Linear(hidden_channels, hidden_channels),
+                BatchNorm1d(hidden_channels), ReLU(),
+                Linear(hidden_channels, hidden_channels), ReLU())))
+        self.convs.append(dglnn.GINConv(Sequential(
+            Linear(hidden_channels, hidden_channels),
+            BatchNorm1d(hidden_channels), ReLU(),
+            Linear(hidden_channels, hidden_channels), ReLU())))
+        self.lin1 = Linear(hidden_channels, hidden_channels)
+        self.lin2 = Linear(hidden_channels, out_channels)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        def init_weights(m):
+            if isinstance(m, torch.nn.Linear):
+                gain = torch.nn.init.calculate_gain('relu')
+                torch.nn.init.xavier_uniform_(m.weight, gain=gain)
+        for conv in self.convs:
+            conv.apply(init_weights)
+        self.lin1.reset_parameters()
+        self.lin2.reset_parameters()
+
+    def forward(self, blocks, x):
+        h = x.to(torch.float)
+        num_output_nodes = blocks[-1].num_dst_nodes()
+        for l, (layer, block) in enumerate(zip(self.convs, blocks)):
+            h_res = h[:block.num_dst_nodes()]
+            h = layer(block,(h,h_res))
+            if l == self.num_layers - 1:
+                h = self.lin1(h).relu()
+                h = self.lin2(h)
+        
+        return torch.log_softmax(h, dim=-1)
+
+
+# R-GAT model for full MAG240M dataset
+# https://github.com/dmlc/dgl/blob/master/examples/pytorch/ogb_lsc/MAG240M/train.py
+class RGAT(nn.Module):
+    def __init__(self, in_channels, out_channels, hidden_channels, num_etypes, num_layers, num_heads, dropout, pred_ntype):
+        super().__init__()
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.skips = nn.ModuleList()
+        
+        self.convs.append(nn.ModuleList([
+            dglnn.GATConv(in_channels, hidden_channels // num_heads, num_heads, allow_zero_in_degree=True)
+            for _ in range(num_etypes)
+        ]))
+        self.norms.append(nn.BatchNorm1d(hidden_channels))
+        self.skips.append(nn.Linear(in_channels, hidden_channels))
+        for _ in range(num_layers - 1):
+            self.convs.append(nn.ModuleList([
+                dglnn.GATConv(hidden_channels, hidden_channels // num_heads, num_heads, allow_zero_in_degree=True)
+                for _ in range(num_etypes)
+            ]))
+            self.norms.append(nn.BatchNorm1d(hidden_channels))
+            self.skips.append(nn.Linear(hidden_channels, hidden_channels))
+            
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.BatchNorm1d(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, out_channels)
+        )
+        self.dropout = nn.Dropout(dropout)
+        
+        self.hidden_channels = hidden_channels
+        self.pred_ntype = pred_ntype
+        self.num_etypes = num_etypes
+        
+    def forward(self, mfgs, x):
+        for i in range(len(mfgs)):
+            mfg = mfgs[i]
+            x_dst = x[:mfg.num_dst_nodes()]
+            n_src = mfg.num_src_nodes()
+            n_dst = mfg.num_dst_nodes()
+            mfg = dgl.block_to_graph(mfg)
+            x_skip = self.skips[i](x_dst)
+            for j in range(self.num_etypes):
+                subg = mfg.edge_subgraph(mfg.edata['etype'] == j, relabel_nodes=False)
+                x_skip += self.convs[i][j](subg, (x, x_dst)).view(-1, self.hidden_channels)
+            x = self.norms[i](x_skip)
+            x = F.elu(x)
+            x = self.dropout(x)
+        return self.mlp(x)
 

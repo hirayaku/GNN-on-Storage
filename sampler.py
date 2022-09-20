@@ -17,7 +17,7 @@ class RandomNodePartitioner(NodePartitioner):
         super().__init__('rand')
 
     def partition(self, g, psize):
-        return torch.randint(psize, (g.num_ndoes(),))
+        return torch.randint(psize, (g.num_nodes(),))
 
 class MetisNodePartitioner(NodePartitioner):
     def __init__(self, name='metis'):
@@ -99,7 +99,6 @@ class ClusterIterV2(object):
         self.g = g
         self.psize = psize
         self.bsize = bsize
-        self.hsize = hsize
         self.sample_topk = sample_topk
         self.sample_helpers = sample_helpers
 

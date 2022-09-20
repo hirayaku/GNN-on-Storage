@@ -11,7 +11,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep
+from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
 from graphloader import BaselineNodePropPredDataset
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
@@ -58,16 +58,22 @@ def train(args, data, tb_writer):
     n_classes = data.num_classes
     in_feats = node_feat.shape[1]
 
-    if args.use_incep:
-        model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
-    elif args.mlp:
-        model = SAGE_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
-    else:
-        model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
+    if args.model == 'gat':
+        model = GAT(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers,heads=4)
+    elif args.model == 'gin':
+        model = GIN(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers)
+    elif args.model == 'sage':
+        if args.use_incep:
+            model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
+        elif args.mlp:
+            model = SAGE_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
+        else:
+            model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
     model.cuda()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wt_decay)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer=optimizer, factor=args.lr_decay, patience=args.patience, verbose=True)
+        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
 
     logger = Logger(args.runs, args)
     for run in range(args.runs):
@@ -147,9 +153,10 @@ if __name__ == '__main__':
                         help="Dataset name")
     parser.add_argument("--root", type=str, default=f"{os.environ['DATASETS']}/gnnos",
                         help="Dataset location")
-    parser.add_argument("--logdir", type=str, default="log",
-                        help="Log location")
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--model", type=str, default="sage", help="GNN model (sage|gat|gin)")
+    parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
+    parser.add_argument("--use-incep", action="store_true")
     parser.add_argument("--n-layers", type=int, default=3,
                         help="Number of GNN layers")
     parser.add_argument("--num-hidden", type=int, default=256,
@@ -164,10 +171,10 @@ if __name__ == '__main__':
                         help="Learning rate")
     parser.add_argument("--lr-decay", type=float, default=0.9999,
                         help="Learning rate decay")
+    parser.add_argument('--lr-step', type=int, default=1000,
+                        help="Learning rate scheduler steps")
     parser.add_argument('--wt-decay', type=float, default=0,
                         help="Model parameter weight decay")
-    parser.add_argument("--patience", type=float, default=1000,
-                        help="Learning rate decay patience")
     parser.add_argument("--n-procs", type=int, default=1,
                         help="Number of DDP processes")
     parser.add_argument("--n-epochs", type=int, default=10,
@@ -182,8 +189,6 @@ if __name__ == '__main__':
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of graph sampling workers for host-gpu hierarchy")
-    parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
-    parser.add_argument("--use-incep", action="store_true", help="use SAGE_res_incep model")
     parser.add_argument("--progress", action="store_true", help="show training progress bar")
     parser.add_argument("--comment", type=str, help="Extra comments to print out to the trace")
     args = parser.parse_args()
@@ -205,7 +210,7 @@ if __name__ == '__main__':
     dgl.random.seed(seed)
 
     time_stamp = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
-    print(f"\n## {args.comment}, seed: {seed}")
+    print(f"\n## [{os.environ['HOSTNAME']}], seed: {seed}")
     print(time_stamp)
     print(args)
     args.fanout = list(map(int, args.fanout.split(',')))
@@ -216,11 +221,13 @@ if __name__ == '__main__':
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     print(f"Training with GPU: {device}")
 
-    model = "plain"
-    if args.use_incep:
-        model = "incep"
-    elif args.mlp:
-        model = "mlp+bn"
+    # choose model
+    model = args.model
+    if args.model == 'sage':
+        if args.use_incep:
+            model = "sage-ri"
+        elif args.mlp:
+            model = "sage-mlp+bn"
 
     # load dataset and statistics
     data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
@@ -252,7 +259,7 @@ if __name__ == '__main__':
     #Features   {node_feat.shape}"""
     )
 
-    log_path = f"{args.logdir}/{args.dataset}/sage-{model}-{time_stamp}"
+    log_path = f"log/{args.dataset}/NS-{model}-{time_stamp}"
     tb_writer = SummaryWriter(log_path)
 
     try:

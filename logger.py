@@ -5,13 +5,13 @@ class Logger(object):
     def __init__(self, runs, info=None):
         self.info = info
         self.results = [[] for _ in range(runs)]
-        self.best_val = 0
+        self.best_val = [0] * runs
 
     def add_result(self, run, result):
         assert len(result) == 3
         assert run >= 0 and run < len(self.results)
-        if result[1] > self.best_val:
-            self.best_val = result[1]
+        if result[1] > self.best_val[run]:
+            self.best_val[run] = result[1]
         self.results[run].append(result)
 
     def print_statistics(self, run=None):

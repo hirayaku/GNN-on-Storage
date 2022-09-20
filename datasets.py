@@ -150,6 +150,9 @@ def load_mag240m_f(rootdir):
     feats = np.memmap(osp.join(dataset.dir, 'full.npy'), mode='r', dtype='float16',
         shape=(graph.num_nodes(), dataset.num_paper_features))
     row_ptr, col_idx, eids = graph.adj_sparse('csc')
+    labels = np.empty((graph.num_nodes(),), dtype=np.float32)
+    labels[:] = np.nan
+    labels[dataset.num_authors+dataset.num_institutions:] = dataset.paper_label
     data_dict = {
         'graph': {
             'format': 'csc',
@@ -161,7 +164,7 @@ def load_mag240m_f(rootdir):
         'edge_feat': None,
         'edge_type': graph.edata['etype'].numpy(),
         'num_nodes': graph.num_nodes(),
-        'labels': dataset.paper_label,
+        'labels': labels,
     }
     paper_offset = dataset.num_authors + dataset.num_institutions
     train_idx = dataset.get_idx_split('train') + paper_offset

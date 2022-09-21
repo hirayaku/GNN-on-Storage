@@ -16,8 +16,8 @@ date
 set -eu
 
 # helpers = trainer
-srun --output=traces/$DATASET/sg.b$BSIZE2.out --open-mode=append \
+srun --output=traces/$DATASET/$MODEL.NS.b$BSIZE2.out --open-mode=append \
     python3 -u trainer_sg.py --dataset $DATASET --root $ROOT --model $MODEL --comment "$COMMENT" \
     --bsize2 $BSIZE2 --mlp --num-hidden 1024 --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD \
-    --n-epochs 50 --log-every 500 --eval-every 1 --num-workers 20
+    --n-epochs 20 --log-every 500 --eval-every 1 --num-workers 20 --runs $RUNS
 

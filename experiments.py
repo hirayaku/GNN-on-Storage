@@ -9,6 +9,7 @@ parser.add_argument('--comment', type=str, default='')
 parser.add_argument('--runs', type=int, default=1)
 # common hparams
 parser.add_argument('--model', type=str, nargs='+', default=['sage'], help='GNN models')
+parser.add_argument('--num-hidden', type=int, nargs='+', default=[256], help='hidden dimensions')
 parser.add_argument('--minibatch', type=int, nargs='+', default=[1024])
 parser.add_argument('--dropout', type=float, nargs='+', default=[0.5])
 parser.add_argument('--lr', type=float, nargs='+', default=[1e-3])
@@ -51,14 +52,16 @@ configs = gen_config(args)
 
 sbatch_hb = '''
 DATASET="{dataset}" ROOT="{root}" COMMENT="{comment}" RUNS={runs} \
-MODEL="{model}" BSIZE2={minibatch} LR={lr} LRD={lr_decay} LRS={lr_step} WD={wt_decay} DPOUT={dropout} \
+MODEL="{model}" HIDDEN={num_hidden} BSIZE2={minibatch} LR={lr} \
+LRD={lr_decay} LRS={lr_step} WD={wt_decay} DPOUT={dropout} \
 PART={part} PSIZE={psize} BSIZE={bsize} PRATIO={sratio} REC={recycle} RHO={rho} \
 sbatch -J {dataset}-{model}-{part}/{psize}/{bsize}/{minibatch}/{sratio} --export=ALL sbatch/{dataset}.sbatch
 '''
 
 sbatch_ns = '''
 DATASET="{dataset}" ROOT="{root}" COMMENT="{comment}" RUNS={runs} \
-MODEL="{model}" BSIZE2={minibatch} LR={lr} LRD={lr_decay} LRS={lr_step} WD={wt_decay} DPOUT={dropout} \
+MODEL="{model}" HIDDEN={num_hidden} BSIZE2={minibatch} LR={lr} \
+LRD={lr_decay} LRS={lr_step} WD={wt_decay} DPOUT={dropout} \
 PART={part} PSIZE={psize} BSIZE={bsize} PRATIO={sratio} REC={recycle} RHO={rho} \
 sbatch -J {dataset}-{model}-NS/{minibatch} --export=ALL sbatch/{dataset}-sg.sbatch
 '''

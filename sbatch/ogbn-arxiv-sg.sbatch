@@ -16,8 +16,9 @@ date
 set -eu
 
 # helpers = trainers
-srun --output=traces/$DATASET/sg.b$BSIZE2.out --open-mode=append \
+srun --output=traces/$DATASET/$MODEL.NS.b$BSIZE2.out --open-mode=append \
     python3 -u trainer_sg.py --dataset ogbn-arxiv --root $ROOT --model $MODEL --comment "$COMMENT" \
-    --bsize2 $BSIZE2 --fanout 15,10,5 --test-fanout 50,50,50 --lr $LR --lr-decay $LRD \
-    --wt-decay $WD --n-epochs 100 --log-every 100 --eval-every 2 --num-workers 16
+    --num-hidden $HIDDEN --bsize2 $BSIZE2 --fanout 15,10,5 --test-fanout 50,50,50 --lr $LR --lr-decay $LRD \
+    --wt-decay $WD --n-epochs 100 --log-every 100 --eval-every 2 --num-workers 16 \
+    --runs $RUNS
 

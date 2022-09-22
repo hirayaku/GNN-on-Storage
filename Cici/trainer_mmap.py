@@ -37,7 +37,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
         for it, (_, _, blocks) in minibatches:
             if args.mmap:
                 x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float().to(device)
-                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long)).to(device)
+                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long).to(device))
             else:
                 x = blocks[0].srcdata['feat'].float()
                 ys.append(blocks[-1].dstdata['label'].flatten().long())

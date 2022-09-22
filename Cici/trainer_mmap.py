@@ -36,8 +36,8 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
         minibatches = tqdm.tqdm(enumerate(eval_dataloader)) if args.progress else enumerate(eval_dataloader)
         for it, (_, _, blocks) in minibatches:
             if args.mmap:
-                x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float()
-                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long))
+                x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float().to(device)
+                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long)).to(device)
             else:
                 x = blocks[0].srcdata['feat'].float()
                 ys.append(blocks[-1].dstdata['label'].flatten().long())
@@ -57,9 +57,6 @@ def train(args, data, tb_writer):
     if not args.mmap:
         g.ndata['feat'] = data.node_feat
         g.ndata['label'] = data.labels
-    else:
-        data.node_feat = data.node_feat.to(device)
-        data.labels = data.labels.to(device)
     idx = data.get_idx_split()
     train_nid = idx['train']
     val_nid = idx['valid']
@@ -108,8 +105,8 @@ def train(args, data, tb_writer):
             model.train()
             for step, (input_nodes, output_nodes, blocks) in minibatches:
                 if args.mmap:
-                    x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float()
-                    y = data.labels[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long)
+                    x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float().to(device)
+                    y = data.labels[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long).to(device)
                 else:
                     x = blocks[0].srcdata['feat'].float()
                     y = blocks[-1].dstdata['label'].flatten().long()

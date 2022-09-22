@@ -12,7 +12,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
+from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 from graphloader import BaselineNodePropPredDataset
 import sampler as HBSampler
 from logger import Logger
@@ -103,7 +103,10 @@ def train(args, data, partitioner, tb_writer):
             partitioner=partitioner, sample_topk=args.popular_sample, popular_ratio=args.popular_ratio)
 
     if args.model == 'gat':
-        model = GAT(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers,heads=4)
+        if args.mlp:
+            model = GAT_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, heads=4, dropout=args.dropout)
+        else:
+            model = GAT(in_feats, args.num_hidden, n_classes, args.n_layers, heads=4, dropout=args.dropout)
     elif args.model == 'gin':
         model = GIN(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers)
     elif args.model == 'sage':

@@ -221,7 +221,7 @@ class SAGE_res_incep(nn.Module):
 
 class GAT(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 heads):
+                 heads, dropout=0.5):
         super().__init__()
 
         self.num_layers = num_layers
@@ -234,20 +234,20 @@ class GAT(torch.nn.Module):
                 dglnn.GATConv(heads * hidden_channels, hidden_channels, heads,allow_zero_in_degree=True))
         self.convs.append(
             dglnn.GATConv(heads * hidden_channels, out_channels, heads,allow_zero_in_degree=True))
-        print(out_channels)
         self.skips = torch.nn.ModuleList()
         self.skips.append(Lin(in_channels, hidden_channels * heads))
         for _ in range(num_layers - 2):
             self.skips.append(
                 Lin(hidden_channels * heads, hidden_channels * heads))
         self.skips.append(Lin(hidden_channels * heads, out_channels))
+        self.dropout = nn.Dropout(dropout)
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
         for skip in self.skips:
             skip.reset_parameters()
-    
+
     def forward(self, blocks, x):
         h = x
         num_output_nodes = blocks[-1].num_dst_nodes()
@@ -260,12 +260,62 @@ class GAT(torch.nn.Module):
             h = h + self.skips[l](h_res)
             if l != self.num_layers - 1:
                 h = F.elu(h)
-                h = F.dropout(h, p=0.5, training=self.training)
-            
-        return torch.log_softmax(h, dim=-1)
-        
+                h = self.dropout(h)
 
-        
+        return torch.log_softmax(h, dim=-1)
+
+class GAT_mlp(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 heads, dropout=0.5):
+        super().__init__()
+
+        self.num_layers = num_layers
+
+        self.convs = torch.nn.ModuleList()
+        self.skips = torch.nn.ModuleList()
+        self.convs.append(dglnn.GATConv(in_channels, hidden_channels // heads, heads,allow_zero_in_degree=True))
+        self.skips.append(Lin(in_channels, hidden_channels))
+        for _ in range(num_layers - 1):
+            self.convs.append(
+                dglnn.GATConv(hidden_channels, hidden_channels//heads, heads,allow_zero_in_degree=True))
+            self.skips.append(Lin(hidden_channels, hidden_channels))
+        self.dropout = nn.Dropout(dropout)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.BatchNorm1d(hidden_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
+            nn.Linear(hidden_channels, out_channels),
+        )
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for skip in self.skips:
+            skip.reset_parameters()
+
+    def forward(self, blocks, x):
+        h = x
+        num_output_nodes = blocks[-1].num_dst_nodes()
+        for l, (layer, block) in enumerate(zip(self.convs, blocks)):
+            h_res = h[:block.num_dst_nodes()]
+            #  if l != self.num_layers - 1:
+            #      h = layer(block, (h,h_res)).flatten(start_dim=1)
+            #  else:
+            #      h = layer(block, (h,h_res)).mean(dim=1)
+            #  h = h + self.skips[l](h_res)
+            #  if l != self.num_layers - 1:
+            #      h = F.elu(h)
+            #      h = self.dropout(h)
+            h = layer(block, (h,h_res)).flatten(start_dim=1)
+            h = h + self.skips[l](h_res)
+            h = F.elu(h)
+            h = self.dropout(h)
+
+        h = self.mlp(h)
+        return torch.log_softmax(h, dim=-1)
+
 class GIN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
         kwargs = dict()
@@ -310,7 +360,6 @@ class GIN(torch.nn.Module):
             if l == self.num_layers - 1:
                 h = self.lin1(h).relu()
                 h = self.lin2(h)
-        
         return torch.log_softmax(h, dim=-1)
 
 

@@ -17,7 +17,7 @@ set -eu
 
 # helpers = trainer
 srun --output=traces/mag240m-c/$MODEL.NS.b$BSIZE2.out --open-mode=append \
-    python3 -u trainer_sg.py --dataset $DATASET --root $DATASETS/gnnos --model $MODEl --comment "$COMMENT" \
-    --bsize2 $BSIZE2 --mlp --num-hidden 1024 --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD \
+    python3 -u trainer_sg.py --dataset $DATASET --root $DATASETS/gnnos --model $MODEL --comment "$COMMENT" \
+    --bsize2 $BSIZE2 --bsize3 $BSIZE2 --mlp --num-hidden $HIDDEN --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD \
     --n-epochs 25 --log-every 500 --eval-every 1 --num-workers 20
 

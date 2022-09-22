@@ -161,7 +161,7 @@ if __name__ == '__main__':
                         help="GPU device index")
     parser.add_argument("--dataset", type=str, default="ogbn-products",
                         help="Dataset name")
-    parser.add_argument("--root", type=str, default="/home/tianhaoh/datasets/gnnos",
+    parser.add_argument("--root", type=str, default= f"{os.environ['DATASETS']}/gnnos",
                         help="Dataset location")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--model", type=str, default="sage", help="GNN model (sage|gat|gin)")

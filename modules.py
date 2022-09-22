@@ -317,7 +317,7 @@ class GAT_mlp(torch.nn.Module):
         return torch.log_softmax(h, dim=-1)
 
 class GIN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         kwargs = dict()
         super().__init__()
         self.num_layers = num_layers
@@ -339,6 +339,7 @@ class GIN(torch.nn.Module):
             Linear(hidden_channels, hidden_channels), ReLU())))
         self.lin1 = Linear(hidden_channels, hidden_channels)
         self.lin2 = Linear(hidden_channels, out_channels)
+        self.dropout = nn.Dropout(dropout)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -359,6 +360,7 @@ class GIN(torch.nn.Module):
             h = layer(block,(h,h_res))
             if l == self.num_layers - 1:
                 h = self.lin1(h).relu()
+                h = self.dropout(h)
                 h = self.lin2(h)
         return torch.log_softmax(h, dim=-1)
 

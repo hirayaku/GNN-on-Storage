@@ -64,7 +64,7 @@ def train(args, data, tb_writer):
         else:
             model = GAT(in_feats, args.num_hidden, n_classes, args.n_layers, heads=4, dropout=args.dropout)
     elif args.model == 'gin':
-        model = GIN(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers)
+        model = GIN(in_feats, args.num_hidden, n_classes, num_layers=args.n_layers, dropout=args.dropout)
     elif args.model == 'sage':
         if args.use_incep:
             model = SAGE_res_incep(in_feats, args.num_hidden, n_classes, args.n_layers, F.leaky_relu, args.dropout)
@@ -72,6 +72,8 @@ def train(args, data, tb_writer):
             model = SAGE_mlp(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
         else:
             model = SAGE(in_feats, args.num_hidden, n_classes, args.n_layers, F.relu, args.dropout)
+    else:
+        raise NotImplementedError(f"Unknown model: {args.model}")
     model.cuda()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wt_decay)

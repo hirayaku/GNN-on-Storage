@@ -59,6 +59,7 @@ class BaselineNodePropPredDataset(object):
         if graph_dict['format'] == 'coo':
             edge_index = self.tensor_from_dict(graph_dict['edge_index'])
             src_nodes, dst_nodes = edge_index[0], edge_index[1]
+            utils.using("creating dgl graph")
             return dgl.graph(data=(src_nodes, dst_nodes),
                 num_nodes=self.num_nodes, device='cpu')
         elif graph_dict['format'] in ('csc', 'csr'):
@@ -78,6 +79,9 @@ class BaselineNodePropPredDataset(object):
     def load_data(self):
         self.num_nodes = self.meta_info['num_nodes']
         self.graph = self.load_graph(self.meta_info['graph'])
+        utils.using("graph loaded")
+        self.graph = self.graph.formats('csc')
+        utils.using("graph transformed")
         self.labels = self.load_labels()
         self.node_feat = self.tensor_from_dict(self.meta_info['node_feat'],
             inmem=not self.mmap_feat)
@@ -87,6 +91,7 @@ class BaselineNodePropPredDataset(object):
         if self.is_hetero:
             self.edge_type = self.tensor_from_dict(self.meta_info['edge_type'],
                 inmem=not self.mmap_feat)
+        utils.using("dataset loaded")
 
     def get_idx_split(self):
         idx_dict = self.meta_info['idx']

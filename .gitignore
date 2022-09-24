@@ -20,3 +20,4 @@
 dataset
 baseline/dataset
 baseline/cluster_gcn/cluster_gcn.pkl
+Cici/*.log

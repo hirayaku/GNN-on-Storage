@@ -15,6 +15,7 @@ from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
 from graphloader import BaselineNodePropPredDataset
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
+import utils
 
 def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_ddp=False):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
@@ -106,6 +107,9 @@ def train(args, data, tb_writer):
             minibatches = tqdm.tqdm(enumerate(dataloader)) if args.progress else enumerate(dataloader)
             model.train()
             for step, (input_nodes, output_nodes, blocks) in minibatches:
+                if step % args.log_every == 0:
+                    utils.using(f"step {step}")
+                    print(f"Gathering {len(input_nodes)} nodes")
                 if args.mmap:
                     x = torch.from_numpy(data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()]).float().to(device)
                     y = torch.from_numpy(data.labels[blocks[-1].dstdata[dgl.NID].cpu().numpy()]).flatten().to(torch.long).to(device)

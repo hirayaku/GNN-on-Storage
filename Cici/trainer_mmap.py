@@ -37,7 +37,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
         for it, (_, _, blocks) in minibatches:
             if args.mmap:
                 x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float().to(device)
-                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long).to(device))
+                ys.append(data.labels)[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long).to(device)
             else:
                 x = blocks[0].srcdata['feat'].float()
                 ys.append(blocks[-1].dstdata['label'].flatten().long())
@@ -98,15 +98,17 @@ def train(args, data, tb_writer):
             num_workers=args.num_workers,
             use_prefetch_thread=False, pin_prefetcher=False)
 
+        avg = 0
         for epoch in range(args.n_epochs):
+            tic = time.time()
             epoch_iter = 0
             print(f"Epoch {epoch+1}/{args.n_epochs}")
             minibatches = tqdm.tqdm(enumerate(dataloader)) if args.progress else enumerate(dataloader)
             model.train()
             for step, (input_nodes, output_nodes, blocks) in minibatches:
                 if args.mmap:
-                    x = data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()].float().to(device)
-                    y = data.labels[blocks[-1].dstdata[dgl.NID].cpu().numpy()].flatten().to(torch.long).to(device)
+                    x = torch.from_numpy(data.node_feat[blocks[0].srcdata[dgl.NID].cpu().numpy()]).float().to(device)
+                    y = torch.from_numpy(data.labels[blocks[-1].dstdata[dgl.NID].cpu().numpy()]).flatten().to(torch.long).to(device)
                 else:
                     x = blocks[0].srcdata['feat'].float()
                     y = blocks[-1].dstdata['label'].flatten().long()
@@ -132,6 +134,17 @@ def train(args, data, tb_writer):
                 elif (epoch_iter+1) % args.log_every == 0:
                     print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1} train acc: {train_acc:.4f}")
 
+            toc = time.time()
+            print('Epoch Time(s): {:.4f}'.format(toc - tic))
+            if epoch >= 1:
+                avg += toc - tic
+        print('Avg epoch time: {:.5f}'.format(avg / epoch))
+        #logger.print_statistics(run)
+   # logger.print_statistics()
+
+   # return logger.get_result()
+
+'''
             if (epoch + 1) % args.eval_every == 0:
                 train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
                         args.fanout, args.num_workers, use_ddp=False)
@@ -147,10 +160,7 @@ def train(args, data, tb_writer):
                 print(f"Val acc: {val_acc:.4f}")
                 print(f"Test acc: {test_acc:.4f}")
                 logger.add_result(run, (train_acc, val_acc, test_acc))
-        logger.print_statistics(run)
-    logger.print_statistics()
-
-    return logger.get_result()
+'''
 
 
 if __name__ == '__main__':
@@ -196,7 +206,7 @@ if __name__ == '__main__':
                         help="Batch size used during evaluation")
     parser.add_argument("--log-every", type=int, default=10,
                         help="number of steps of logging training acc/loss")
-    parser.add_argument("--eval-every", type=int, default=5,
+    parser.add_argument("--eval-every", type=int, default=50,
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of graph sampling workers for host-gpu hierarchy")
@@ -274,6 +284,8 @@ if __name__ == '__main__':
     log_path = f"log/{args.dataset}/NS-{model}-{time_stamp}"
     tb_writer = SummaryWriter(log_path)
 
+    train(args, data, tb_writer)
+'''
     try:
         accu = train(args, data, tb_writer)
     except:
@@ -289,3 +301,4 @@ if __name__ == '__main__':
         {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
         )
     tb_writer.close()
+'''

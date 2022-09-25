@@ -180,7 +180,7 @@ class ClusterIterV2(object):
             # we use fixed helpers policy
             helper_nids = torch.cat([self.parts[i] for i in sample_pids])
             cache_parts = [self.node_cache_parts[i] for i in range(self.psize) if i not in sample_pids]
-            cache_nids = torch.cat(cache_parts)
+            cache_nids = torch.cat(cache_parts) if len(cache_parts) > 0 else torch.LongTensor()
             nids = torch.cat([train_nids, helper_nids, cache_nids])
             # XXX: check cache_nids don't duplicate with other nodes
             assert len(torch.unique(nids)) == len(nids)

@@ -11,8 +11,12 @@ group=$3
 [[ -z $user ]] && user=$USER
 [[ -z $group ]] && group=$user
 
-cgcreate -a $user:$group -t $user:$group -g memory:gnn
-echo $MEM_CAP > /sys/fs/cgroup/memory/gnn/memory.limit_in_bytes
-echo 0 > /sys/fs/cgroup/memory/gnn/memory.swappiness
+cgroup=gnn$MEM_CAP
+set -x
 
-echo "Memory limited to $MEM_CAP for memory:gnn"
+cgcreate -a $user:$group -t $user:$group -g memory:$cgroup
+echo $MEM_CAP > /sys/fs/cgroup/memory/$cgroup/memory.limit_in_bytes
+echo 0 > /sys/fs/cgroup/memory/$cgroup/memory.swappiness
+
+set +x
+echo "Memory limited to $MEM_CAP for memory:$cgroup"

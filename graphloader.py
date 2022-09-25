@@ -44,47 +44,51 @@ class BaselineNodePropPredDataset(object):
         super(BaselineNodePropPredDataset, self).__init__()
         self.load_data()
 
-    def tensor_from_dict(self, dict, inmem=True):
+    def tensor_from_dict(self, dict, inmem=True, random=False):
         full_path = osp.join(self.root, dict['path'])
         shape = dict['shape']
         size = torch.prod(torch.LongTensor(shape)).item()
         if inmem:
-            dtype = utils.torch_dtype(dict['dtype'])
-            return torch.from_file(full_path, size=size, dtype=dtype).reshape(shape)
+            array = np.fromfile(full_path, dtype=dict['dtype'], count=size)
+            return torch.from_numpy(array).reshape(shape)
         else:
-            return utils.memmap(full_path, random=True, dtype=dict['dtype'], 
-                mode='r', offset=0, shape=shape)
+            dtype = utils.torch_dtype(dict['dtype'])
+            # shared=False to disable modification of tensors
+            tensor = torch.from_file(full_path, size=size, dtype=dtype, shared=False).reshape(shape)
+            if random:
+                utils.madvise_random(tensor.data_ptr(), tensor.numel()*tensor.element_size())
+            return tensor
 
     def load_graph(self, graph_dict):
         if graph_dict['format'] == 'coo':
-            edge_index = self.tensor_from_dict(graph_dict['edge_index'])
+            edge_index = self.tensor_from_dict(graph_dict['edge_index'], inmem=not self.mmap_feat)
             src_nodes, dst_nodes = edge_index[0], edge_index[1]
-            utils.using("creating dgl graph")
+            utils.using("creating dgl graph (coo)")
             return dgl.graph(data=(src_nodes, dst_nodes),
                 num_nodes=self.num_nodes, device='cpu')
         elif graph_dict['format'] in ('csc', 'csr'):
-            row_ptr = self.tensor_from_dict(graph_dict['row_ptr'])
-            col_idx = self.tensor_from_dict(graph_dict['col_idx'])
-            if 'edge_ids' in graph_dict:
-                edge_ids = self.tensor_from_dict(graph_dict['edge_ids'])
-            else:
-                edge_ids = torch.LongTensor()
+            row_ptr = self.tensor_from_dict(graph_dict['row_ptr'], inmem=not self.mmap_feat)
+            col_idx = self.tensor_from_dict(graph_dict['col_idx'], inmem=not self.mmap_feat)
+            # disable edge id for now
+            #  if 'edge_ids' in graph_dict:
+            #      edge_ids = self.tensor_from_dict(graph_dict['edge_ids'], inmem=not self.mmap_feat)
+            #  else:
+            #      edge_ids = torch.LongTensor()
+            utils.using("creating dgl graph (csc/csr)")
             return dgl.graph(data=('csc', (row_ptr, col_idx, edge_ids)))
         else:
             raise NotImplementedError("Only support coo,csc,csr graph formats")
 
     def load_labels(self):
-        return self.tensor_from_dict(self.meta_info['labels'], inmem=not self.mmap_feat)
+        return self.tensor_from_dict(self.meta_info['labels'], inmem=not self.mmap_feat, random=True)
 
     def load_data(self):
         self.num_nodes = self.meta_info['num_nodes']
         self.graph = self.load_graph(self.meta_info['graph'])
         utils.using("graph loaded")
-        self.graph = self.graph.formats('csc')
-        utils.using("graph transformed")
         self.labels = self.load_labels()
         self.node_feat = self.tensor_from_dict(self.meta_info['node_feat'],
-            inmem=not self.mmap_feat)
+            inmem=not self.mmap_feat, random=True)
         if self.meta_info['edge_feat'] is not None:
             self.edge_feat = self.tensor_from_dict(self.meta_info['edge_feat'],
                 inmem=not self.mmap_feat)

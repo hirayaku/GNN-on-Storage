@@ -4,6 +4,15 @@ import torch
 
 libc = ctypes.CDLL('libc.so.6', use_errno=True)
 
+def madvise_random(ptr: int, nbytes: int):
+    madvise = libc.madvise
+    madvise.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    madvise.restype = ctypes.c_int
+    if madvise(ptr, nbytes, 1) != 0:
+        errno = ctypes.get_errno()
+        print(f"madvise failed with error {errno}: {os.strerror(errno)}")
+        sys.exit(errno)
+
 class DiskTensor(np.memmap):
     '''
     An adaptor class for np.memmap to be compatible with DGLGraph node tensors.

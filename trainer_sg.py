@@ -97,7 +97,10 @@ def train(args, data, tb_writer):
             num_workers=args.num_workers,
             use_prefetch_thread=False, pin_prefetcher=False)
 
+        avg = 0
         for epoch in range(args.n_epochs):
+            tic = time.time()
+            tic_step = tic
             epoch_iter = 0
             print(f"Epoch {epoch+1}/{args.n_epochs}")
             minibatches = tqdm.tqdm(enumerate(dataloader)) if args.progress else enumerate(dataloader)
@@ -125,7 +128,10 @@ def train(args, data, tb_writer):
                 if args.progress:
                     minibatches.set_postfix({'acc': train_acc.item(), 'loss': loss.item()})
                 elif (epoch_iter+1) % args.log_every == 0:
-                    print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1} train acc: {train_acc:.4f}")
+                    toc_step = time.time()
+                    print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1} train acc: {train_acc:.4f} "
+                          f"time {toc_step-tic_step:.2f}s")
+                    tic_step = toc_step
 
             if (epoch + 1) % args.eval_every == 0:
                 train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
@@ -142,6 +148,12 @@ def train(args, data, tb_writer):
                 print(f"Val acc: {val_acc:.4f}")
                 print(f"Test acc: {test_acc:.4f}")
                 logger.add_result(run, (train_acc, val_acc, test_acc))
+
+            toc = time.time()
+            print('Epoch Time(s): {:.4f}'.format(toc - tic))
+            if epoch >= 1:
+                avg += toc - tic
+        print('Avg epoch time: {:.5f}'.format(avg / epoch))
         logger.print_statistics(run)
     logger.print_statistics()
 
@@ -161,6 +173,7 @@ if __name__ == '__main__':
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--model", type=str, default="sage", help="GNN model (sage|gat|gin)")
     parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
+    parser.add_argument("--mmap", action="store_true", help="use mmap")
     parser.add_argument("--use-incep", action="store_true")
     parser.add_argument("--n-layers", type=int, default=3,
                         help="Number of GNN layers")
@@ -190,7 +203,7 @@ if __name__ == '__main__':
                         help="Batch size used during evaluation")
     parser.add_argument("--log-every", type=int, default=10,
                         help="number of steps of logging training acc/loss")
-    parser.add_argument("--eval-every", type=int, default=5,
+    parser.add_argument("--eval-every", type=int, default=50,
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of graph sampling workers for host-gpu hierarchy")
@@ -235,7 +248,8 @@ if __name__ == '__main__':
             model = "sage-mlp+bn"
 
     # load dataset and statistics
-    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+
+    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=args.mmap)
     g = data.graph
     node_feat = data.node_feat
     labels = data.labels
@@ -263,6 +277,7 @@ if __name__ == '__main__':
     #Labels     {labels.shape}
     #Features   {node_feat.shape}"""
     )
+
 
     log_path = f"log/{args.dataset}/NS-{model}-{time_stamp}"
     tb_writer = SummaryWriter(log_path)

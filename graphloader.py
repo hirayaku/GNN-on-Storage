@@ -151,7 +151,7 @@ def split_graph(num_nodes: int, edge_index: torch.Tensor, edge_assigns: torch.Te
     sorted_assigns, reverse_map = torch.sort(edge_assigns)
     grouped_index = edge_index[:, reverse_map]
     # get number of edges per partition
-    _, group_counts = torch.unique_consecutive(sorted_assigns, return_counts=True)
+    # _, group_counts = torch.unique_consecutive(sorted_assigns, return_counts=True)
     group_counts = torch.scatter_add(torch.zeros(psize, dtype=torch.long), dim=0,
         index=sorted_assigns, src=torch.ones_like(sorted_assigns))
 
@@ -204,7 +204,6 @@ def split_graph_by_src(num_nodes: int, edge_index: torch.Tensor, assignments: to
 def split_graph_by_dst(num_nodes: int, edge_index: torch.Tensor, assignments: torch.Tensor, psize: int,
     serialize=False, data_dir=None):
     edge_assigns = assignments.gather(dim=0, index=edge_index[1])
-    print("part by dst:", psize)
     pg = split_graph(num_nodes, edge_index, edge_assigns, psize)
     if serialize:
         partition_dict = {}
@@ -271,8 +270,8 @@ def scache_from(g: dgl.DGLGraph, assignments: torch.Tensor, psize: int, k: int,
     new_assignments[topk_nids] = psize # make topk_nids in a new partition
     from_nodes, to_nodes = g.in_edges(topk_nids)
     edge_index = torch.vstack((to_nodes, from_nodes)) # put topk_nids first
-    return split_graph_by_dst(k, edge_index, new_assignments, psize+1,
-        serialize=serialize, data_dir=data_dir)
+    return *split_graph_by_dst(k, edge_index, new_assignments, psize+1,
+        serialize=serialize, data_dir=data_dir), topk_nids
 
 def check_scache_partition(assignments, scache: GnnosPartGraph,):
     print("Checking scache partitioning")
@@ -300,6 +299,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         self.psize = psize
         self.topk = topk
         self.inmem = False
+        # TODO: make mmap True to save memory
         super(GnnosNodePropPredDataset, self).__init__(name, root, mmap_feat=False, meta_dict=None)
 
     # override baseline dataset methods 
@@ -325,6 +325,8 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             train_idx = self.get_idx_split()['train']
             g.ndata['train_mask'] = torch.zeros(self.num_nodes, dtype=torch.bool)
             g.ndata['train_mask'][train_idx] = True
+            g_node_feat = super(GnnosNodePropPredDataset, self).load_node_feat()
+            g_labels = super(GnnosNodePropPredDataset, self).load_labels()
 
         # partition assignments
         is_new_partition = False
@@ -350,18 +352,13 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                     self.assigns, self.psize, serialize=True, data_dir=f'p{self.psize}')
                 del edge_index
             # shuffle labels
-            labels = super(GnnosNodePropPredDataset, self).load_labels()
             with utils.cwd(self.partition_dir):
-                partition_dict['labels'] = tensor_serialize(labels[pg.src_nids].numpy(),
+                partition_dict['labels'] = tensor_serialize(g_labels[pg.src_nids].numpy(),
                     osp.join(data_dir, "labels"))
-                del labels
             # shuffle node features
-            node_feat = super(GnnosNodePropPredDataset, self).load_node_feat()
             with utils.cwd(self.partition_dir):
-                partition_dict['node_feat'] = tensor_serialize(node_feat[pg.src_nids].numpy(),
+                partition_dict['node_feat'] = tensor_serialize(g_node_feat[pg.src_nids].numpy(),
                     osp.join(data_dir, "node_feat"))
-                del node_feat
-            del pg
             # serialize metadata
             with open(meta_file, 'w') as f_meta:
                 f_meta.write(json.dumps(partition_dict, indent=4, cls=utils.DtypeEncoder))
@@ -372,11 +369,21 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             with utils.cwd(self.partition_dir + f'/p{self.psize}'):
                 os.makedirs(scache_dir, exist_ok=True)
                 utils.using("creating scache")
-                scache_dict, _ = scache_from(g, self.assigns, self.psize,
+                scache_dict, scache, scache_nids = scache_from(g, self.assigns, self.psize,
                     int(self.topk * g.num_nodes()), serialize=True, data_dir=scache_dir)
+            # extract scache node feat
+            with utils.cwd(self.partition_dir + f'/p{self.psize}'):
+                scache_dict['topk_nids'] = tensor_serialize(scache_nids.numpy(),
+                    osp.join(data_dir, "topk_nids"))
+                scache_dict['node_feat'] = tensor_serialize(g_node_feat[scache_nids].numpy(),
+                    osp.join(data_dir, "node_feat"))
             # serialize metadata
             with open(osp.join(scache_file), 'w') as f_meta:
                 f_meta.write(json.dumps(scache_dict, indent=4, cls=utils.DtypeEncoder))
+
+            del g
+            del g_node_feat
+            del g_labels
 
         # load partition graph
         with open(meta_file) as f_meta:
@@ -401,8 +408,10 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         dst_nids = self.tensor_from_dict(self.scache_info['dst_nids'], self.inmem, root=data_dir)
         scache = GnnosPartGraph(int(self.topk * self.num_nodes), self.psize + 1,
             part_ptr, src_nids, dst_ptr, dst_nids)
-
-        return graph, scache
+        # load topk nids and feat into memory
+        scache_nids = self.tensor_from_dict(self.scache_info['topk_nids'], True, root=data_dir)
+        scache_feat = self.tensor_from_dict(self.scache_info['node_feat'], True, root=data_dir)
+        return graph, scache, scache_feat
 
 
     def load_labels(self):
@@ -416,7 +425,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
     def load_data(self):
         self.partition_dir = osp.join(self.root, self.partitioner.name)
         self.num_nodes = self.meta_info['num_nodes']
-        self.graph, self.scache = self.load_graph()
+        self.graph, self.scache, self.scache_feat = self.load_graph()
         self.labels = self.load_labels()
         self.node_feat = self.load_node_feat()
 

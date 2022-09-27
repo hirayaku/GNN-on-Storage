@@ -5,8 +5,7 @@ from functools import namedtuple
 import numpy as np
 import torch, dgl
 
-import sampler, utils
-import gnnos
+import utils, gnnos_utils
 
 class BaselineNodePropPredDataset(object):
     '''
@@ -115,6 +114,7 @@ class BaselineNodePropPredDataset(object):
 
 
 import tqdm
+import partition_utils
 from datasets import tensor_serialize
 from gnnos_graph import GnnosPartGraph
 
@@ -293,7 +293,7 @@ def check_scache(g: dgl.DGLGraph, scache: GnnosPartGraph, k: int):
     print("Passed")
 
 class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
-    def __init__(self, name, root = 'dataset', partitioner=sampler.MetisMinCutBalanced(),
+    def __init__(self, name, root = 'dataset', partitioner=partition_utils.MetisMinCutBalanced(),
         psize=0, topk=0.01):
         self.partitioner = partitioner
         self.psize = psize
@@ -313,7 +313,8 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             array = np.fromfile(full_path, dtype=dict['dtype'], count=size)
             return torch.from_numpy(array).reshape(shape)
         else:
-            return torch.from_file(full_path, size=size, dtype=dtype, shared=False).reshape(shape)
+            return gnnos_utils.store(full_path, shape, dtype, offset=dict['offset'])
+            # return torch.from_file(full_path, size=size, dtype=dtype, shared=False).reshape(shape)
 
     def load_graph(self):
         part_file = osp.join(self.partition_dir, f'p{self.psize}.pt')
@@ -411,7 +412,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         # load topk nids and feat into memory
         scache_nids = self.tensor_from_dict(self.scache_info['topk_nids'], True, root=data_dir)
         scache_feat = self.tensor_from_dict(self.scache_info['node_feat'], True, root=data_dir)
-        return graph, scache, scache_feat
+        return graph, scache, scache_nids, scache_feat
 
 
     def load_labels(self):
@@ -425,7 +426,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
     def load_data(self):
         self.partition_dir = osp.join(self.root, self.partitioner.name)
         self.num_nodes = self.meta_info['num_nodes']
-        self.graph, self.scache, self.scache_feat = self.load_graph()
+        self.graph, self.scache, self.scache_nids, self.scache_feat = self.load_graph()
         self.labels = self.load_labels()
         self.node_feat = self.load_node_feat()
 

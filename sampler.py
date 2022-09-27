@@ -1,46 +1,9 @@
-import os
-import utils
-
+import os, time
 import numpy as np
 import torch, dgl
 import dgl.function as fn
 
-class NodePartitioner(object):
-    def __init__(self, name):
-        self.name = name
-
-    def partition(self, g, psize):
-        raise NotImplementedError
-
-class RandomNodePartitioner(NodePartitioner):
-    def __init__(self):
-        super().__init__('rand')
-
-    def partition(self, g, psize):
-        return torch.randint(psize, (g.num_nodes(),))
-
-class MetisNodePartitioner(NodePartitioner):
-    def __init__(self, name='metis'):
-        super().__init__(name)
-
-    def partition(self, g, psize, mask=None, objtype='cut'):
-        # change cwd to dataset dir to ensure fast intermediate data access
-        with utils.cwd(os.environ['DATASETS']):
-            return dgl.metis_partition_assignment(g, psize, mask, objtype=objtype)
-
-class MetisMinCutBalanced(MetisNodePartitioner):
-    def __init__(self):
-        super().__init__(name='metis-cut')
-
-    def partition(self, g, psize):
-        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='cut')
-
-class MetisMinVolBalanced(MetisNodePartitioner):
-    def __init__(self):
-        super().__init__(name='metis-vol')
-
-    def partition(self, g, psize):
-        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='vol')
+import utils, partition_utils
 
 def partition_from(ids, assigns, psize):
     '''
@@ -94,7 +57,8 @@ class ClusterIterV2(object):
     The metis/other partitioners is used as the graph partition backend.
     The sampler returns a subgraph induced by a batch of clusters
     '''
-    def __init__(self, dataset, g, psize, bsize, hsize, partitioner=RandomNodePartitioner(),
+    def __init__(self, dataset, g, psize, bsize, hsize,
+            partitioner=partition_utils.RandomNodePartitioner(),
             sample_helpers=False, sample_topk=False, popular_ratio=0):
         self.g = g
         self.psize = psize
@@ -203,3 +167,92 @@ class ClusterIterV2(object):
             self.node_cache_parts = self.__get_popular_nodes__()
             raise StopIteration
 
+import gnnos
+
+from gnnos_graph import GnnosPartGraph
+from graphloader import GnnosNodePropPredDataset
+
+class GnnosIter(object):
+    '''
+    The partition sampler given a DGLGraph and partition number.
+    The metis/other partitioners is used as the graph partition backend.
+    The sampler returns a subgraph induced by a batch of clusters
+    '''
+    def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize, num_io_threads=64):
+        self.dataset = gnnos_dataset
+        self.psize = self.dataset.psize
+        self.bsize = bsize
+        self.pg = self.dataset.graph
+        self.scache = self.dataset.scache
+
+        print("set NUM_IO_THREADS to", num_io_threads)
+        gnnos.set_io_threads(num_io_threads)
+
+        # pin some data in memory
+        train_idx = self.dataset.get_idx_split()['train']
+        train_mask = torch.zeros(gnnos_dataset.num_nodes, dtype=torch.bool)
+        train_mask[train_idx] = True
+        self.train_mask = train_mask
+        self.labels = self.dataset.labels.tensor()
+        self.pg_pptr = self.pg.part_ptr.tensor()    # partition ptrs
+        self.pg_srcs = self.pg.src_nids.tensor()    # source nids
+        self.pg_dptr = self.pg.dst_ptr.tensor()     # dst ptrs
+        self.scache_pptr = self.scache.part_ptr.tensor()
+        self.scache_nids = self.dataset.scache_nids
+        self.scache_feat = self.dataset.scache_feat
+        # s-node induced graph
+        print("load s-cache graph")
+        start, end = self.scache_pptr[self.psize], self.scache_pptr[self.psize+1]
+        self.scache_src = self.scache.src_nids.slice(start, end).tensor()
+        self.scache_ptr = self.scache.dst_ptr.slice(start, end).tensor()
+        start, end = self.scache.dst_ptr[start], self.scache.dst_ptr[end]
+        self.scache_dst = self.scache.dst_nids.slice(start, end).tensor()
+
+        self.max = int((self.psize) // self.bsize)
+        self.train_pids = torch.randperm(self.psize)
+
+
+    def __len__(self):
+        return self.max
+
+    def __iter__(self):
+        self.n = 0
+        return self
+
+    def __next__(self):
+        if self.n < self.max:
+            sample_pids = self.train_pids[self.n*self.bsize : (self.n+1)*self.bsize]
+            src_ranges = []
+            for i in sample_pids:
+                src_ranges.append((self.pg_pptr[i], self.pg_pptr[i+1]))
+            load_start = time.time()
+            batch_srcs = gnnos.gather_slices(self.pg.src_nids, src_ranges)
+            batch_feat = gnnos.gather_slices(self.dataset.node_feat, src_ranges)
+
+            dst_ranges = []
+            for start, end in src_ranges:
+                dst_ranges.append((self.pg_dptr[start], self.pg_dptr[end]))
+            load_start = time.time()
+            batch_dsts = gnnos.gather_slices(self.pg.dst_nids, dst_ranges)
+            self.n += 1
+            return batch_srcs, batch_feat, batch_dsts
+        else:
+            self.train_pids = torch.randperm(self.psize)
+            raise StopIteration
+
+
+if __name__ == "__main__":
+    dataset_dir = os.path.join(os.environ['DATASETS'], 'gnnos')
+    name = 'ogbn-papers100M'
+    psize = 16384
+    bsize = 1024
+
+    data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize)
+    it = iter(GnnosIter(data, bsize))
+
+    print("Loading starts")
+    tic = time.time()
+    for src, feat, dst in it:
+        assert src.shape[0] == feat.shape[0]
+    toc = time.time()
+    print(f"{len(it)} iters took {toc-tic:.2f}s")

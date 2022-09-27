@@ -4,7 +4,43 @@ from dgl.partition import metis_partition, metis_partition_assignment
 import dgl
 import dgl.function as fn
 
-# should we make partition functions return assignments, not partition lists?
+class NodePartitioner(object):
+    def __init__(self, name):
+        self.name = name
+
+    def partition(self, g, psize):
+        raise NotImplementedError
+
+class RandomNodePartitioner(NodePartitioner):
+    def __init__(self):
+        super().__init__('rand')
+
+    def partition(self, g, psize):
+        return torch.randint(psize, (g.num_nodes(),))
+
+class MetisNodePartitioner(NodePartitioner):
+    def __init__(self, name='metis'):
+        super().__init__(name)
+
+    def partition(self, g, psize, mask=None, objtype='cut'):
+        # change cwd to dataset dir to ensure fast intermediate data access
+        with utils.cwd(os.environ['DATASETS']):
+            return dgl.metis_partition_assignment(g, psize, mask, objtype=objtype)
+
+class MetisMinCutBalanced(MetisNodePartitioner):
+    def __init__(self):
+        super().__init__(name='metis-cut')
+
+    def partition(self, g, psize):
+        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='cut')
+
+class MetisMinVolBalanced(MetisNodePartitioner):
+    def __init__(self):
+        super().__init__(name='metis-vol')
+
+    def partition(self, g, psize):
+        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='vol')
+
 
 def get_partition_list(g, psize, mask=None, balance_edges=False):
     '''

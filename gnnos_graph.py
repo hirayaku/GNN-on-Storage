@@ -4,16 +4,27 @@ import torch
 import gnnos
 
 @dataclass
-class GnnosPartGraph:
+class GnnosPartGraphCOO:
     '''
-    Partitioned graph in GNNoS
+    Partitioned graph (COO formats) in GNNoS
     '''
     num_nodes: int
     psize: int
     part_ptr: Union[torch.Tensor, gnnos.TensorStore]    # P + 1
-    src_nids: Union[torch.Tensor, gnnos.TensorStore]        # |V|
-    dst_ptr: Union[torch.Tensor, gnnos.TensorStore]         # |V| + 1
-    dst_nids: Union[torch.Tensor, gnnos.TensorStore]        # }E|
+    src_nids: Union[torch.Tensor, gnnos.TensorStore]    # |E|
+    dst_nids: Union[torch.Tensor, gnnos.TensorStore]    # |E|
+
+@dataclass
+class GnnosPartGraph:
+    '''
+    Partitioned graph (CSF formats) in GNNoS
+    '''
+    num_nodes: int
+    psize: int
+    part_ptr: Union[torch.Tensor, gnnos.TensorStore]    # P + 1
+    src_nids: Union[torch.Tensor, gnnos.TensorStore]    # |V|
+    dst_ptr: Union[torch.Tensor, gnnos.TensorStore]     # |V| + 1
+    dst_nids: Union[torch.Tensor, gnnos.TensorStore]    # |E|
 
     def adj(self, node_i):
         start, end = self.dst_ptr[node_i], self.dst_ptr[node_i+1]
@@ -33,16 +44,9 @@ class GnnosPartGraph:
     def size(self, part_i) -> int:
         return (self.part_ptr[part_i+1] - self.part_ptr[part_i]).item()
 
-
-# @dataclass
-# class GnnosScache:
-#     num_nodes: int
-#     psize: int
-#     # for subgraph induced by src_nids (CSF)
-#     src_nids: Union[torch.Tensor, gnnos.TensorStore]
-#     dst_ptr: Union[torch.Tensor, gnnos.TensorStore]
-#     dst_nids: Union[torch.Tensor, gnnos.TensorStore]
-#     # for all other edges (COO)
-#     part_ptr: Union[torch.Tensor, gnnos.TensorStore]
-#     coo_src: Union[torch.Tensor, gnnos.TensorStore]
-#     coo_dst: Union[torch.Tensor, gnnos.TensorStore]
+    def csf(self, part_i):
+        start, end = self.pg_pptr[part_i], self.pg_pptr[part_i+1]
+        nodes = self.pg.src_nids[start:end]
+        dst_start, dst_end = self.pg.dst_ptr[start], self.pg.dst_ptr[end]
+        dst_nids = self.pg.dst_nids[dst_start, dst_end]
+        return nodes, dst_start, dst_nids

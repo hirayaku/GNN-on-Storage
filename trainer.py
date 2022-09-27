@@ -14,6 +14,7 @@ import dgl
 
 from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 from graphloader import BaselineNodePropPredDataset
+from partition_utils import MetisMinCutBalanced, MetisMinVolBalanced, RandomNodePartitioner
 import sampler as HBSampler
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
@@ -327,11 +328,11 @@ if __name__ == '__main__':
     # choose partitioner
     partition = args.part
     if args.part == "metis" or args.part == "metis-cut":
-        partitioner = HBSampler.MetisMinCutBalanced()
+        partitioner = MetisMinCutBalanced()
     elif args.part == "metis-vol":
-        partitioner = HBSampler.MetisMinVolBalanced()
+        partitioner = MetisMinVolBalanced()
     elif args.part == "rand":
-        partitioner = HBSampler.RandomNodePartitioner()
+        partitioner = RandomNodePartitioner()
     else:
         raise NotImplementedError
 
@@ -387,7 +388,8 @@ if __name__ == '__main__':
 
     tb_writer.add_hparams({
         'seed': seed,'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
-        'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'dropout': args.dropout, 'weight-decay': args.wt_decay,
+        'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'lr-decay': args.lr_decay,
+        'dropout': args.dropout, 'weight-decay': args.wt_decay,
         'partition': args.part, 'psize': args.psize, 'bsize': args.bsize, 'bsize2': args.bsize2,
         'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio, 'popular_method': popular,
         },

@@ -116,7 +116,7 @@ class BaselineNodePropPredDataset(object):
 import tqdm
 import partition_utils
 from datasets import tensor_serialize
-from gnnos_graph import GnnosPartGraph
+from gnnos_graph import GnnosPartGraph, GnnosPartGraphCOO
 
 def coo_to_csf(edge_index):
     '''
@@ -160,32 +160,34 @@ def split_graph(num_nodes: int, edge_index: torch.Tensor, edge_assigns: torch.Te
     torch.cumsum(group_counts, dim=0, out=part_boundary[1:])
     assert part_boundary[-1].item() == len(edge_index[0])
 
-    # accumulate csf from each partition into (part_ptr, src_nids, dst_ptr, dst_nids)
-    part_ptr = torch.zeros((psize+1,), dtype=torch.long)
-    num_edges = len(edge_index[0])
-    src_nids = torch.zeros((num_edges,), dtype=torch.long)
-    dst_ptr = torch.zeros((num_edges+1,), dtype=torch.long)
-    dst_nids = torch.zeros((len(edge_index[0]),), dtype=torch.long)
-    src_nids_idx, dst_ptr_idx, dst_nids_idx = 0, 1, 0
-    dst_ptr_off = 0
-    for i in tqdm.tqdm(range(psize)):
-        p_src, p_dst_ptr, p_dst_nids = coo_to_csf(grouped_index[:, part_boundary[i]:part_boundary[i+1]])
-        # print("Partition", i)
-        # check_graph(num_nodes, edge_index, p_src, [0] + list(p_dst_ptr), p_dst_nids)
-        pn, dn = len(p_src), len(p_dst_nids)
-        part_ptr[i+1] = src_nids_idx + pn
-        src_nids[src_nids_idx : src_nids_idx+pn] = p_src
-        dst_ptr[dst_ptr_idx : dst_ptr_idx+pn] = p_dst_ptr + dst_ptr_off
-        dst_nids[dst_nids_idx : dst_nids_idx+dn] = p_dst_nids
-        src_nids_idx += pn
-        dst_ptr_idx += pn
-        dst_nids_idx += dn
-        if pn != 0:
-            dst_ptr_off = p_dst_ptr[-1] + dst_ptr_off
+    # # accumulate csf from each partition into (part_ptr, src_nids, dst_ptr, dst_nids)
+    # part_ptr = torch.zeros((psize+1,), dtype=torch.long)
+    # num_edges = len(edge_index[0])
+    # src_nids = torch.zeros((num_edges,), dtype=torch.long)
+    # dst_ptr = torch.zeros((num_edges+1,), dtype=torch.long)
+    # dst_nids = torch.zeros((len(edge_index[0]),), dtype=torch.long)
+    # src_nids_idx, dst_ptr_idx, dst_nids_idx = 0, 1, 0
+    # dst_ptr_off = 0
+    # for i in tqdm.tqdm(range(psize)):
+    #     p_src, p_dst_ptr, p_dst_nids = coo_to_csf(grouped_index[:, part_boundary[i]:part_boundary[i+1]])
+    #     # print("Partition", i)
+    #     # check_graph(num_nodes, edge_index, p_src, [0] + list(p_dst_ptr), p_dst_nids)
+    #     pn, dn = len(p_src), len(p_dst_nids)
+    #     part_ptr[i+1] = src_nids_idx + pn
+    #     src_nids[src_nids_idx : src_nids_idx+pn] = p_src
+    #     dst_ptr[dst_ptr_idx : dst_ptr_idx+pn] = p_dst_ptr + dst_ptr_off
+    #     dst_nids[dst_nids_idx : dst_nids_idx+dn] = p_dst_nids
+    #     src_nids_idx += pn
+    #     dst_ptr_idx += pn
+    #     dst_nids_idx += dn
+    #     if pn != 0:
+    #         dst_ptr_off = p_dst_ptr[-1] + dst_ptr_off
 
-    # use clone to free unused memory
-    return GnnosPartGraph(num_nodes, psize, part_ptr, src_nids[:src_nids_idx].clone(),
-        dst_ptr[:dst_ptr_idx].clone(), dst_nids[:dst_nids_idx].clone())
+    # # use clone to free unused memory
+    # return GnnosPartGraph(num_nodes, psize, part_ptr, src_nids[:src_nids_idx].clone(),
+    #     dst_ptr[:dst_ptr_idx].clone(), dst_nids[:dst_nids_idx].clone())
+
+    return GnnosPartGraphCOO(num_nodes, psize, part_boundary, grouped_index[0], grouped_index[1])
 
 def split_graph_by_src(num_nodes: int, edge_index: torch.Tensor, assignments: torch.Tensor, psize: int,
     serialize=False, data_dir=None):
@@ -193,10 +195,9 @@ def split_graph_by_src(num_nodes: int, edge_index: torch.Tensor, assignments: to
     pg = split_graph(num_nodes, edge_index, edge_assigns, psize)
     if serialize:
         partition_dict = {}
-        partition_dict['part_ptr'] = tensor_serialize(pg.part_ptr.numpy(), osp.join(data_dir, 'part_ptr'))
-        partition_dict['src_nids'] = tensor_serialize(pg.src_nids.numpy(), osp.join(data_dir, 'src_nids'))
-        partition_dict['dst_ptr'] = tensor_serialize(pg.dst_ptr.numpy(), osp.join(data_dir, 'dst_ptr'))
-        partition_dict['dst_nids'] = tensor_serialize(pg.dst_nids.numpy(), osp.join(data_dir, 'dst_nids'))
+        partition_dict['coo_part'] = tensor_serialize(pg.part_ptr.numpy(), osp.join(data_dir, 'coo_part'))
+        partition_dict['coo_src'] = tensor_serialize(pg.src_nids.numpy(), osp.join(data_dir, 'coo_src'))
+        partition_dict['coo_dst'] = tensor_serialize(pg.dst_nids.numpy(), osp.join(data_dir, 'coo_dst'))
         return partition_dict, pg 
     else:
         return pg
@@ -207,10 +208,9 @@ def split_graph_by_dst(num_nodes: int, edge_index: torch.Tensor, assignments: to
     pg = split_graph(num_nodes, edge_index, edge_assigns, psize)
     if serialize:
         partition_dict = {}
-        partition_dict['part_ptr'] = tensor_serialize(pg.part_ptr.numpy(), osp.join(data_dir, 'part_ptr'))
-        partition_dict['src_nids'] = tensor_serialize(pg.src_nids.numpy(), osp.join(data_dir, 'src_nids'))
-        partition_dict['dst_ptr'] = tensor_serialize(pg.dst_ptr.numpy(), osp.join(data_dir, 'dst_ptr'))
-        partition_dict['dst_nids'] = tensor_serialize(pg.dst_nids.numpy(), osp.join(data_dir, 'dst_nids'))
+        partition_dict['coo_part'] = tensor_serialize(pg.part_ptr.numpy(), osp.join(data_dir, 'coo_part'))
+        partition_dict['coo_src'] = tensor_serialize(pg.src_nids.numpy(), osp.join(data_dir, 'coo_src'))
+        partition_dict['coo_dst'] = tensor_serialize(pg.dst_nids.numpy(), osp.join(data_dir, 'coo_dst'))
         return partition_dict, pg 
     else:
         return pg
@@ -340,6 +340,8 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             torch.save(assigns, part_file)
             is_new_partition = True
         self.assigns = torch.load(part_file)
+        self.parts = partition_utils.partition_from(torch.arange(self.num_nodes),
+            self.assigns, self.psize)
 
         # partition graph
         if is_new_partition or not osp.exists(meta_file):
@@ -352,13 +354,15 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                 partition_dict, pg = split_graph_by_src(self.num_nodes, edge_index,
                     self.assigns, self.psize, serialize=True, data_dir=f'p{self.psize}')
                 del edge_index
+
+            reordered_nids = torch.cat(self.parts)
             # shuffle labels
             with utils.cwd(self.partition_dir):
-                partition_dict['labels'] = tensor_serialize(g_labels[pg.src_nids].numpy(),
+                partition_dict['labels'] = tensor_serialize(g_labels[reordered_nids].numpy(),
                     osp.join(data_dir, "labels"))
             # shuffle node features
             with utils.cwd(self.partition_dir):
-                partition_dict['node_feat'] = tensor_serialize(g_node_feat[pg.src_nids].numpy(),
+                partition_dict['node_feat'] = tensor_serialize(g_node_feat[reordered_nids].numpy(),
                     osp.join(data_dir, "node_feat"))
             # serialize metadata
             with open(meta_file, 'w') as f_meta:
@@ -375,9 +379,9 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             # extract scache node feat
             with utils.cwd(self.partition_dir + f'/p{self.psize}'):
                 scache_dict['topk_nids'] = tensor_serialize(scache_nids.numpy(),
-                    osp.join(data_dir, "topk_nids"))
+                    osp.join(scache_dir, "topk_nids"))
                 scache_dict['node_feat'] = tensor_serialize(g_node_feat[scache_nids].numpy(),
-                    osp.join(data_dir, "node_feat"))
+                    osp.join(scache_dir, "node_feat"))
             # serialize metadata
             with open(osp.join(scache_file), 'w') as f_meta:
                 f_meta.write(json.dumps(scache_dict, indent=4, cls=utils.DtypeEncoder))
@@ -389,26 +393,23 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         # load partition graph
         with open(meta_file) as f_meta:
             self.partition_info = json.load(f_meta)
-        part_ptr = self.tensor_from_dict(self.partition_info['part_ptr'],
+        coo_part = self.tensor_from_dict(self.partition_info['coo_part'],
             self.inmem, root=self.partition_dir)
-        src_nids = self.tensor_from_dict(self.partition_info['src_nids'],
+        coo_src = self.tensor_from_dict(self.partition_info['coo_src'],
             self.inmem, root=self.partition_dir)
-        dst_ptr = self.tensor_from_dict(self.partition_info['dst_ptr'],
+        coo_dst = self.tensor_from_dict(self.partition_info['coo_dst'],
             self.inmem, root=self.partition_dir)
-        dst_nids = self.tensor_from_dict(self.partition_info['dst_nids'],
-            self.inmem, root=self.partition_dir)
-        graph = GnnosPartGraph(self.num_nodes, self.psize, part_ptr, src_nids, dst_ptr, dst_nids)
+        graph = GnnosPartGraphCOO(self.num_nodes, self.psize, coo_part, coo_src, coo_dst)
 
         # load scache
         with open(scache_file) as f_meta:
             self.scache_info = json.load(f_meta)
         data_dir = osp.join(self.partition_dir, f'p{self.psize}')
-        part_ptr = self.tensor_from_dict(self.scache_info['part_ptr'], self.inmem, root=data_dir)
-        src_nids = self.tensor_from_dict(self.scache_info['src_nids'], self.inmem, root=data_dir)
-        dst_ptr = self.tensor_from_dict(self.scache_info['dst_ptr'], self.inmem, root=data_dir)
-        dst_nids = self.tensor_from_dict(self.scache_info['dst_nids'], self.inmem, root=data_dir)
-        scache = GnnosPartGraph(int(self.topk * self.num_nodes), self.psize + 1,
-            part_ptr, src_nids, dst_ptr, dst_nids)
+        coo_part = self.tensor_from_dict(self.scache_info['coo_part'], self.inmem, root=data_dir)
+        coo_src = self.tensor_from_dict(self.scache_info['coo_src'], self.inmem, root=data_dir)
+        coo_dst = self.tensor_from_dict(self.scache_info['coo_dst'], self.inmem, root=data_dir)
+        scache = GnnosPartGraphCOO(int(self.topk * self.num_nodes), self.psize + 1,
+            coo_part, coo_src, coo_dst)
         # load topk nids and feat into memory
         scache_nids = self.tensor_from_dict(self.scache_info['topk_nids'], True, root=data_dir)
         scache_feat = self.tensor_from_dict(self.scache_info['node_feat'], True, root=data_dir)
@@ -432,43 +433,44 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
 
 if __name__ == "__main__":
     dataset_dir = osp.join(os.environ['DATASETS'], 'gnnos')
-    name = 'ogbn-products'
-    psize = 4096
-    data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=False)
-    g = data.graph
-    node_feat = data.node_feat
-    labels = data.labels
+    name = 'mag240m'
+    psize = 16384
 
-    idx = data.get_idx_split()
-    train_nid = idx['train']
-    val_nid = idx['valid']
-    test_nid = idx['test']
-    n_train_samples = len(train_nid)
-    n_val_samples = len(val_nid)
-    n_test_samples = len(test_nid)
+    # data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=False)
+    # g = data.graph
+    # node_feat = data.node_feat
+    # labels = data.labels
 
-    n_classes = data.num_classes
-    n_nodes = g.num_nodes()
-    n_edges = g.num_edges()
-    in_feats = node_feat.shape[1]
+    # idx = data.get_idx_split()
+    # train_nid = idx['train']
+    # val_nid = idx['valid']
+    # test_nid = idx['test']
+    # n_train_samples = len(train_nid)
+    # n_val_samples = len(val_nid)
+    # n_test_samples = len(test_nid)
 
-    print(f"""----Data statistics------'
-    #Nodes {n_nodes}
-    #Edges {n_edges}
-    #Classes/Labels (multi binary labels) {n_classes}
-    #Train samples {n_train_samples}
-    #Val samples {n_val_samples}
-    #Test samples {n_test_samples}
-    #Labels     {labels.shape}
-    #Features   {node_feat.shape}"""
-    )
+    # n_classes = data.num_classes
+    # n_nodes = g.num_nodes()
+    # n_edges = g.num_edges()
+    # in_feats = node_feat.shape[1]
+
+    # print(f"""----Data statistics------
+    # #Nodes {n_nodes}
+    # #Edges {n_edges}
+    # #Classes/Labels (multi binary labels) {n_classes}
+    # #Train samples {n_train_samples}
+    # #Val samples {n_val_samples}
+    # #Test samples {n_test_samples}
+    # #Labels     {labels.shape}
+    # #Features   {node_feat.shape}"""
+    # )
 
     topk=0.01
     gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize, topk=topk)
-    check_partition(gnnos_data.assigns, gnnos_data.graph)
-    check_graph(g, gnnos_data.graph, interval=(g.num_nodes()-1)//2000000+1) # check 2e6 nodes
-    check_feat(node_feat, gnnos_data.graph, gnnos_data.node_feat)
-    check_labels(labels, gnnos_data.graph, gnnos_data.labels)
-    check_scache_partition(gnnos_data.assigns, gnnos_data.scache)
-    check_scache(g, gnnos_data.scache, int(topk * gnnos_data.num_nodes))
+    # check_partition(gnnos_data.assigns, gnnos_data.graph)
+    # check_graph(g, gnnos_data.graph, interval=(g.num_nodes()-1)//2000000+1) # check 2e6 nodes
+    # check_feat(node_feat, gnnos_data.graph, gnnos_data.node_feat)
+    # check_labels(labels, gnnos_data.graph, gnnos_data.labels)
+    # check_scache_partition(gnnos_data.assigns, gnnos_data.scache)
+    # check_scache(g, gnnos_data.scache, int(topk * gnnos_data.num_nodes))
 

@@ -3,24 +3,9 @@ import numpy as np
 import torch, dgl
 import dgl.function as fn
 
+import getpy as gp
 import utils, partition_utils
-
-def partition_from(ids, assigns, psize):
-    '''
-    return ids of each part in a list given the assignments
-    '''
-    assert ids.shape == assigns.shape
-    _, idx = torch.sort(assigns)
-    shuffled = ids[idx]
-
-    # compute partition sizes
-    group_sizes = torch.histc(assigns.float(), bins=psize, min=0, max=psize).long()
-    group_offs = torch.cumsum(group_sizes, dim=0)
-    groups = [shuffled[:group_offs[0]]]
-    for i in range(1, len(group_offs)):
-        groups.append(shuffled[group_offs[i-1]:group_offs[i]])
-
-    return groups
+from partition_utils import partition_from
 
 def edge_cuts_from(g, assigns, psize):
     '''
@@ -179,14 +164,21 @@ class GnnosIter(object):
     The sampler returns a subgraph induced by a batch of clusters
     '''
     def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize, num_io_threads=64):
+        print("set NUM_IO_THREADS to", num_io_threads)
+        gnnos.set_io_threads(num_io_threads)
+
         self.dataset = gnnos_dataset
         self.psize = self.dataset.psize
         self.bsize = bsize
+        self.parts = self.dataset.parts
         self.pg = self.dataset.graph
         self.scache = self.dataset.scache
+        self.scache_nids = self.dataset.scache_nids
+        self.scache_feat = self.dataset.scache_feat
 
-        print("set NUM_IO_THREADS to", num_io_threads)
-        gnnos.set_io_threads(num_io_threads)
+        part_sizes = [len(part) for part in self.parts]
+        part_sizes = torch.LongTensor([0] + part_sizes)
+        self.nids_pptr = torch.cumsum(part_sizes, dim=0)
 
         # pin some data in memory
         train_idx = self.dataset.get_idx_split()['train']
@@ -195,22 +187,14 @@ class GnnosIter(object):
         self.train_mask = train_mask
         self.labels = self.dataset.labels.tensor()
         self.pg_pptr = self.pg.part_ptr.tensor()    # partition ptrs
-        self.pg_srcs = self.pg.src_nids.tensor()    # source nids
-        self.pg_dptr = self.pg.dst_ptr.tensor()     # dst ptrs
         self.scache_pptr = self.scache.part_ptr.tensor()
-        self.scache_nids = self.dataset.scache_nids
-        self.scache_feat = self.dataset.scache_feat
         # s-node induced graph
-        print("load s-cache graph")
         start, end = self.scache_pptr[self.psize], self.scache_pptr[self.psize+1]
-        self.scache_src = self.scache.src_nids.slice(start, end).tensor()
-        self.scache_ptr = self.scache.dst_ptr.slice(start, end).tensor()
-        start, end = self.scache.dst_ptr[start], self.scache.dst_ptr[end]
-        self.scache_dst = self.scache.dst_nids.slice(start, end).tensor()
+        self.scache_srcs = self.scache.src_nids.slice(start, end).tensor()
+        self.scache_dsts = self.scache.dst_nids.slice(start, end).tensor()
 
         self.max = int((self.psize) // self.bsize)
         self.train_pids = torch.randperm(self.psize)
-
 
     def __len__(self):
         return self.max
@@ -222,37 +206,74 @@ class GnnosIter(object):
     def __next__(self):
         if self.n < self.max:
             sample_pids = self.train_pids[self.n*self.bsize : (self.n+1)*self.bsize]
-            src_ranges = []
-            for i in sample_pids:
-                src_ranges.append((self.pg_pptr[i], self.pg_pptr[i+1]))
-            load_start = time.time()
-            batch_srcs = gnnos.gather_slices(self.pg.src_nids, src_ranges)
-            batch_feat = gnnos.gather_slices(self.dataset.node_feat, src_ranges)
 
-            dst_ranges = []
-            for start, end in src_ranges:
-                dst_ranges.append((self.pg_dptr[start], self.pg_dptr[end]))
-            load_start = time.time()
-            batch_dsts = gnnos.gather_slices(self.pg.dst_nids, dst_ranges)
+            scache_nids = self.scache_nids
+            batch_nids = torch.cat([self.parts[i] for i in sample_pids])
+            scache_nids_m = torch.arange(len(scache_nids)).numpy()
+            batch_nids_m = torch.arange(len(scache_nids), len(scache_nids)+len(batch_nids)).numpy()
+            dtype = scache_nids_m.dtype
+            gp_dict = gp.Dict(dtype, dtype, default_value=-1)
+            # insert new id int dict
+            gp_dict[batch_nids.numpy()] = batch_nids_m
+            gp_dict[scache_nids.numpy()] = scache_nids_m
+
+            ranges = []
+            for i in sample_pids:
+                ranges.append((self.nids_pptr[i], self.nids_pptr[i+1]))
+            batch_feat = gnnos.gather_slices(self.dataset.node_feat, ranges)
+
+            ranges = []
+            for i in sample_pids:
+                ranges.append((self.pg_pptr[i], self.pg_pptr[i+1]))
+            batch_srcs = gnnos.gather_slices(self.pg.src_nids, ranges)
+            batch_dsts = gnnos.gather_slices(self.pg.dst_nids, ranges)
+            print(f"un-filetered edges: {len(batch_srcs)}")
+
+            batch_dsts_m = torch.from_numpy(gp_dict[batch_dsts])
+            mask = (batch_dsts_m == -1)
+            batch_srcs, batch_dsts = batch_srcs[mask], batch_dsts[mask]
+            print(f"filetered edges: {len(batch_srcs)}")
+
+            ranges = []
+            for i in sample_pids:
+                ranges.append((self.scache_pptr[i], self.scache_pptr[i+1]))
+            scache_batch_srcs = gnnos.gather_slices(self.scache.dst_nids, ranges)
+            scache_batch_dsts = gnnos.gather_slices(self.scache.dst_nids, ranges)
+            print(f"s-cache edges: {len(scache_batch_srcs)}")
+
             self.n += 1
-            return batch_srcs, batch_feat, batch_dsts
+            return batch_nids, batch_feat, (batch_srcs, batch_dsts), (scache_batch_srcs, scache_batch_dsts)
         else:
             self.train_pids = torch.randperm(self.psize)
             raise StopIteration
 
 
 if __name__ == "__main__":
-    dataset_dir = os.path.join(os.environ['DATASETS'], 'gnnos')
-    name = 'ogbn-papers100M'
-    psize = 16384
-    bsize = 1024
+    import argparse
+    parser = argparse.ArgumentParser(description='dataset samplers',
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--dataset", type=str, default='ogbn-papers100M')
+    parser.add_argument("--root", type=str, default=os.path.join(os.environ['DATASETS'], 'gnnos'))
+    parser.add_argument("--psize", type=int, default=16384)
+    parser.add_argument("--bsize", type=int, default=1024)
+    parser.add_argument("--io-threads", type=int, default=32)
+    parser.add_argument("--runs", type=int, default=5)
+    args = parser.parse_args()
+    print(args)
 
-    data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize)
-    it = iter(GnnosIter(data, bsize))
+    data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize)
+    it = iter(GnnosIter(data, args.bsize, num_io_threads=args.io_threads))
 
-    print("Loading starts")
-    tic = time.time()
-    for src, feat, dst in it:
-        assert src.shape[0] == feat.shape[0]
-    toc = time.time()
-    print(f"{len(it)} iters took {toc-tic:.2f}s")
+    duration = []
+    for i in range(args.runs):
+        print("Loading starts")
+        tic = time.time()
+        for nids, feat, coo, scache_coo in it:
+            print(f"#nodes: {len(nids)}, #edges: {len(coo[0])}, #s-edges: {len(scache_coo[0])}")
+            print(f"feats: {feat.shape}")
+            assert nids.shape[0] == feat.shape[0]
+        toc = time.time()
+        print(f"{len(it)} iters took {toc-tic:.2f}s")
+        duration.append(toc-tic)
+
+    print(f"On average: {np.mean(duration):.2f}")

@@ -268,7 +268,7 @@ torch::Tensor GatherSlices(
 
     char *buf = new char[rows * row_numel * store.itemsize()];
 
-    #pragma omp parallel for num_threads(IO_THREADS/2)
+    #pragma omp parallel for num_threads(IO_THREADS)
     for (size_t i = 0; i < ranges.size(); ++i) {
         long start = pos[i] * row_numel * store.itemsize();
         long end = pos[i+1] * row_numel * store.itemsize();

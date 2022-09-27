@@ -14,6 +14,10 @@ class GnnosPartGraphCOO:
     src_nids: Union[torch.Tensor, gnnos.TensorStore]    # |E|
     dst_nids: Union[torch.Tensor, gnnos.TensorStore]    # |E|
 
+    def __getitem__(self, i):
+        start, end = self.part_ptr[i], self.part_dst[i+1]
+        return self.src_nids[start:end], self.dst_nids[start:end]
+
 @dataclass
 class GnnosPartGraph:
     '''

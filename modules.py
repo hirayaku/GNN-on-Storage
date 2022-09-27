@@ -227,19 +227,19 @@ class GAT(torch.nn.Module):
         self.num_layers = num_layers
 
         self.convs = torch.nn.ModuleList()
-        self.convs.append(dglnn.GATConv(in_channels, hidden_channels,
+        self.convs.append(dglnn.GATConv(in_channels,  hidden_channels // heads,
                                   heads,allow_zero_in_degree=True))
         for _ in range(num_layers - 2):
             self.convs.append(
-                dglnn.GATConv(heads * hidden_channels, hidden_channels, heads,allow_zero_in_degree=True))
+                dglnn.GATConv(hidden_channels, hidden_channels//heads, heads,allow_zero_in_degree=True))
         self.convs.append(
-            dglnn.GATConv(heads * hidden_channels, out_channels, heads,allow_zero_in_degree=True))
+            dglnn.GATConv(hidden_channels, out_channels, heads,allow_zero_in_degree=True))
         self.skips = torch.nn.ModuleList()
-        self.skips.append(Lin(in_channels, hidden_channels * heads))
+        self.skips.append(Lin(in_channels, hidden_channels))
         for _ in range(num_layers - 2):
             self.skips.append(
-                Lin(hidden_channels * heads, hidden_channels * heads))
-        self.skips.append(Lin(hidden_channels * heads, out_channels))
+                Lin(hidden_channels, hidden_channels))
+        self.skips.append(Lin(hidden_channels, out_channels))
         self.dropout = nn.Dropout(dropout)
 
     def reset_parameters(self):

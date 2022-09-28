@@ -1,8 +1,9 @@
+import os
 import torch
-
-from dgl.partition import metis_partition, metis_partition_assignment
 import dgl
 import dgl.function as fn
+
+import utils
 
 class NodePartitioner(object):
     def __init__(self, name):

@@ -306,7 +306,7 @@ torch::Tensor GatherTensorSlices(
         long src_start = ranges[i].first * row_bytes;
         long src_end = ranges[i].second * row_bytes;
         long dst_start = dst_pos[i] * row_bytes;
-        std::cout << "Copy [" << src_start << ", " << src_end << ")\n";
+        // std::cout << "Copy [" << src_start << ", " << src_end << ")\n";
         std::copy(src_ptr + src_start, src_ptr + src_end, dst_ptr + dst_start);
     }
 

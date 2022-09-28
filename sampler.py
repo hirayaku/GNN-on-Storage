@@ -173,7 +173,8 @@ class GnnosIter(object):
     The metis/other partitioners is used as the graph partition backend.
     The sampler returns a subgraph induced by a batch of clusters
     '''
-    def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize):
+    def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize, share_memory=False):
+        self.share_memory = share_memory
         self.dataset = gnnos_dataset
         self.psize = self.dataset.psize
         self.bsize = bsize
@@ -216,31 +217,9 @@ class GnnosIter(object):
         self.train_pids = torch.randperm(self.psize)
         self.relabel_dict = torch.empty(self.dataset.num_nodes, dtype=torch.long)  # at most ~2GB
 
-        # # share common data
-        # for p in self.parts:
-        #     p.share_memory_()
-        # self.scache_nids.share_memory_()
-        # self.scache_feat.share_memory_()
-        # self.nids_pptr.share_memory_()
-        # self.train_mask.share_memory_()
-        # self.labels.share_memory_()
-        # self.pg_pptr.share_memory_()
-        # self.scache_pptr.share_memory_()
-        # self.scache_srcs.share_memory_()
-        # self.scache_dsts.share_memory_()
-
-        # # spawn workers for data loading and filtering
-        # context = mp.get_context("fork")
-        # self.prep_q = context.Queue(maxsize=1)
-        # self.post_q = context.Queue(maxsize=1)
-        # # self.index_q = context.Queue(maxsize=1)
-        # self.loader = context.Process(target=self.load_store, args=())
-        # self.assembler = context.Process(target=self.assemble, args=())
-
     def load_store(self, pi):
         tic = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
-
         ranges = []
         for i in sample_pids:
             ranges.append((self.nids_pptr[i], self.nids_pptr[i+1]))
@@ -285,18 +264,26 @@ class GnnosIter(object):
         assert (scache_batch_dsts != -1).all()
         print(f"scache edges: {len(scache_batch_srcs)}, {len(self.scache_srcs)}")
 
-        batch_srcs = torch.cat((self.scache_srcs, scache_batch_srcs, batch_srcs)).share_memory_()
-        batch_dsts = torch.cat((self.scache_dsts, scache_batch_dsts, batch_dsts)).share_memory_()
-        batch_labels = torch.cat((self.labels[scache_nids], self.labels[dcache_nids])).share_memory_()
-        batch_feat = torch.cat((self.scache_feat, batch_feat)).share_memory_()
+        batch_srcs = torch.cat((self.scache_srcs, scache_batch_srcs, batch_srcs))
+        batch_dsts = torch.cat((self.scache_dsts, scache_batch_dsts, batch_dsts))
+        batch_labels = torch.cat((self.labels[scache_nids], self.labels[dcache_nids]))
+        batch_feat = torch.cat((self.scache_feat, batch_feat))
         batch_train_mask = torch.zeros((cache_size,), dtype=torch.bool)
         batch_train_mask[scache_size:] = self.train_mask[dcache_nids]
         # compensate lost train mask for scache nids
         batch_scache_nids = torch.cat([self.scache_parts[i] for i in sample_pids])
         batch_train_mask[lookup(self.scache_dict, batch_scache_nids)] = self.train_mask[batch_scache_nids]
 
+        if self.share_memory:
+            batch_srcs.share_memory_()
+            batch_dsts.share_memoty_()
+            batch_labels.share_memory_()
+            batch_feat.share_memory_()
+            batch_train_mask.share_memory_()
+
         toc = time.time()
         print(f"Assemble: {toc-tic:.2f}s")
+        # consume one ticket, so next time we could wait here un
 
         return cache_size, (batch_srcs, batch_dsts), batch_labels, batch_feat, batch_train_mask
 

@@ -33,7 +33,12 @@ def train(args, in_feats, num_classes, data_queue):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     batch_size = args.bsize2
 
-    model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
+    if args.model == 'gat':
+        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
+    elif args.model == 'gin':
+        model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
+    else:
+        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
     model.cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -91,6 +96,8 @@ def train(args, in_feats, num_classes, data_queue):
                 # Load the input features as well as output labels
                 x = batch_feat[input_nodes].to(device).float()
                 y = batch_labels[output_nodes].to(device).flatten().long()
+                # label data is incorrect, use randint for now: doesn't affect computation
+                y[:] = torch.randint(num_classes, y.shape, device=y.device)
                 # x = blocks[0].srcdata['feat'].float()
                 # y = blocks[-1].dstdata['label'].flatten().long()
                 # Compute loss and prediction

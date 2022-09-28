@@ -282,6 +282,37 @@ torch::Tensor GatherSlices(
         store.dtype());
 }
 
+torch::Tensor GatherTensorSlices(
+    const torch::Tensor &tensor,
+    const std::vector<std::pair<long, long>> &ranges)
+{
+    long rows = 0;
+    std::vector<long> dst_pos = {0};
+    for (auto r : ranges) {
+        rows += r.second - r.first;
+        dst_pos.push_back(rows);
+    }
+
+    SmallVector<long> shape(tensor.sizes());
+    long row_bytes = tensor.nbytes() / shape[0];
+    shape[0] = rows;
+
+    char *src_ptr = (char *)tensor.data_ptr();
+    auto tensor_out = torch::empty(shape, torch::dtype(tensor.dtype()));
+    char *dst_ptr = (char *)tensor_out.data_ptr();
+
+    #pragma omp parallel for num_threads(IO_THREADS)
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        long src_start = ranges[i].first * row_bytes;
+        long src_end = ranges[i].second * row_bytes;
+        long dst_start = dst_pos[i] * row_bytes;
+        std::cout << "Copy [" << src_start << ", " << src_end << ")\n";
+        std::copy(src_ptr + src_start, src_ptr + src_end, dst_ptr + dst_start);
+    }
+
+    return tensor_out;
+}
+
 void ShuffleStore(TensorStore &store, const TensorStore &from_store,
     const torch::Tensor &shuffled_ids) {
 

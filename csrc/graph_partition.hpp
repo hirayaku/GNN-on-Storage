@@ -229,4 +229,11 @@ private:
     NodePartitions partition;
 };
 
+// using GnnosGraphParts = std::tuple<>;
+
+// struct GnnosStore {
+// public:
+//     GnnosStore(long num_nodes, const std::vector<torch::Tensor> &parts, )
+// };
+
 }   // ns gnnos

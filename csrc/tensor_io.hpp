@@ -277,6 +277,11 @@ torch::Tensor GatherSlices(
 // Shuffle Store[shuffled[i]] -> Store[i]
 void ShuffleStore(TensorStore &, const TensorStore &, const torch::Tensor &);
 
+// Gather tensor slices into a torch Tensor
+torch::Tensor GatherTensorSlices(
+    const torch::Tensor &tensor,
+    const std::vector<std::pair<long, long>> &ranges);
+
 }   // namespace gnnos
 
 #endif

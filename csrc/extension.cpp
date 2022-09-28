@@ -64,7 +64,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             std::stringstream ss;
             ss << tinfo;
             return ss.str();
-        });
+        })
+        .def(py::pickle(
+            [](const TensorInfo& tinfo) {
+                // dump
+                // TODO: currently it does not attempt to pickle TensorInfo
+                return py::make_tuple(tinfo.path());
+            },
+            [](py::tuple t) {
+               return TensorOptions(t[0].cast<std::string>());
+            }
+        ));
 
     m.def("options",
         py::overload_cast<std::string>(&TensorOptions),
@@ -87,7 +97,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             },"read TensorStore into an in-memory Tensor and cast into dtype",
             py::arg("dtype"))
         .def("save", &TensorStore::save_to,
-            "save TensorStore to file", py::arg("path"));
+            "save TensorStore to file", py::arg("path"))
+        .def(py::pickle(
+            [](const TensorStore & t) {
+                // dump
+                return t.metadata();
+            },
+            [](TensorInfo tinfo) {
+                // TODO: load, only support read-only
+                return TensorStore::OpenForRead(tinfo);
+            }
+        ));
 
     m.def("tensor_store",
         [](const TensorInfo &tinfo, std::string flags, bool temp) {
@@ -115,6 +135,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("gather_slices", &GatherSlices,
         "gather store slices into a torch Tensor",
         py::arg("TensorStore"), py::arg("ranges"));
+
+    m.def("gather_tensor_slices", &GatherTensorSlices,
+        "gather tensor slices into a torch Tensor",
+        py::arg("Tensor"), py::arg("ranges"));
 
     m.def("shuffle_store", &ShuffleStore, "shuffle store elements based on clusters",
         py::arg("TensorStore"), py::arg("TensorStore"), py::arg("shuffled_ids"));

@@ -285,10 +285,10 @@ class GnnosIter(object):
         assert (scache_batch_dsts != -1).all()
         print(f"scache edges: {len(scache_batch_srcs)}, {len(self.scache_srcs)}")
 
-        batch_srcs = torch.cat((self.scache_srcs, scache_batch_srcs, batch_srcs))
-        batch_dsts = torch.cat((self.scache_dsts, scache_batch_dsts, batch_dsts))
-        batch_labels = torch.cat((self.labels[scache_nids], self.labels[dcache_nids]))
-        batch_feat = torch.cat((self.scache_feat, batch_feat))
+        batch_srcs = torch.cat((self.scache_srcs, scache_batch_srcs, batch_srcs)).share_memory_()
+        batch_dsts = torch.cat((self.scache_dsts, scache_batch_dsts, batch_dsts)).share_memory_()
+        batch_labels = torch.cat((self.labels[scache_nids], self.labels[dcache_nids])).share_memory_()
+        batch_feat = torch.cat((self.scache_feat, batch_feat)).share_memory_()
         batch_train_mask = torch.zeros((cache_size,), dtype=torch.bool)
         batch_train_mask[scache_size:] = self.train_mask[dcache_nids]
         # compensate lost train mask for scache nids
@@ -316,3 +316,53 @@ class GnnosIter(object):
             self.n = 0
             self.train_pids = torch.randperm(self.psize)
             raise StopIteration
+
+if __name__ == "__main__":
+    import argparse
+    from pyinstrument import Profiler
+    parser = argparse.ArgumentParser(description='samplers + trainers',
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--dataset", type=str, default='ogbn-papers100M')
+    parser.add_argument("--root", type=str, default=os.path.join(os.environ['DATASETS'], 'gnnos'))
+    parser.add_argument("--n-epochs", type=int, default=5)
+    parser.add_argument("--psize", type=int, default=16384)
+    parser.add_argument("--bsize", type=int, default=1024)
+    parser.add_argument("--io-threads", type=int, default=32,
+                        help="threads to load data from storage (could be larger than #cpus)")
+    args = parser.parse_args()
+
+    print(args)
+    print("set NUM_IO_THREADS to", args.io_threads)
+    gnnos.set_io_threads(args.io_threads)
+    torch.set_num_threads(32)
+
+    data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize)
+    it = iter(GnnosIter(data, args.bsize))
+
+    iters = 0
+    duration = []
+    for i in range(args.n_epochs):
+        print("Loading starts")
+        tic = time.time()
+        profiler = Profiler(interval=0.01)
+        profiler.start()
+
+        for data in it:
+            num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
+            print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, #train: {batch_train_mask.int().sum()}")
+            print(f"batch_feat: {batch_feat.shape}")
+            assert num_nodes == batch_feat.shape[0]
+            assert num_nodes == batch_labels.shape[0]
+            assert num_nodes == batch_train_mask.shape[0]
+            graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
+            graph.create_formats_()
+            del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
+            profiler.stop()
+            profiler.print()
+            profiler.start()
+        profiler.stop()
+        toc = time.time()
+        print(f"{len(it)} iters took {toc-tic:.2f}s")
+        duration.append(toc-tic)
+
+    print(f"On average: {np.mean(duration):.2f}")

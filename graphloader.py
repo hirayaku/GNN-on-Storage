@@ -314,7 +314,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             return torch.from_numpy(array).reshape(shape)
         else:
             return gnnos_utils.store(full_path, shape, dtype, offset=dict['offset'])
-            # return torch.from_file(full_path, size=size, dtype=dtype, shared=False).reshape(shape)
+            # return torch.from_file(full_path, size=size, dtype=dtype, shared=True).reshape(shape)
 
     def load_graph(self):
         part_file = osp.join(self.partition_dir, f'p{self.psize}.pt')

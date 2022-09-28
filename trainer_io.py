@@ -45,14 +45,16 @@ def train(args, in_feats, num_classes, data_queue):
 
     marker = time.time()
     while True:
+        profiler = Profiler(interval=0.01)
+        profiler.start()
         data = data_queue.get()
-
         tic = time.time()
         num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
         graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
         train_nids = torch.nonzero(batch_train_mask, as_tuple=True)[0]
         graph.create_formats_()
         print(f"dgl graph creation: {time.time()-tic:.2f}s")
+        profiler.stop()
 
         # graph.ndata['label'] = batch_labels
         # graph.ndata['feat'] = batch_feat
@@ -67,10 +69,11 @@ def train(args, in_feats, num_classes, data_queue):
             drop_last=False,
             num_workers=args.num_workers,
             use_prefetch_thread=False, pin_prefetcher=False)
+        iterator = enumerate(dataloader)
 
+        profiler.start()
         recycle_factor = args.recycle
         model.train()
-        iterator = enumerate(dataloader)
         batch_start = time.time()
         batch_iter = 0
         while batch_iter < len(dataloader) * recycle_factor:
@@ -88,6 +91,8 @@ def train(args, in_feats, num_classes, data_queue):
                 # Load the input features as well as output labels
                 x = batch_feat[input_nodes].to(device).float()
                 y = batch_labels[output_nodes].to(device).flatten().long()
+                # x = blocks[0].srcdata['feat'].float()
+                # y = blocks[-1].dstdata['label'].flatten().long()
                 # Compute loss and prediction
                 y_hat = model(blocks, x)
                 loss = F.nll_loss(y_hat, y)
@@ -116,8 +121,9 @@ def train(args, in_feats, num_classes, data_queue):
         print(f"    mega-batch overall: {batch_end-batch_start:.2f}s")
         print(f"    mega-batch compute: {batch_end-first_minibatch:.2f}s")
         print(f"    num_iters={batch_iter}, num_workers={args.num_workers}")
-
-        print(f"############ mega-batch {time.time()-marker:.2f}s #############")
+        profiler.stop()
+        profiler.print()
+        print(f"############ mega-batch {time.time()-marker:.2f}s ############# \n")
         marker = time.time()
 
 if __name__ == "__main__":

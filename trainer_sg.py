@@ -1,6 +1,7 @@
 import sys, os, argparse, time, random
 import shutil
 import tqdm
+from pyinstrument import Profiler
 
 import numpy as np
 import torch
@@ -99,6 +100,9 @@ def train(args, data, tb_writer):
 
         avg = 0
         for epoch in range(args.n_epochs):
+            profiler = Profiler(interval=0.01)
+            profiler.start()
+
             tic = time.time()
             tic_step = tic
             epoch_iter = 0
@@ -128,6 +132,9 @@ def train(args, data, tb_writer):
                 if args.progress:
                     minibatches.set_postfix({'acc': train_acc.item(), 'loss': loss.item()})
                 elif (epoch_iter+1) % args.log_every == 0:
+                    profiler.stop()
+                    profiler.print()
+                    profiler.start()
                     toc_step = time.time()
                     print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1} train acc: {train_acc:.4f} "
                           f"time {toc_step-tic_step:.2f}s")
@@ -149,10 +156,15 @@ def train(args, data, tb_writer):
                 print(f"Test acc: {test_acc:.4f}")
                 logger.add_result(run, (train_acc, val_acc, test_acc))
 
+            profiler.stop()
+            profiler.print()
+            profiler.start()
+
             toc = time.time()
             print('Epoch Time(s): {:.4f}'.format(toc - tic))
             if epoch >= 1:
                 avg += toc - tic
+
         print('Avg epoch time: {:.5f}'.format(avg / epoch))
         logger.print_statistics(run)
     logger.print_statistics()

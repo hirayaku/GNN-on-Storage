@@ -294,11 +294,12 @@ def check_scache(g: dgl.DGLGraph, scache: GnnosPartGraph, k: int):
 
 class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
     def __init__(self, name, root = 'dataset', partitioner=partition_utils.MetisMinCutBalanced(),
-        psize=0, topk=0.01):
+        use_old_feat=False, psize=0, topk=0.01):
         self.partitioner = partitioner
         self.psize = psize
         self.topk = topk
         self.inmem = False
+        self.use_old_feat = use_old_feat
         # TODO: make mmap True to save memory
         super(GnnosNodePropPredDataset, self).__init__(name, root, mmap_feat=False, meta_dict=None)
 
@@ -421,8 +422,20 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             self.inmem, root=self.partition_dir)
     
     def load_node_feat(self):
-        return self.tensor_from_dict(self.partition_info['node_feat'],
-            self.inmem, root=self.partition_dir)
+        if self.use_old_feat:
+            # use mmap instead for random access
+            feat_dict = self.partition_info['node_feat']
+            full_path = osp.join(self.partition_dir, feat_dict['path'])
+            shape = feat_dict['shape']
+            size = torch.prod(torch.LongTensor(shape)).item()
+            dtype = utils.torch_dtype(feat_dict['dtype'])
+            # shared=False to disable modification of tensors
+            tensor = torch.from_file(full_path, size=size, dtype=dtype, shared=False).reshape(shape)
+            utils.madvise_random(tensor.data_ptr(), tensor.numel()*tensor.element_size())
+            return tensor
+        else:
+            return self.tensor_from_dict(self.partition_info['node_feat'],
+                self.inmem, root=self.partition_dir)
 
     def load_data(self):
         self.partition_dir = osp.join(self.root, self.partitioner.name)
@@ -436,41 +449,15 @@ if __name__ == "__main__":
     name = 'mag240m'
     psize = 16384
 
-    # data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=False)
-    # g = data.graph
-    # node_feat = data.node_feat
-    # labels = data.labels
-
-    # idx = data.get_idx_split()
-    # train_nid = idx['train']
-    # val_nid = idx['valid']
-    # test_nid = idx['test']
-    # n_train_samples = len(train_nid)
-    # n_val_samples = len(val_nid)
-    # n_test_samples = len(test_nid)
-
-    # n_classes = data.num_classes
-    # n_nodes = g.num_nodes()
-    # n_edges = g.num_edges()
-    # in_feats = node_feat.shape[1]
-
-    # print(f"""----Data statistics------
-    # #Nodes {n_nodes}
-    # #Edges {n_edges}
-    # #Classes/Labels (multi binary labels) {n_classes}
-    # #Train samples {n_train_samples}
-    # #Val samples {n_val_samples}
-    # #Test samples {n_test_samples}
-    # #Labels     {labels.shape}
-    # #Features   {node_feat.shape}"""
-    # )
-
     topk=0.01
     gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize, topk=topk)
-    # check_partition(gnnos_data.assigns, gnnos_data.graph)
-    # check_graph(g, gnnos_data.graph, interval=(g.num_nodes()-1)//2000000+1) # check 2e6 nodes
+
+    data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=True)
+    g = data.graph
+    check_partition(gnnos_data.assigns, gnnos_data.graph)
+    check_graph(g, gnnos_data.graph, interval=(g.num_nodes()-1)//2000000+1) # check 2e6 nodes
     # check_feat(node_feat, gnnos_data.graph, gnnos_data.node_feat)
     # check_labels(labels, gnnos_data.graph, gnnos_data.labels)
-    # check_scache_partition(gnnos_data.assigns, gnnos_data.scache)
-    # check_scache(g, gnnos_data.scache, int(topk * gnnos_data.num_nodes))
+    check_scache_partition(gnnos_data.assigns, gnnos_data.scache)
+    check_scache(g, gnnos_data.scache, int(topk * gnnos_data.num_nodes))
 

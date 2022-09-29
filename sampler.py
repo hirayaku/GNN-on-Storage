@@ -173,8 +173,11 @@ class GnnosIter(object):
     The metis/other partitioners is used as the graph partition backend.
     The sampler returns a subgraph induced by a batch of clusters
     '''
-    def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize, share_memory=False):
+    def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize,
+        share_memory=False, use_old_feat=False):
         self.share_memory = share_memory
+        self.use_old_feat = use_old_feat
+
         self.dataset = gnnos_dataset
         self.psize = self.dataset.psize
         self.bsize = bsize
@@ -220,14 +223,22 @@ class GnnosIter(object):
     def load_store(self, pi):
         tic = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
-        ranges = []
-        for i in sample_pids:
-            ranges.append((self.nids_pptr[i], self.nids_pptr[i+1]))
-        batch_feat = gnnos.gather_slices(self.dataset.node_feat, ranges)
+        if self.use_old_feat:
+            dcache_nids = torch.cat([self.parts[i] for i in sample_pids])
+            batch_feat = self.dataset.node_feat[dcache_nids]
+        else:
+            ranges = []
+            for i in sample_pids:
+                ranges.append((self.nids_pptr[i], self.nids_pptr[i+1]))
+            range_sizes = [r[1]-r[0] for r in ranges]
+            print(f"slice size avg={np.mean(range_sizes)}, std={np.std(range_sizes)}")
+            batch_feat = gnnos.gather_slices(self.dataset.node_feat, ranges)
 
         ranges = []
         for i in sample_pids:
             ranges.append((self.pg_pptr[i], self.pg_pptr[i+1]))
+        range_sizes = [r[1]-r[0] for r in ranges]
+        print(f"coo slice size avg={np.mean(range_sizes)}, std={np.std(range_sizes)}")
         batch_srcs = gnnos.gather_slices(self.pg.src_nids, ranges)
         batch_dsts = gnnos.gather_slices(self.pg.dst_nids, ranges)
         print(f"parts edges: {len(batch_srcs)}")
@@ -321,7 +332,7 @@ if __name__ == "__main__":
     print(args)
     print("set NUM_IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
-    torch.set_num_threads(32)
+    torch.set_num_threads(args.io_threads)
 
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize)
     it = iter(GnnosIter(data, args.bsize))

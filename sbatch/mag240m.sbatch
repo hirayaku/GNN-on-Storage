@@ -2,7 +2,7 @@
 
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=0
+#SBATCH --mem=784G
 #SBATCH --time=24:00:00
 #SBATCH --output=traces/mag240m.log
 #SBATCH --open-mode=append

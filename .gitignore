@@ -15,6 +15,7 @@
 **/runs
 **/runs-archive
 **/log
+**/logdir
 **/log-archive
 **/datasets
 dataset

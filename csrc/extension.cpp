@@ -64,17 +64,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             std::stringstream ss;
             ss << tinfo;
             return ss.str();
-        })
-        .def(py::pickle(
-            [](const TensorInfo& tinfo) {
-                // dump
-                // TODO: currently it does not attempt to pickle TensorInfo
-                return py::make_tuple(tinfo.path());
-            },
-            [](py::tuple t) {
-               return TensorOptions(t[0].cast<std::string>());
-            }
-        ));
+        });
 
     m.def("options",
         py::overload_cast<std::string>(&TensorOptions),
@@ -84,11 +74,21 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     py::class_<TensorStore>(m, "TensorStore")
         .def(py::init<>())
         .def_property_readonly("numel", &TensorStore::numel)
+        .def_property_readonly("shape", &TensorStore::shape)
         .def_property_readonly("metadata", &TensorStore::metadata)
+        .def("element_size", &TensorStore::itemsize)
         .def("reshape", &TensorStore::reshape, py::arg("new_shape"))
         .def("flatten", &TensorStore::flatten)
-        .def("slice", py::overload_cast<long, long>(&TensorStore::slice, py::const_),
-            "TensorStore[start, end)", py::arg("start"), py::arg("end"))
+        .def("__getitem__", [](const TensorStore &store, const py::slice &slice) {
+                size_t start = 0, stop = 0, step = 0, slicelen = 0;
+                if (!slice.compute(store.shape()[0], &start, &stop, &step, &slicelen))
+                    throw py::value_error(
+                        "Invalid slice argument: " + slice.str().cast<std::string>());
+                if (step > 1)
+                    throw py::value_error(
+                        "Does not support non-consecutive slicing now");
+                return store.slice(start, stop).tensor();
+            }, "get TensorStore[slice]", py::arg("idx"))
         .def("__getitem__", &TensorStore::at, "get TensorStore[idx]", py::arg("idx"))
         .def("tensor", py::overload_cast<>(&TensorStore::tensor, py::const_),
             "read TensorStore into an in-memory Tensor")
@@ -96,18 +96,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 return self.tensor(torch::python::detail::py_object_to_dtype(dtype));
             },"read TensorStore into an in-memory Tensor and cast into dtype",
             py::arg("dtype"))
+        .def("gather", &GatherSlices, "gather slices of stores into a torch Tensor",
+            py::arg("slices"))
         .def("save", &TensorStore::save_to,
-            "save TensorStore to file", py::arg("path"))
-        .def(py::pickle(
-            [](const TensorStore & t) {
-                // dump
-                return t.metadata();
-            },
-            [](TensorInfo tinfo) {
-                // TODO: load, only support read-only
-                return TensorStore::OpenForRead(tinfo);
-            }
-        ));
+            "save TensorStore to file", py::arg("path"));
 
     m.def("tensor_store",
         [](const TensorInfo &tinfo, std::string flags, bool temp) {
@@ -175,6 +167,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             py::arg("COOStore"));
 
 
+    /*
     // Graph Partitioning
 
     py::class_<NodePartitions>(m, "NodePartitions")
@@ -238,5 +231,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             }
         },
         "2D partitioning COOStore", py::arg("COOStore"), py::arg("partition"));
+    */
 
 }

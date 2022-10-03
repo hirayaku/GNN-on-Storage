@@ -22,7 +22,7 @@ class BaselineNodePropPredDataset(object):
         extra attributes:
         - num_nodes, num_tasks, task_type, num_classes, is_hetero
     '''
-    def __init__(self, name, root = 'dataset', mmap_feat=False, meta_dict = None):
+    def __init__(self, name, root = 'dataset', mmap_feat=False, mmap_graph=False, meta_dict = None):
         if meta_dict is None:
             self.dir_name = '_'.join(name.split('-'))
             self.original_root = root
@@ -40,6 +40,7 @@ class BaselineNodePropPredDataset(object):
         self.num_classes = self.meta_info['num_classes']
         self.is_hetero = self.meta_info['is_hetero']
         self.mmap_feat = mmap_feat
+        self.mmap_graph = mmap_graph
 
         super(BaselineNodePropPredDataset, self).__init__()
         self.load_data()
@@ -61,18 +62,19 @@ class BaselineNodePropPredDataset(object):
 
     def load_graph(self, graph_dict):
         if graph_dict['format'] == 'coo':
-            edge_index = self.tensor_from_dict(graph_dict['edge_index'], inmem=not self.mmap_feat)
+            edge_index = self.tensor_from_dict(graph_dict['edge_index'], inmem=not self.mmap_graph)
             src_nodes, dst_nodes = edge_index[0], edge_index[1]
             utils.using("creating dgl graph (coo)")
             return dgl.graph(data=(src_nodes, dst_nodes),
                 num_nodes=self.num_nodes, device='cpu')
         elif graph_dict['format'] in ('csc', 'csr'):
-            row_ptr = self.tensor_from_dict(graph_dict['row_ptr'], inmem=not self.mmap_feat)
-            col_idx = self.tensor_from_dict(graph_dict['col_idx'], inmem=not self.mmap_feat)
-            if 'edge_ids' in graph_dict:
-                edge_ids = self.tensor_from_dict(graph_dict['edge_ids'], inmem=not self.mmap_feat)
-            else:
-                edge_ids = torch.LongTensor()
+            row_ptr = self.tensor_from_dict(graph_dict['row_ptr'], inmem=not self.mmap_graph)
+            col_idx = self.tensor_from_dict(graph_dict['col_idx'], inmem=not self.mmap_graph)
+            # if 'edge_ids' in graph_dict:
+            #     edge_ids = self.tensor_from_dict(graph_dict['edge_ids'], inmem=not self.mmap_feat)
+            # else:
+            #     edge_ids = torch.LongTensor()
+            edge_ids = torch.LongTensor()
             utils.using("creating dgl graph (csc/csr)")
             return dgl.graph(data=('csc', (row_ptr, col_idx, edge_ids)))
         else:
@@ -202,6 +204,7 @@ def split_graph_csf(num_nodes: int, edge_index: torch.Tensor, edge_assigns: torc
     return GnnosPartGraphCSF(num_nodes, psize, part_ptr, src_nids[:src_nids_idx].clone(),
         dst_ptr[:dst_ptr_idx].clone(), dst_nids[:dst_nids_idx].clone())
 
+# TODO: out-of-core impl
 def split_graph_and_serialize(num_nodes: int, edge_index: torch.Tensor, edge_assigns: torch.Tensor,
     psize: int, graph_format='coo', serialize=False, data_dir=None):
     partition_dict = {'graph': {'format': graph_format}}
@@ -249,6 +252,7 @@ def scache_from(g: dgl.DGLGraph, assignments: torch.Tensor, psize: int, k: int,
     serialize=False, data_dir=None):
     '''
     take top-K nodes in terms of degrees and extract the s-cache
+    TODO: out-of-core impl
     '''
     degrees = g.in_degrees()
     _, topk_nids = torch.topk(degrees, k)
@@ -267,7 +271,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         self.topk = topk
         self.inmem = False
         self.use_old_feat = use_old_feat
-        # TODO: make mmap True to save memory
+        # TODO: out-of-core impl
         super(GnnosNodePropPredDataset, self).__init__(name, root, mmap_feat=False, meta_dict=None)
 
     # override baseline dataset methods 
@@ -297,6 +301,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             g.ndata['train_mask'][train_idx] = True
             g_node_feat = super(GnnosNodePropPredDataset, self).load_node_feat()
             g_labels = super(GnnosNodePropPredDataset, self).load_labels()
+            # MEM: G + F
 
         # partition assignments
         is_new_partition = False
@@ -317,18 +322,18 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
             # partitioned graph goes into p_dir
             os.makedirs(self.partition_dir, exist_ok=True)
             with utils.cwd(self.partition_dir):
-                edge_index = torch.vstack(g.edges())
+                edge_index = torch.vstack(g.edges()) # MEM: G * 2 + F
                 utils.using("creating partitioned graph")
                 partition_dict, _ = split_graph_by_src(self.num_nodes, edge_index,
-                    self.assigns, self.psize, serialize=True, data_dir='.')
-                del edge_index
+                    self.assigns, self.psize, serialize=True, data_dir='.') # MEM: G * 3 + F
+                del edge_index  # MEM: G * 2 + f
                 reordered_nids = torch.cat(self.parts)
-                # shuffle labels
+                # shuffle labels TODO: out-of-core impl
                 partition_dict['labels'] = tensor_serialize(g_labels[reordered_nids].numpy(),
                     'labels')
-                # shuffle node features
+                # shuffle node features TODO: out-of-core impl
                 partition_dict['node_feat'] = tensor_serialize(g_node_feat[reordered_nids].numpy(),
-                    'node_feat')
+                    'node_feat') # MEM: G * 2 + F * 2
                 # serialize metadata
                 with open('metadata.json', 'w') as f_meta:
                     f_meta.write(json.dumps(partition_dict, indent=4, cls=utils.DtypeEncoder))
@@ -341,6 +346,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                 utils.using("creating scache")
                 scache_dict, _, scache_nids = scache_from(g, self.assigns, self.psize,
                     int(self.topk * g.num_nodes()), serialize=True, data_dir='.')
+                # MEM: G * 3 + F * 2
                 # extract scache node feat
                 scache_dict['topk_nids'] = tensor_serialize(scache_nids.numpy(), 'topk_nids')
                 scache_dict['node_feat'] = tensor_serialize(g_node_feat[scache_nids].numpy(),
@@ -440,8 +446,8 @@ if __name__ == "__main__":
         print("Passed")
 
     dataset_dir = osp.join(os.environ['DATASETS'], 'gnnos')
-    name = 'ogbn-products'
-    psize = 4096
+    name = 'mag240m-c'
+    psize = 16384
 
     topk=0.01
     gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize, topk=topk)

@@ -23,11 +23,7 @@ class GnnosPartGraphCOO:
 
     def __getitem__(self, i):
         s = self.slice(i)
-        if self.inmem:
-            src, dst = self.src_nids[s], self.dst_nids[s]
-        else:
-            src = self.src_nids.slice(s.start, s.stop).tensor()
-            dst = self.dst_nids.slice(s.start, s.stop).tensor()
+        src, dst = self.src_nids[s], self.dst_nids[s]
         return torch.vstack((src, dst))
 
     def __len__(self):

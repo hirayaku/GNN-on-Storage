@@ -198,6 +198,7 @@ import os, json
 TensorInfo = namedtuple("TensorInfo", ("shape", "dtype", "path", "offset"))
 
 def tensor_serialize(tensor: np.ndarray, path: str):
+    print("serialize to file:", path)
     tensor.tofile(path)
     return TensorInfo(shape=tensor.shape, dtype=str(tensor.dtype),
         path=osp.relpath(path), offset=0)._asdict()

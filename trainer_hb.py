@@ -46,7 +46,6 @@ def train_serial(data, args, in_feats, num_classes):
 
     # graph.ndata['label'] = batch_labels
     # graph.ndata['feat'] = batch_feat
-
     dataloader = dgl.dataloading.DataLoader(
         graph,
         train_nids,
@@ -74,12 +73,9 @@ def train_serial(data, args, in_feats, num_classes):
                 # skip batches with too few training nodes
                 # print(f"skip {len(output_nodes)} nodes")
                 continue
-
             # Load the input features as well as output labels
             x = batch_feat[input_nodes].to(device).float()
             y = batch_labels[output_nodes].to(device).flatten().long()
-            # label data is incorrect, use randint for now: doesn't affect computation
-            y[:] = torch.randint(num_classes, y.shape, device=y.device)
             # x = blocks[0].srcdata['feat'].float()
             # y = blocks[-1].dstdata['label'].flatten().long()
             # Compute loss and prediction
@@ -89,10 +85,9 @@ def train_serial(data, args, in_feats, num_classes):
             loss.backward()
             optimizer.step()
             lr_scheduler.step(loss)
-            # train_acc = MF.accuracy(y_hat, y)
-
-            # if (batch_iter+1) % args.log_every == 0:
-            #     print(f"Iter {batch_iter+1}, train acc: {train_acc:.4f}")
+            train_acc = MF.accuracy(y_hat, y)
+            if (batch_iter+1) % args.log_every == 0:
+                print(f"Iter {batch_iter+1}, train acc: {train_acc:.4f}")
         except StopIteration:
             if batch_iter < len(dataloader) * recycle_factor:
                 dataloader = dgl.dataloading.DataLoader(
@@ -322,7 +317,7 @@ def train(args, in_feats, num_classes, data_queue, resp_queue):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='samplers + trainers',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--dataset", type=str, default='ogbn-papers100M')
+    parser.add_argument("--dataset", type=str, default='ogbn-products')
     parser.add_argument("--model", type=str, default='sage')
     parser.add_argument("--root", type=str, default=os.path.join(os.environ['DATASETS'], 'gnnos'))
     parser.add_argument("--n-layers", type=int, default=3,
@@ -341,8 +336,8 @@ if __name__ == "__main__":
     parser.add_argument("--n-epochs", type=int, default=5)
     parser.add_argument("--num-workers", type=int, default=0,
                         help="Number of sampling workers for host-gpu hierarchy")
-    parser.add_argument("--psize", type=int, default=16384)
-    parser.add_argument("--bsize", type=int, default=1024)
+    parser.add_argument("--psize", type=int, default=4096)
+    parser.add_argument("--bsize", type=int, default=512)
     parser.add_argument("--bsize2", type=int, default=1024)
     parser.add_argument("--recycle", type=int, default=1,
                         help="Number of training passes over the host data before recycling")
@@ -357,9 +352,9 @@ if __name__ == "__main__":
     args.fanout = list(map(int, args.fanout.split(',')))
 
     print(args)
-    print("set NUM_THREADS to", args.io_threads)
-    torch.set_num_threads(args.io_threads)
+    print("set IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
+    # torch.set_num_threads(args.io_threads)
 
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize,
         use_old_feat=args.use_old_feat)
@@ -387,7 +382,8 @@ if __name__ == "__main__":
 
         for data in it:
             num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
-            print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, #train: {batch_train_mask.int().sum()}")
+            print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, "
+                f"#train: {batch_train_mask.int().sum()}")
             print(f"batch_feat: {batch_feat.shape}")
             assert num_nodes == batch_feat.shape[0]
             assert num_nodes == batch_labels.shape[0]
@@ -398,6 +394,7 @@ if __name__ == "__main__":
             profiler.stop()
             profiler.print()
             profiler.start()
+        profiler.stop()
         toc = time.time()
         print(f"{len(it)} iters took {toc-tic:.2f}s")
         duration.append(toc-tic)

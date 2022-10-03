@@ -68,11 +68,17 @@ class GnnosPartGraph:
 
     @property
     def src_nids(self):
-        return self.edge_index[0]
+        if self.inmem:
+            return self.edge_index[0]
+        else:
+            return self.edge_index.src;
 
     @property
     def dst_nids(self):
-        return self.edge_index[1]
+        if self.inmem:
+            return self.edge_index[1]
+        else:
+            return self.edge_index.dst;
 
     def check_partition(self, assigns: torch.Tensor, which='src'):
         print(f"Checking partitions for {which}")

@@ -178,41 +178,40 @@ class GnnosIter(object):
         self.use_old_feat = use_old_feat
 
         self.dataset = gnnos_dataset
-        self.psize = self.dataset.psize
+        self.psize = gnnos_dataset.psize
         self.bsize = bsize
-        self.parts = self.dataset.parts
-        self.pg = self.dataset.graph
-        self.scache = self.dataset.scache
-        self.scache_nids = self.dataset.scache_nids
-        self.scache_feat = self.dataset.scache_feat
-        self.scache_size = len(self.scache_nids)
-        # get a partitioning of scache_nids
-        scache_assigns = self.dataset.assigns[self.scache_nids]
-        self.scache_parts = partition_from(self.scache_nids, scache_assigns, self.psize)
-
-        part_sizes = [len(part) for part in self.parts]
+        self.dcache = dict(zip(['graph', 'parts', 'feat', 'label'], [
+            gnnos_dataset.graph, gnnos_dataset.parts, gnnos_dataset.node_feat, gnnos_dataset.labels
+        ]))
+        part_sizes = [len(part) for part in self.dcache['parts']]
         part_sizes = torch.LongTensor([0] + part_sizes)
-        self.nids_pptr = torch.cumsum(part_sizes, dim=0)
+        self.dcache['node_ptr'] = torch.cumsum(part_sizes, dim=0)
+        self.dcache['edge_ptr'] = self.dcache['graph'].part_ptr.tensor()
+        assert self.dcache['edge_ptr'].shape[0] == self.psize + 1
 
-        # pin some data in memory
+        self.scache = dict(zip(['graph', 'nids', 'feat', 'label'], self.dataset.scache))
+        # get a partitioning of scache_nids
+        scache_assigns = self.dataset.assigns[self.scache['nids']]
+        self.scache['parts'] = partition_from(self.scache['nids'], scache_assigns, self.psize+1)
+        part_sizes = [len(part) for part in self.scache['parts']]
+        part_sizes = torch.LongTensor([0] + part_sizes)
+        self.scache['node_ptr'] = torch.cumsum(part_sizes, dim=0)
+        self.scache['edge_ptr'] = self.scache['graph'].part_ptr.tensor()
+        assert self.scache['edge_ptr'].shape[0] == self.psize + 2
+        self.scache['sg'] = self.scache['graph'][self.psize]
+
         train_idx = self.dataset.get_idx_split()['train']
         train_mask = torch.zeros(gnnos_dataset.num_nodes, dtype=torch.bool)
         train_mask[train_idx] = True
         self.train_mask = train_mask
-        self.labels = self.dataset.labels.tensor()
-        self.pg_pptr = self.pg.part_ptr.tensor()    # partition ptrs
-        self.scache_pptr = self.scache.part_ptr.tensor()
-        # s-node induced graph
-        start, end = self.scache_pptr[self.psize], self.scache_pptr[self.psize+1]
-        scache_srcs = self.scache.src_nids.slice(start,end).tensor()
-        scache_dsts = self.scache.dst_nids.slice(start,end).tensor()
+
         print("Relabeling scache...")
         tic = time.time()
-        self.scache_dict = new_dict(self.scache_nids, torch.arange(self.scache_size), default=-1)
-        self.scache_srcs = lookup(self.scache_dict, scache_srcs)
-        self.scache_dsts = lookup(self.scache_dict, scache_dsts)
-        assert (self.scache_srcs != -1).all()
-        assert (self.scache_dsts != -1).all()
+        scache_mapping = new_dict(
+            self.scache['nids'], torch.arange(len(self.scache['nids'])), default=-1)
+        self.scache['sg'][0] = lookup(scache_mapping, self.scache['sg'][0])
+        self.scache['sg'][1] = lookup(scache_mapping, self.scache['sg'][1])
+        assert (self.scache['sg'] != -1).all()
         print(f"Done: {time.time()-tic:.2f}s")
 
         self.max = int((self.psize) // self.bsize)
@@ -224,37 +223,40 @@ class GnnosIter(object):
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
         if self.use_old_feat:
             dcache_nids = torch.cat([self.parts[i] for i in sample_pids])
-            batch_feat = self.dataset.node_feat[dcache_nids]
+            # different results, same computation
+            batch_feat = self.dcache['feat'][dcache_nids]
         else:
             ranges = []
             for i in sample_pids:
-                ranges.append((self.nids_pptr[i], self.nids_pptr[i+1]))
+                ranges.append((self.dcache['node_ptr'][i], self.dcache['node_ptr'][i+1]))
+            batch_feat = self.dcache['feat'].gather(ranges)
+            batch_labels = self.dcache['label'].gather(ranges)
             range_sizes = [r[1]-r[0] for r in ranges]
-            print(f"slice size avg={np.mean(range_sizes)}, std={np.std(range_sizes)}")
-            batch_feat = gnnos.gather_slices(self.dataset.node_feat, ranges)
+            print(f"slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
 
         ranges = []
         for i in sample_pids:
-            ranges.append((self.pg_pptr[i], self.pg_pptr[i+1]))
+            ranges.append((self.dcache['edge_ptr'][i], self.dcache['edge_ptr'][i+1]))
         range_sizes = [r[1]-r[0] for r in ranges]
-        print(f"coo slice size avg={np.mean(range_sizes)}, std={np.std(range_sizes)}")
-        batch_srcs = gnnos.gather_slices(self.pg.src_nids, ranges)
-        batch_dsts = gnnos.gather_slices(self.pg.dst_nids, ranges)
+        print(f"coo slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
+        batch_srcs = self.dcache['graph'].src_nids.gather(ranges)
+        batch_dsts = self.dcache['graph'].dst_nids.gather(ranges)
         print(f"parts edges: {len(batch_srcs)}")
 
         ranges = []
         for i in sample_pids:
-            ranges.append((self.scache_pptr[i], self.scache_pptr[i+1]))
-        scache_batch_srcs = gnnos.gather_slices(self.scache.src_nids, ranges)
-        scache_batch_dsts = gnnos.gather_slices(self.scache.dst_nids, ranges)
+            ranges.append((self.scache['edge_ptr'][i], self.scache['edge_ptr'][i+1]))
+        scache_batch_srcs = self.scache['graph'].src_nids.gather(ranges)
+        scache_batch_dsts = self.scache['graph'].dst_nids.gather(ranges)
         toc = time.time()
         print(f"Load store: {toc-tic:.2f}s")
 
         # processing after data is loaded
         tic = time.time()
+
         # prepare relabel dict
-        scache_nids, scache_size = self.scache_nids, self.scache_size
-        dcache_nids = torch.cat([self.parts[i] for i in sample_pids])
+        scache_nids, scache_size = self.scache['nids'], len(self.scache['nids'])
+        dcache_nids = torch.cat([self.dcache['parts'][i] for i in sample_pids])
         dcache_size = len(dcache_nids)
         cache_size = scache_size + dcache_size
         self.relabel_dict[:] = -1
@@ -272,29 +274,27 @@ class GnnosIter(object):
         scache_batch_dsts = self.relabel_dict[scache_batch_dsts]
         assert (scache_batch_srcs != -1).all()
         assert (scache_batch_dsts != -1).all()
-        print(f"scache edges: {len(scache_batch_srcs)}, {len(self.scache_srcs)}")
+        print(f"scache edges: {len(scache_batch_srcs)}, {self.scache['sg'].shape[1]}")
 
-        batch_srcs = torch.cat((self.scache_srcs, scache_batch_srcs, batch_srcs))
-        batch_dsts = torch.cat((self.scache_dsts, scache_batch_dsts, batch_dsts))
-        batch_labels = torch.cat((self.labels[scache_nids], self.labels[dcache_nids]))
-        batch_feat = torch.cat((self.scache_feat, batch_feat))
         batch_train_mask = torch.zeros((cache_size,), dtype=torch.bool)
         batch_train_mask[scache_size:] = self.train_mask[dcache_nids]
         # compensate lost train mask for scache nids
-        batch_scache_nids = torch.cat([self.scache_parts[i] for i in sample_pids])
-        batch_train_mask[lookup(self.scache_dict, batch_scache_nids)] = self.train_mask[batch_scache_nids]
+        batch_scache_nids = torch.cat([self.scache['parts'][i] for i in sample_pids])
+        batch_train_mask[self.relabel_dict[batch_scache_nids]] = self.train_mask[batch_scache_nids]
 
-        if self.share_memory:
-            batch_srcs.share_memory_()
-            batch_dsts.share_memoty_()
-            batch_labels.share_memory_()
-            batch_feat.share_memory_()
-            batch_train_mask.share_memory_()
+        batch_srcs = torch.cat((self.scache['sg'][0], scache_batch_srcs, batch_srcs))
+        batch_dsts = torch.cat((self.scache['sg'][1], scache_batch_dsts, batch_dsts))
+        batch_labels = torch.cat((self.scache['label'], batch_labels))
+        batch_feat = torch.cat((self.scache['feat'], batch_feat))
 
+        # if self.share_memory:
+        #     batch_srcs.share_memory_()
+        #     batch_dsts.share_memoty_()
+        #     batch_labels.share_memory_()
+        #     batch_feat.share_memory_()
+        #     batch_train_mask.share_memory_()
         toc = time.time()
         print(f"Assemble: {toc-tic:.2f}s")
-        # consume one ticket, so next time we could wait here un
-
         return cache_size, (batch_srcs, batch_dsts), batch_labels, batch_feat, batch_train_mask
 
     def __len__(self):
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     print(args)
     print("set NUM_IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
-    torch.set_num_threads(args.io_threads)
+    # torch.set_num_threads(args.io_threads)
 
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize)
     it = iter(GnnosIter(data, args.bsize))

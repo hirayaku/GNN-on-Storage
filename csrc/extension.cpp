@@ -145,6 +145,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_property_readonly("num_nodes", &COOStore::num_nodes)
         .def_property_readonly("num_edges", &COOStore::num_edges)
         .def_property_readonly("metadata", &COOStore::metadata)
+        .def_property_readonly("src", [](const COOStore &self) { return self.src_store; })
+        .def_property_readonly("dst", [](const COOStore &self) { return self.dst_store; })
         .def("slice", py::overload_cast<long, long>(&COOStore::slice, py::const_),
             "COOStore[start, end)", py::arg("start"), py::arg("end"))
         .def("tensor", &COOStore::tensor)

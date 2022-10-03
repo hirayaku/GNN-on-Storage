@@ -349,8 +349,9 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                 # MEM: G * 3 + F * 2
                 # extract scache node feat
                 scache_dict['topk_nids'] = tensor_serialize(scache_nids.numpy(), 'topk_nids')
-                scache_dict['node_feat'] = tensor_serialize(g_node_feat[scache_nids].numpy(),
-                    'node_feat')
+                scache_dict['labels'] = tensor_serialize(g_labels[scache_nids].numpy(), 'labels')
+                scache_dict['node_feat'] = tensor_serialize(
+                    g_node_feat[scache_nids].numpy(), 'node_feat')
                 # serialize metadata
                 with open(osp.join('metadata.json'), 'w') as f_meta:
                     f_meta.write(json.dumps(scache_dict, indent=4, cls=utils.DtypeEncoder))
@@ -381,13 +382,13 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                 self.tensor_from_dict(scache_graph_info['edge_index'], self.inmem, root='.'),
                 self.num_nodes,
             )
-            scache = GnnosPartGraph(int(self.topk * self.num_nodes), self.psize + 1,
+            scache_g = GnnosPartGraph(int(self.topk * self.num_nodes), self.psize + 1,
                 part_ptr, index)
             # load topk nids and feat into memory
             scache_nids = self.tensor_from_dict(self.scache_info['topk_nids'], True, root='.')
             scache_feat = self.tensor_from_dict(self.scache_info['node_feat'], True, root='.')
-        return graph, scache, scache_nids, scache_feat
-
+            scache_labels = self.tensor_from_dict(self.scache_info['labels'], True, root='.')
+        return graph, (scache_g, scache_nids, scache_feat, scache_labels)
 
     def load_labels(self):
         return self.tensor_from_dict(self.partition_info['labels'],
@@ -414,7 +415,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
         self.partition_dir = osp.join(self.data_dir, f'p{self.psize}')
         self.scache_dir = osp.join(self.partition_dir, f'scache-{self.topk}')
         self.num_nodes = self.meta_info['num_nodes']
-        self.graph, self.scache, self.scache_nids, self.scache_feat = self.load_graph()
+        self.graph, self.scache = self.load_graph()
         self.labels = self.load_labels()
         self.node_feat = self.load_node_feat()
 
@@ -446,19 +447,21 @@ if __name__ == "__main__":
         print("Passed")
 
     dataset_dir = osp.join(os.environ['DATASETS'], 'gnnos')
-    name = 'mag240m-c'
-    psize = 16384
+    name = 'ogbn-arxiv'
+    psize = 1024
 
     topk=0.01
     gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize, topk=topk)
 
     pg = gnnos_data.graph
     assigns = gnnos_data.assigns.clone()
-    pg.check_partition(assigns, which='src')
-    assigns[gnnos_data.scache_nids] = pg.psize
-    scache = gnnos_data.scache
+    scache, scache_nids, scache_feat, scache_labels = gnnos_data.scache
+    # pg.check_partition(assigns, which='src')
+    assigns[scache_nids] = pg.psize
     scache.check_partition(assigns, which='dst')
 
-    data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=True)
+    data = BaselineNodePropPredDataset(name=name, root=dataset_dir, mmap_feat=False)
     check_feat(data.node_feat, gnnos_data.parts, gnnos_data.node_feat)
     check_labels(data.labels, gnnos_data.parts, gnnos_data.labels)
+    check_feat(data.node_feat, [scache_nids], scache_feat)
+    check_labels(data.labels, [scache_nids], scache_labels)

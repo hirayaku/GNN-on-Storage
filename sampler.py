@@ -73,7 +73,8 @@ class ClusterIterV2(object):
         # self.cuts = train_edge_cuts_from(g, self.assigns, psize)
 
         self.max = int((self.psize) // self.bsize)
-        self.train_pids = torch.randperm(self.psize)
+        # self.train_pids = torch.randperm(self.psize)
+        self.train_pids = torch.arange(self.psize)
 
         self.node_cache_parts = None
         self.node_budget = int(popular_ratio * g.num_nodes())
@@ -146,14 +147,13 @@ class ClusterIterV2(object):
             subgraph.ndata['cache_mask'][:] = False
             subgraph.ndata['cache_mask'][sg_cache_nids] = True
             self.n += 1
-            return subgraph, sg_train_nids
+            return subgraph, sg_train_nids, # train_nids, helper_nids, cache_nids
         else:
             self.train_pids = torch.randperm(self.psize)
             self.node_cache_parts = self.__get_popular_nodes__()
             raise StopIteration
 
 import gnnos
-from gnnos_utils import store
 from graphloader import GnnosNodePropPredDataset
 import torch.multiprocessing as mp
 
@@ -180,49 +180,49 @@ class GnnosIter(object):
         self.dataset = gnnos_dataset
         self.psize = gnnos_dataset.psize
         self.bsize = bsize
-        self.dcache = dict(zip(['graph', 'parts', 'feat', 'label'], [
-            gnnos_dataset.graph, gnnos_dataset.parts, gnnos_dataset.node_feat, gnnos_dataset.labels
+        # train_mask and assigns are in-memory tensors - O(|V|)
+        self.dcache = dict(zip(['graph', 'assigns', 'parts', 'feat', 'label'], [
+            gnnos_dataset.graph, gnnos_dataset.assigns, gnnos_dataset.parts,
+            gnnos_dataset.node_feat, gnnos_dataset.labels
         ]))
         part_sizes = [len(part) for part in self.dcache['parts']]
         part_sizes = torch.LongTensor([0] + part_sizes)
         self.dcache['node_ptr'] = torch.cumsum(part_sizes, dim=0)
         self.dcache['edge_ptr'] = self.dcache['graph'].part_ptr.tensor()
         assert self.dcache['edge_ptr'].shape[0] == self.psize + 1
+        train_idx = self.dataset.get_idx_split()['train']
+        train_mask = torch.zeros(gnnos_dataset.num_nodes, dtype=torch.bool)
+        train_mask[train_idx] = True
+        self.dcache['train_mask'] = train_mask
 
         self.scache = dict(zip(['graph', 'nids', 'feat', 'label'], self.dataset.scache))
         # get a partitioning of scache_nids
-        scache_assigns = self.dataset.assigns[self.scache['nids']]
-        self.scache['parts'] = partition_from(self.scache['nids'], scache_assigns, self.psize+1)
-        part_sizes = [len(part) for part in self.scache['parts']]
-        part_sizes = torch.LongTensor([0] + part_sizes)
-        self.scache['node_ptr'] = torch.cumsum(part_sizes, dim=0)
+        self.scache['assigns'] = self.dcache['assigns'][self.scache['nids']]
+        self.scache['parts'] = partition_from(self.scache['nids'], self.scache['assigns'],
+            self.psize)
         self.scache['edge_ptr'] = self.scache['graph'].part_ptr.tensor()
         assert self.scache['edge_ptr'].shape[0] == self.psize + 2
         self.scache['sg'] = self.scache['graph'][self.psize]
 
-        train_idx = self.dataset.get_idx_split()['train']
-        train_mask = torch.zeros(gnnos_dataset.num_nodes, dtype=torch.bool)
-        train_mask[train_idx] = True
-        self.train_mask = train_mask
-
-        print("Relabeling scache...")
+        print("Relabeling scache induced subgraph")
         tic = time.time()
-        scache_mapping = new_dict(
+        self.scache_mapping = new_dict(
             self.scache['nids'], torch.arange(len(self.scache['nids'])), default=-1)
-        self.scache['sg'][0] = lookup(scache_mapping, self.scache['sg'][0])
-        self.scache['sg'][1] = lookup(scache_mapping, self.scache['sg'][1])
+        self.scache['sg'][0] = lookup(self.scache_mapping, self.scache['sg'][0])
+        self.scache['sg'][1] = lookup(self.scache_mapping, self.scache['sg'][1])
         assert (self.scache['sg'] != -1).all()
         print(f"Done: {time.time()-tic:.2f}s")
 
         self.max = int((self.psize) // self.bsize)
-        self.train_pids = torch.randperm(self.psize)
+        # self.train_pids = torch.randperm(self.psize)
+        self.train_pids = torch.arange(self.psize)
         self.relabel_dict = torch.empty(self.dataset.num_nodes, dtype=torch.long)  # at most ~2GB
 
     def load_store(self, pi):
         tic = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
         if self.use_old_feat:
-            dcache_nids = torch.cat([self.parts[i] for i in sample_pids])
+            dcache_nids = torch.cat([self.dcache['parts'][i] for i in sample_pids])
             # different results, same computation
             batch_feat = self.dcache['feat'][dcache_nids]
         else:
@@ -232,13 +232,13 @@ class GnnosIter(object):
             batch_feat = self.dcache['feat'].gather(ranges)
             batch_labels = self.dcache['label'].gather(ranges)
             range_sizes = [r[1]-r[0] for r in ranges]
-            print(f"slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
+            # print(f"slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
 
         ranges = []
         for i in sample_pids:
             ranges.append((self.dcache['edge_ptr'][i], self.dcache['edge_ptr'][i+1]))
         range_sizes = [r[1]-r[0] for r in ranges]
-        print(f"coo slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
+        # print(f"coo slice size avg={np.mean(range_sizes):.2f}, std={np.std(range_sizes):.2f}")
         batch_srcs = self.dcache['graph'].src_nids.gather(ranges)
         batch_dsts = self.dcache['graph'].dst_nids.gather(ranges)
         print(f"parts edges: {len(batch_srcs)}")
@@ -258,32 +258,44 @@ class GnnosIter(object):
         scache_nids, scache_size = self.scache['nids'], len(self.scache['nids'])
         dcache_nids = torch.cat([self.dcache['parts'][i] for i in sample_pids])
         dcache_size = len(dcache_nids)
+        # we are overestimating cache_size because some scache nids are in dcache nids
+        # but it's fine
         cache_size = scache_size + dcache_size
-        self.relabel_dict[:] = -1
-        self.relabel_dict[dcache_nids] = torch.arange(scache_size, cache_size)
-        self.relabel_dict[scache_nids] = torch.arange(scache_size)
 
-        batch_dsts = self.relabel_dict[batch_dsts]
-        mask = (batch_dsts != -1)
-        batch_srcs, batch_dsts = batch_srcs[mask], batch_dsts[mask]
+        self.relabel_dict[:] = -1
+        self.relabel_dict[scache_nids] = torch.arange(scache_size)
+        self.relabel_dict[dcache_nids] = torch.arange(scache_size, cache_size)
         batch_srcs = self.relabel_dict[batch_srcs]
+        # filter out non-cache destinations
+        batch_dsts = self.relabel_dict[batch_dsts]
+        dst_mask = (batch_dsts != -1)
+        batch_srcs, batch_dsts = batch_srcs[dst_mask], batch_dsts[dst_mask]
         assert (batch_srcs != -1).all()
         assert (batch_dsts != -1).all()
         print(f"dcache edges: {len(batch_srcs)}")
-        scache_batch_srcs = self.relabel_dict[scache_batch_srcs]
+
+        # NOTE: we are including slightly more edges than necessary - adjacency lists
+        # of nodes that appear in both scache and dcache, but they won't appear in mfg
         scache_batch_dsts = self.relabel_dict[scache_batch_dsts]
-        assert (scache_batch_srcs != -1).all()
-        assert (scache_batch_dsts != -1).all()
-        print(f"scache edges: {len(scache_batch_srcs)}, {self.scache['sg'].shape[1]}")
+        self.relabel_dict[scache_nids] = torch.arange(scache_size)
+        scache_batch_srcs = self.relabel_dict[scache_batch_srcs]
+        scache_dcache_nids = torch.cat([self.scache['parts'][i] for i in sample_pids])
+        scache_dcache_nids = lookup(self.scache_mapping, scache_dcache_nids)
+        scache_mask = torch.ones(scache_size, dtype=torch.bool)
+        scache_mask[scache_dcache_nids] = False
+        mask = scache_mask[scache_batch_srcs]
+        scache_batch_srcs, scache_batch_dsts = scache_batch_srcs[mask], scache_batch_dsts[mask]
+        scache_sg_srcs, scache_sg_dsts = self.scache['sg']
+        mask = scache_mask[scache_sg_srcs]
+        scache_sg = scache_sg_srcs[mask], scache_sg_dsts[mask]
+        print(f"scache edges: {len(scache_batch_srcs)}, {len(scache_sg[0])}")
 
+        # assemble train_mask
         batch_train_mask = torch.zeros((cache_size,), dtype=torch.bool)
-        batch_train_mask[scache_size:] = self.train_mask[dcache_nids]
-        # compensate lost train mask for scache nids
-        batch_scache_nids = torch.cat([self.scache['parts'][i] for i in sample_pids])
-        batch_train_mask[self.relabel_dict[batch_scache_nids]] = self.train_mask[batch_scache_nids]
+        batch_train_mask[scache_size:cache_size] = self.dcache['train_mask'][dcache_nids]
 
-        batch_srcs = torch.cat((self.scache['sg'][0], scache_batch_srcs, batch_srcs))
-        batch_dsts = torch.cat((self.scache['sg'][1], scache_batch_dsts, batch_dsts))
+        batch_srcs = torch.cat((scache_sg[0], scache_batch_srcs, batch_srcs))
+        batch_dsts = torch.cat((scache_sg[1], scache_batch_dsts, batch_dsts))
         batch_labels = torch.cat((self.scache['label'], batch_labels))
         batch_feat = torch.cat((self.scache['feat'], batch_feat))
 
@@ -314,6 +326,8 @@ class GnnosIter(object):
             self.train_pids = torch.randperm(self.psize)
             raise StopIteration
 
+from graphloader import BaselineNodePropPredDataset
+
 if __name__ == "__main__":
     import argparse
     from pyinstrument import Profiler
@@ -333,31 +347,55 @@ if __name__ == "__main__":
     gnnos.set_io_threads(args.io_threads)
     # torch.set_num_threads(args.io_threads)
 
-    data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize)
+    baseline_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=True)
+    g = baseline_data.graph
+    g.ndata['label'] = baseline_data.labels
+    n_nodes = g.num_nodes()
+    idx = baseline_data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
+    g.ndata['train_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['train_mask'][train_nid] = True
+    g.ndata['valid_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['valid_mask'][val_nid] = True
+    g.ndata['test_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
+    g.ndata['test_mask'][test_nid] = True
+    baseline_it = iter(ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.bsize,
+        partitioner=partition_utils.MetisMinCutBalanced(), popular_ratio=0.01))
+
+    data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize, topk=0.01)
     it = iter(GnnosIter(data, args.bsize))
 
     iters = 0
     duration = []
     for i in range(args.n_epochs):
         print("Loading starts")
-        tic = time.time()
-        profiler = Profiler(interval=0.01)
-        profiler.start()
-
-        for data in it:
+        for _ in range(len(it)):
+            baseline_data = next(baseline_it)
+            data = next(it)
             num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
-            print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, #train: {batch_train_mask.int().sum()}")
-            print(f"batch_feat: {batch_feat.shape}")
-            assert num_nodes == batch_feat.shape[0]
-            assert num_nodes == batch_labels.shape[0]
-            assert num_nodes == batch_train_mask.shape[0]
-            graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
-            graph.create_formats_()
-            del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
-            profiler.stop()
-            profiler.print()
-            profiler.start()
-        profiler.stop()
+            print("baseline graph:", baseline_data[0])
+            print(f"gnnos nodes:{num_nodes} edges:{len(batch_coo[0])}")
+            assert baseline_data[0].num_edges() == len(batch_coo[0])
+
+        tic = time.time()
+        # profiler = Profiler(interval=0.01)
+        # profiler.start()
+        # for data in it:
+        #     num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
+        #     print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, #train: {batch_train_mask.int().sum()}")
+        #     print(f"batch_feat: {batch_feat.shape}")
+        #     assert num_nodes == batch_feat.shape[0]
+        #     assert num_nodes == batch_labels.shape[0]
+        #     assert num_nodes == batch_train_mask.shape[0]
+        #     graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
+        #     graph.create_formats_()
+        #     del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
+        #     profiler.stop()
+        #     profiler.print()
+        #     profiler.start()
+        # profiler.stop()
         toc = time.time()
         print(f"{len(it)} iters took {toc-tic:.2f}s")
         duration.append(toc-tic)

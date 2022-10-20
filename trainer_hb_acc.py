@@ -157,7 +157,7 @@ def train(args, data, partitioner, tb_writer):
                 while batch_iter < len(dataloader) * recycle_factor:
                     try:
                         batch_iter += 1
-                        _, (input_nodess, output_nodes, blocks) = next(iterator)
+                        _, (input_nodes, output_nodes, blocks) = next(iterator)
                         if batch_iter == 1:
                             first_minibatch = time.time()
                         # skip batches with too few training nodes

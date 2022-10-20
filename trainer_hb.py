@@ -87,7 +87,7 @@ def train_serial(data, args, in_feats, num_classes):
             lr_scheduler.step(loss)
             train_acc = MF.accuracy(y_hat, y)
             if (batch_iter+1) % args.log_every == 0:
-                print(f"Iter {batch_iter+1}, train acc: {train_acc:.4f}")
+                print(f">Iter {batch_iter+1}, train acc: {train_acc:.4f}")
         except StopIteration:
             if batch_iter < len(dataloader) * recycle_factor:
                 dataloader = dgl.dataloading.DataLoader(
@@ -102,111 +102,13 @@ def train_serial(data, args, in_feats, num_classes):
                     use_prefetch_thread=False, pin_prefetcher=False)
                 iterator = enumerate(dataloader)
     batch_end = time.time()
-    print(f"    mega-batch overall: {batch_end-batch_start:.2f}s")
-    print(f"    mega-batch compute: {batch_end-first_minibatch:.2f}s")
-    print(f"    num_iters={batch_iter}, num_workers={args.num_workers}")
+    print(f"mega-batch overall: {batch_end-batch_start:.2f}s")
+    print(f"mega-batch compute: {batch_end-first_minibatch:.2f}s")
+    print(f"num_iters={batch_iter}, num_workers={args.num_workers}")
     print(f"############ mega-batch {time.time()-marker:.2f}s ############# \n")
     marker = time.time()
 
-def train_serial_multi(data, args, in_feats, num_classes, world_size, rank):
-    torch.cuda.set_device(rank)
-
-    dist.init_process_group('nccl', )
-    device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    batch_size = args.bsize2
-
-    if args.model == 'gat':
-        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
-    elif args.model == 'gin':
-        model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
-    else:
-        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
-    model.cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
-    sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
-
-    print("Training starts")
-    # print("qsize:", data_queue.qsize())
-
-    marker = time.time()
-    tic = time.time()
-    num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
-    graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
-    train_nids = torch.nonzero(batch_train_mask, as_tuple=True)[0]
-    graph.create_formats_()
-    print(f"dgl graph creation: {time.time()-tic:.2f}s")
-
-    # graph.ndata['label'] = batch_labels
-    # graph.ndata['feat'] = batch_feat
-
-    dataloader = dgl.dataloading.DataLoader(
-        graph,
-        train_nids,
-        sampler,
-        device=device,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=False,
-        num_workers=args.num_workers,
-        use_prefetch_thread=False, pin_prefetcher=False)
-    iterator = enumerate(dataloader)
-
-    recycle_factor = args.recycle
-    model.train()
-    batch_start = time.time()
-    batch_iter = 0
-    while batch_iter < len(dataloader) * recycle_factor:
-        try:
-            batch_iter += 1
-            _, (input_nodes, output_nodes, blocks) = next(iterator)
-            if batch_iter == 1:
-                first_minibatch = time.time()
-                print(f"mfg size:", len(input_nodes))
-            if len(output_nodes) < 0.1 * args.bsize2:
-                # skip batches with too few training nodes
-                # print(f"skip {len(output_nodes)} nodes")
-                continue
-
-            # Load the input features as well as output labels
-            x = batch_feat[input_nodes].to(device).float()
-            y = batch_labels[output_nodes].to(device).flatten().long()
-            # label data is incorrect, use randint for now: doesn't affect computation
-            y[:] = torch.randint(num_classes, y.shape, device=y.device)
-            # x = blocks[0].srcdata['feat'].float()
-            # y = blocks[-1].dstdata['label'].flatten().long()
-            # Compute loss and prediction
-            y_hat = model(blocks, x)
-            loss = F.nll_loss(y_hat, y)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            lr_scheduler.step(loss)
-            # train_acc = MF.accuracy(y_hat, y)
-
-            # if (batch_iter+1) % args.log_every == 0:
-            #     print(f"Iter {batch_iter+1}, train acc: {train_acc:.4f}")
-        except StopIteration:
-            if batch_iter < len(dataloader) * recycle_factor:
-                dataloader = dgl.dataloading.DataLoader(
-                    graph,
-                    train_nids,
-                    sampler,
-                    device=device,
-                    batch_size=batch_size,
-                    shuffle=True,
-                    drop_last=False,
-                    num_workers=args.num_workers,
-                    use_prefetch_thread=False, pin_prefetcher=False)
-                iterator = enumerate(dataloader)
-    batch_end = time.time()
-    print(f"    mega-batch overall: {batch_end-batch_start:.2f}s")
-    print(f"    mega-batch compute: {batch_end-first_minibatch:.2f}s")
-    print(f"    num_iters={batch_iter}, num_workers={args.num_workers}")
-    print(f"############ mega-batch {time.time()-marker:.2f}s ############# \n")
-    marker = time.time()
-
+'''
 def train(args, in_feats, num_classes, data_queue, resp_queue):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     batch_size = args.bsize2
@@ -313,6 +215,7 @@ def train(args, in_feats, num_classes, data_queue, resp_queue):
         marker = time.time()
         del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
         del data
+'''
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='samplers + trainers',
@@ -391,9 +294,9 @@ if __name__ == "__main__":
             del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
             # data_queue.put(data)
             train_serial(data, args, in_feats, num_classes)
-            profiler.stop()
-            profiler.print()
-            profiler.start()
+            # profiler.stop()
+            # profiler.print()
+            # profiler.start()
         profiler.stop()
         toc = time.time()
         print(f"{len(it)} iters took {toc-tic:.2f}s")

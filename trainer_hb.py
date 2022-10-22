@@ -14,38 +14,20 @@ import dgl
 
 from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 import gnnos
-from graphloader import GnnosNodePropPredDataset
+from graphloader import BaselineNodePropPredDataset, GnnosNodePropPredDataset
 from sampler import GnnosIter
 
-def train_serial(data, args, in_feats, num_classes):
+def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     batch_size = args.bsize2
 
-    if args.model == 'gat':
-        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
-    elif args.model == 'gin':
-        model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
-    else:
-        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
-    model.cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
-    sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
-
-    print("Training starts")
-    # print("qsize:", data_queue.qsize())
-
-    marker = time.time()
     tic = time.time()
-    num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
+    num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, *_ = data
     graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
     train_nids = torch.nonzero(batch_train_mask, as_tuple=True)[0]
     graph.create_formats_()
     print(f"dgl graph creation: {time.time()-tic:.2f}s")
 
-    # graph.ndata['label'] = batch_labels
-    # graph.ndata['feat'] = batch_feat
     dataloader = dgl.dataloading.DataLoader(
         graph,
         train_nids,
@@ -76,8 +58,6 @@ def train_serial(data, args, in_feats, num_classes):
             # Load the input features as well as output labels
             x = batch_feat[input_nodes].to(device).float()
             y = batch_labels[output_nodes].to(device).flatten().long()
-            # x = blocks[0].srcdata['feat'].float()
-            # y = blocks[-1].dstdata['label'].flatten().long()
             # Compute loss and prediction
             y_hat = model(blocks, x)
             loss = F.nll_loss(y_hat, y)
@@ -87,7 +67,7 @@ def train_serial(data, args, in_feats, num_classes):
             lr_scheduler.step(loss)
             train_acc = MF.accuracy(y_hat, y)
             if (batch_iter+1) % args.log_every == 0:
-                print(f">Iter {batch_iter+1}, train acc: {train_acc:.4f}")
+                print(f"> Iter {batch_iter+1}, train acc: {train_acc:.4f}")
         except StopIteration:
             if batch_iter < len(dataloader) * recycle_factor:
                 dataloader = dgl.dataloading.DataLoader(
@@ -104,118 +84,57 @@ def train_serial(data, args, in_feats, num_classes):
     batch_end = time.time()
     print(f"mega-batch overall: {batch_end-batch_start:.2f}s")
     print(f"mega-batch compute: {batch_end-first_minibatch:.2f}s")
-    print(f"num_iters={batch_iter}, num_workers={args.num_workers}")
-    print(f"############ mega-batch {time.time()-marker:.2f}s ############# \n")
-    marker = time.time()
+    print(f"num_iters={batch_iter+1}, num_workers={args.num_workers}")
+    print(f"############ mega-batch {time.time()-tic:.2f}s ############# \n")
 
-'''
-def train(args, in_feats, num_classes, data_queue, resp_queue):
+def evaluate(args, model):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    batch_size = args.bsize2
+    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+    g = data.graph
+    g.ndata['feat'] = data.node_feat
+    g.ndata['label'] = data.labels
+    n_nodes = g.num_nodes()
 
-    if args.model == 'gat':
-        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
-    elif args.model == 'gin':
-        model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
-    else:
-        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
-    model.cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
-    sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
+    idx = data.get_idx_split()
+    train_nid = idx['train']
+    val_nid = idx['valid']
+    test_nid = idx['test']
 
-    print("Training starts")
-    # print("qsize:", data_queue.qsize())
+    # validate with current graph
+    valid_sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
+    valid_dataloader = dgl.dataloading.DataLoader(
+            g, val_nid, valid_sampler, device=device,
+            batch_size=args.bsize2, shuffle=False, drop_last=False,
+            num_workers=8)
+    test_sampler = dgl.dataloading.MultiLayerNeighborSampler(args.test_fanout)
+    test_dataloader = dgl.dataloading.DataLoader(
+            g, test_nid, test_sampler, device=device,
+            batch_size=args.bsize2, shuffle=False, drop_last=False,
+            num_workers=8)
 
-    marker = time.time()
-    while True:
-        resp_queue.put('r')
-        profiler = Profiler(interval=0.01)
-        profiler.start()
-        data = data_queue.get()
-        tic = time.time()
-        num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
-        graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
-        train_nids = torch.nonzero(batch_train_mask, as_tuple=True)[0]
-        graph.create_formats_()
-        print(f"dgl graph creation: {time.time()-tic:.2f}s")
-        profiler.stop()
+    model.eval()
+    with torch.no_grad():
+        ys = []
+        y_hats = []
+        for it, (_, _, blocks) in enumerate(tqdm.tqdm(valid_dataloader)):
+            x = blocks[0].srcdata['feat'].float()
+            ys.append(blocks[-1].dstdata['label'].flatten().long())
+            y_hats.append(model(blocks, x))
+        y_hats, ys = torch.cat(y_hats), torch.cat(ys)
+        valid_acc = MF.accuracy(y_hats, ys)
+        valid_loss = F.nll_loss(y_hats, ys)
 
-        # graph.ndata['label'] = batch_labels
-        # graph.ndata['feat'] = batch_feat
+        ys = []
+        y_hats = []
+        for it, (_, _, blocks) in enumerate(tqdm.tqdm(test_dataloader)):
+            x = blocks[0].srcdata['feat'].float()
+            ys.append(blocks[-1].dstdata['label'].flatten().long())
+            y_hats.append(model(blocks, x))
+        y_hats, ys = torch.cat(y_hats), torch.cat(ys)
+        test_acc = MF.accuracy(y_hats, ys)
+        test_loss = F.nll_loss(y_hats, ys)
 
-        dataloader = dgl.dataloading.DataLoader(
-            graph,
-            train_nids,
-            sampler,
-            device=device,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=False,
-            num_workers=args.num_workers,
-            use_prefetch_thread=False, pin_prefetcher=False)
-        iterator = enumerate(dataloader)
-
-        profiler.start()
-        recycle_factor = args.recycle
-        model.train()
-        batch_start = time.time()
-        batch_iter = 0
-        while batch_iter < len(dataloader) * recycle_factor:
-            try:
-                batch_iter += 1
-                _, (input_nodes, output_nodes, blocks) = next(iterator)
-                if batch_iter == 1:
-                    first_minibatch = time.time()
-                    print(f"mfg size:", len(input_nodes))
-                if len(output_nodes) < 0.1 * args.bsize2:
-                    # skip batches with too few training nodes
-                    # print(f"skip {len(output_nodes)} nodes")
-                    continue
-
-                # Load the input features as well as output labels
-                x = batch_feat[input_nodes].to(device).float()
-                y = batch_labels[output_nodes].to(device).flatten().long()
-                # label data is incorrect, use randint for now: doesn't affect computation
-                y[:] = torch.randint(num_classes, y.shape, device=y.device)
-                # x = blocks[0].srcdata['feat'].float()
-                # y = blocks[-1].dstdata['label'].flatten().long()
-                # Compute loss and prediction
-                y_hat = model(blocks, x)
-                loss = F.nll_loss(y_hat, y)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                lr_scheduler.step(loss)
-                # train_acc = MF.accuracy(y_hat, y)
-
-                # if (batch_iter+1) % args.log_every == 0:
-                #     print(f"Iter {batch_iter+1}, train acc: {train_acc:.4f}")
-            except StopIteration:
-                if batch_iter < len(dataloader) * recycle_factor:
-                    dataloader = dgl.dataloading.DataLoader(
-                        graph,
-                        train_nids,
-                        sampler,
-                        device=device,
-                        batch_size=batch_size,
-                        shuffle=True,
-                        drop_last=False,
-                        num_workers=args.num_workers,
-                        use_prefetch_thread=False, pin_prefetcher=False)
-                    iterator = enumerate(dataloader)
-        batch_end = time.time()
-        print(f"    mega-batch overall: {batch_end-batch_start:.2f}s")
-        print(f"    mega-batch compute: {batch_end-first_minibatch:.2f}s")
-        print(f"    num_iters={batch_iter}, num_workers={args.num_workers}")
-        profiler.stop()
-        profiler.print()
-        print(f"############ mega-batch {time.time()-marker:.2f}s ############# \n")
-        marker = time.time()
-        del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
-        del data
-'''
+    return (valid_acc, valid_loss), (test_acc, test_loss)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='samplers + trainers',
@@ -229,6 +148,8 @@ if __name__ == "__main__":
                         help="Numer of hidden feature dimensions")
     parser.add_argument("--fanout", type=str, default="15,10,5",
                         help="Choose sampling fanout for host-gpu hierarchy")
+    parser.add_argument("--test-fanout", type=str, default="15,10,5",
+                        help="Choose sampling fanout for evaluation")
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--lr', type=float, default=0.001,
                         help="Learning rate")
@@ -237,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr-step', type=int, default=1000,
                         help="Learning rate scheduler steps")
     parser.add_argument("--n-epochs", type=int, default=5)
-    parser.add_argument("--num-workers", type=int, default=0,
+    parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of sampling workers for host-gpu hierarchy")
     parser.add_argument("--psize", type=int, default=4096)
     parser.add_argument("--bsize", type=int, default=512)
@@ -250,14 +171,16 @@ if __name__ == "__main__":
                         help="threads to load data from storage (could be larger than #cpus)")
     parser.add_argument("--log-every", type=int, default=100,
                         help="number of steps of logging training acc/loss")
+    parser.add_argument("--eval-every", type=int, default=5,
+                        help="evaluate every such epochs")
     parser.add_argument("--use-old-feat", action='store_true')
     args = parser.parse_args()
     args.fanout = list(map(int, args.fanout.split(',')))
+    args.test_fanout = list(map(int, args.test_fanout.split(',')))
 
     print(args)
     print("set IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
-    # torch.set_num_threads(args.io_threads)
 
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize,
         use_old_feat=args.use_old_feat)
@@ -267,12 +190,22 @@ if __name__ == "__main__":
         in_feats = data.node_feat.metadata.shape[1]
     num_classes = data.num_classes
 
-    context = mp.get_context('spawn')
-    data_queue = context.Queue(maxsize=1)
-    resp_queue = context.Queue(maxsize=2)
+    if args.model == 'gat':
+        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
+    elif args.model == 'gin':
+        model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
+    else:
+        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
+    model.cuda()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
+    sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
 
+    # context = mp.get_context('spawn')
     # trainer = context.Process(target=train, args=(args, in_feats, num_classes, data_queue, resp_queue))
     # trainer.start()
+
     it = iter(GnnosIter(data, args.bsize, use_old_feat=args.use_old_feat))
 
     iters = 0
@@ -282,9 +215,8 @@ if __name__ == "__main__":
         tic = time.time()
         profiler = Profiler(interval=0.01)
         profiler.start()
-
         for data in it:
-            num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
+            num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, *_ = data
             print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, "
                 f"#train: {batch_train_mask.int().sum()}")
             print(f"batch_feat: {batch_feat.shape}")
@@ -292,14 +224,15 @@ if __name__ == "__main__":
             assert num_nodes == batch_labels.shape[0]
             assert num_nodes == batch_train_mask.shape[0]
             del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
-            # data_queue.put(data)
-            train_serial(data, args, in_feats, num_classes)
-            # profiler.stop()
-            # profiler.print()
-            # profiler.start()
+            train_serial(data, args, model, optimizer, lr_scheduler, sampler)
         profiler.stop()
+        profiler.print()
         toc = time.time()
-        print(f"{len(it)} iters took {toc-tic:.2f}s")
+        print(f"Epoch {i}: {len(it)} megabatches took {toc-tic:.2f}s")
         duration.append(toc-tic)
 
-    print(f"On average: {np.mean(duration):.2f}")
+        if i % args.eval_every == 0:
+            val_result, test_result = evaluate(args, model)
+            print(f"** val acc: {val_result[0]:.4}, test acc: {test_result[0]:.4f} **")
+
+    print(f"Average training time per epoch: {np.mean(duration):.2f}")

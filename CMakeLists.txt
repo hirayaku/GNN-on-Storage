@@ -18,12 +18,13 @@ if(NOT DEFINED TORCH_CMAKE_DIR)
   else()
     execute_process(
       COMMAND
-      python -c "import torch;print(torch.utils.cmake_prefix_path)"
+      python3 -c "import torch;print(torch.utils.cmake_prefix_path)"
       OUTPUT_VARIABLE TORCH_CMAKE_DIR
       OUTPUT_STRIP_TRAILING_WHITESPACE
       ERROR_QUIET)
   endif()
 endif()
+
 
 list(APPEND CMAKE_PREFIX_PATH "${TORCH_CMAKE_DIR}")
 find_package(Torch REQUIRED)

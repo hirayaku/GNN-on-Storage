@@ -40,8 +40,9 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     ys = []
     y_hats = []
 
+    batches = enumerate(tqdm.tqdm(eval_dataloader)) if args.progress else enumerate(eval_dataloader)
     with torch.no_grad():
-        for it, (_, _, blocks) in enumerate(eval_dataloader):
+        for it, (_, _, blocks) in batches:
             x = blocks[0].srcdata['feat'].float()
             ys.append(blocks[-1].dstdata['label'].flatten().long())
             y_hats.append(model(blocks, x))
@@ -56,7 +57,7 @@ def eval_hier_batching(model, cluster_iter, eval_name, batch_size, fanout, num_w
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
     t0 = time.time()
 
-    megabatches = tqdm.tqdm(enumerate(cluster_iter)) if args.progress else enumerate(cluster_iter)
+    megabatches = enumerate(tqdm.tqdm(cluster_iter)) if args.progress else enumerate(cluster_iter)
     eval_sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout)
 
     model.eval()
@@ -64,7 +65,7 @@ def eval_hier_batching(model, cluster_iter, eval_name, batch_size, fanout, num_w
     y_hats = []
 
     with torch.no_grad():
-        for j, (subgraph, _) in megabatches:
+        for j, (subgraph, _, _, _, _) in megabatches:
             eval_mask = subgraph.ndata[eval_name] & (~subgraph.ndata['cache_mask'])
             eval_nids = subgraph.nodes()[eval_mask]
             if j == 0:
@@ -136,9 +137,9 @@ def train(args, data, partitioner, tb_writer):
             recycle_factor = min(max(args.recycle * args.rho**epoch, 1), 5)
             print(f"Epoch {epoch+1}/{args.n_epochs}, Recycle: {recycle_factor:.2f}")
             model.train()
-            megabatches = tqdm.tqdm(enumerate(cluster_iterator)) if args.progress \
+            megabatches = enumerate(tqdm.tqdm(cluster_iterator)) if args.progress \
                 else enumerate(cluster_iterator)
-            for j, (subgraph, train_nids) in megabatches:
+            for _, (subgraph, train_nids, _, _, _) in megabatches:
                 sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
                 dataloader = dgl.dataloading.DataLoader(
                     subgraph,

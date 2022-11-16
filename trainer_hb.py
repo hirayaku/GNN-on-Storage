@@ -1,13 +1,9 @@
-import sys, os, argparse, time, random
-import tqdm
-from pyinstrument import Profiler
+import os, argparse, time
+import tqdm, shutil
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.multiprocessing as mp
-import torch.distributed as dist
 import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
@@ -16,6 +12,8 @@ from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 import gnnos
 from graphloader import BaselineNodePropPredDataset, GnnosNodePropPredDataset
 from sampler import GnnosIter
+from partition_utils import MetisMinCutBalanced, MetisMinVolBalanced, RandomNodePartitioner
+from logger import Logger
 
 def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
@@ -86,37 +84,37 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
     print(f"mega-batch compute: {batch_end-first_minibatch:.2f}s")
     print(f"num_iters={batch_iter+1}, num_workers={args.num_workers}")
     print(f"############ mega-batch {time.time()-tic:.2f}s ############# \n")
+    return train_acc
 
-def evaluate(args, model):
+def evaluate(args, model, inmem_data):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+    data = inmem_data
     g = data.graph
     g.ndata['feat'] = data.node_feat
     g.ndata['label'] = data.labels
-    n_nodes = g.num_nodes()
 
     idx = data.get_idx_split()
-    train_nid = idx['train']
     val_nid = idx['valid']
     test_nid = idx['test']
 
     # validate with current graph
-    valid_sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
+    valid_sampler = dgl.dataloading.MultiLayerNeighborSampler(args.test_fanout)
     valid_dataloader = dgl.dataloading.DataLoader(
             g, val_nid, valid_sampler, device=device,
-            batch_size=args.bsize2, shuffle=False, drop_last=False,
+            batch_size=args.bsize3, shuffle=False, drop_last=False,
             num_workers=8)
     test_sampler = dgl.dataloading.MultiLayerNeighborSampler(args.test_fanout)
     test_dataloader = dgl.dataloading.DataLoader(
             g, test_nid, test_sampler, device=device,
-            batch_size=args.bsize2, shuffle=False, drop_last=False,
+            batch_size=args.bsize3, shuffle=False, drop_last=False,
             num_workers=8)
 
     model.eval()
     with torch.no_grad():
         ys = []
         y_hats = []
-        for it, (_, _, blocks) in enumerate(tqdm.tqdm(valid_dataloader)):
+        #  for it, (_, _, blocks) in enumerate(tqdm.tqdm(valid_dataloader)):
+        for it, (_, _, blocks) in enumerate(valid_dataloader):
             x = blocks[0].srcdata['feat'].float()
             ys.append(blocks[-1].dstdata['label'].flatten().long())
             y_hats.append(model(blocks, x))
@@ -126,7 +124,8 @@ def evaluate(args, model):
 
         ys = []
         y_hats = []
-        for it, (_, _, blocks) in enumerate(tqdm.tqdm(test_dataloader)):
+        #  for it, (_, _, blocks) in enumerate(tqdm.tqdm(test_dataloader)):
+        for it, (_, _, blocks) in enumerate(test_dataloader):
             x = blocks[0].srcdata['feat'].float()
             ys.append(blocks[-1].dstdata['label'].flatten().long())
             y_hats.append(model(blocks, x))
@@ -137,11 +136,16 @@ def evaluate(args, model):
     return (valid_acc, valid_loss), (test_acc, test_loss)
 
 if __name__ == "__main__":
+    #  from pyinstrument import Profiler
     parser = argparse.ArgumentParser(description='samplers + trainers',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--dataset", type=str, default='ogbn-products')
-    parser.add_argument("--model", type=str, default='sage')
     parser.add_argument("--root", type=str, default=os.path.join(os.environ['DATASETS'], 'gnnos'))
+    parser.add_argument("--gpu", type=int, default=0, help="GPU device index")
+    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--model", type=str, default='sage')
+    parser.add_argument("--mlp", action="store_true", help="add an MLP before outputs")
+    parser.add_argument("--use-incep", action="store_true")
     parser.add_argument("--n-layers", type=int, default=3,
                         help="Number of GNN layers")
     parser.add_argument('--num-hidden', type=int, default=256,
@@ -160,20 +164,25 @@ if __name__ == "__main__":
     parser.add_argument("--n-epochs", type=int, default=5)
     parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of sampling workers for host-gpu hierarchy")
+    parser.add_argument("--part", type=str, default="metis",
+                        help="Partitioning method to use")
     parser.add_argument("--psize", type=int, default=4096)
     parser.add_argument("--bsize", type=int, default=512)
     parser.add_argument("--bsize2", type=int, default=1024)
-    parser.add_argument("--recycle", type=int, default=1,
+    parser.add_argument("--bsize3", type=int, default=1024)
+    parser.add_argument("--popular-ratio", type=float, default=0)
+    parser.add_argument("--recycle", type=float, default=1,
                         help="Number of training passes over the host data before recycling")
     parser.add_argument("--rho", type=float, default=1,
                         help="recycling increasing factor")
     parser.add_argument("--io-threads", type=int, default=32,
                         help="threads to load data from storage (could be larger than #cpus)")
-    parser.add_argument("--log-every", type=int, default=100,
+    parser.add_argument("--log-every", type=int, default=20,
                         help="number of steps of logging training acc/loss")
     parser.add_argument("--eval-every", type=int, default=5,
                         help="evaluate every such epochs")
     parser.add_argument("--use-old-feat", action='store_true')
+    parser.add_argument("--comment", type=str, help="Extra comments to print out to the trace")
     args = parser.parse_args()
     args.fanout = list(map(int, args.fanout.split(',')))
     args.test_fanout = list(map(int, args.test_fanout.split(',')))
@@ -182,20 +191,50 @@ if __name__ == "__main__":
     print("set IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
 
+    # choose partitioner
+    if args.part == "metis" or args.part == "metis-cut":
+        partitioner = MetisMinCutBalanced()
+    elif args.part == "metis-vol":
+        partitioner = MetisMinVolBalanced()
+    elif args.part == "rand":
+        partitioner = RandomNodePartitioner()
+    else:
+        raise NotImplementedError
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize,
-        use_old_feat=args.use_old_feat)
+        partitioner=partitioner, topk=args.popular_ratio, use_old_feat=args.use_old_feat)
     if args.use_old_feat:
         in_feats = data.node_feat.shape[1]
     else:
         in_feats = data.node_feat.metadata.shape[1]
     num_classes = data.num_classes
 
+    time_stamp = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
+    print(f"\n## [{os.environ['HOSTNAME']}] {args.comment}")
+    print(time_stamp)
+    print(args)
+    assert args.n_layers == len(args.fanout)
+    assert args.n_layers == len(args.test_fanout)
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f'cuda:{torch.cuda.current_device()}')
+    print(f"Training with GPU: {device}")
+
     if args.model == 'gat':
-        model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
+        if args.mlp:
+            model = GAT_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
+        else:
+            model = GAT(in_feats, args.num_hidden, num_classes, args.n_layers, heads=4, dropout=args.dropout)
     elif args.model == 'gin':
         model = GIN(in_feats, args.num_hidden, num_classes, num_layers=args.n_layers, dropout=args.dropout)
+    elif args.model == 'sage':
+        if args.use_incep:
+            model = SAGE_res_incep(in_feats, args.num_hidden, num_classes, args.n_layers, F.leaky_relu, args.dropout)
+        elif args.mlp:
+            model = SAGE_mlp(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
+        else:
+            model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
     else:
-        model = SAGE(in_feats, args.num_hidden, num_classes, args.n_layers, F.relu, args.dropout)
+        raise NotImplementedError(f"Unknown model: {args.model}")
+
     model.cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -206,33 +245,44 @@ if __name__ == "__main__":
     # trainer = context.Process(target=train, args=(args, in_feats, num_classes, data_queue, resp_queue))
     # trainer.start()
 
-    it = iter(GnnosIter(data, args.bsize, use_old_feat=args.use_old_feat))
+    logger = Logger(args.runs, args)
+    inmem_data = None
+    if args.eval_every < args.n_epochs:
+        inmem_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
 
-    iters = 0
-    duration = []
-    for i in range(args.n_epochs):
-        print("Loading starts")
-        tic = time.time()
-        profiler = Profiler(interval=0.01)
-        profiler.start()
-        for data in it:
-            num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, *_ = data
-            print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, "
-                f"#train: {batch_train_mask.int().sum()}")
-            print(f"batch_feat: {batch_feat.shape}")
-            assert num_nodes == batch_feat.shape[0]
-            assert num_nodes == batch_labels.shape[0]
-            assert num_nodes == batch_train_mask.shape[0]
-            del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
-            train_serial(data, args, model, optimizer, lr_scheduler, sampler)
-        profiler.stop()
-        profiler.print()
-        toc = time.time()
-        print(f"Epoch {i}: {len(it)} megabatches took {toc-tic:.2f}s")
-        duration.append(toc-tic)
+    train_acc = 0
+    for run in range(args.runs):
+        it = iter(GnnosIter(data, args.bsize, use_old_feat=args.use_old_feat))
+        model.reset_parameters()
+        duration = []
+        for i in range(args.n_epochs):
+            print("Loading starts")
+            tic = time.time()
+            #  profiler = Profiler(interval=0.01)
+            #  profiler.start()
+            for megabatch in it:
+                num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, *_ = megabatch 
+                print(f"#nodes: {num_nodes}, #edges: {len(batch_coo[0])}, "
+                    f"#train: {batch_train_mask.int().sum()}")
+                assert num_nodes == batch_feat.shape[0]
+                assert num_nodes == batch_labels.shape[0]
+                assert num_nodes == batch_train_mask.shape[0]
+                train_acc = train_serial(megabatch, args, model, optimizer, lr_scheduler, sampler)
+                # free as much memory as possible, otherwise memory requirements double
+                del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
+                del megabatch
+            #  profiler.stop()
+            #  profiler.print()
+            toc = time.time()
+            print(f"Epoch {i}: {len(it)} megabatches took {toc-tic:.2f}s")
+            duration.append(toc-tic)
 
-        if i % args.eval_every == 0:
-            val_result, test_result = evaluate(args, model)
-            print(f"** val acc: {val_result[0]:.4}, test acc: {test_result[0]:.4f} **")
+            if i % args.eval_every == 0:
+                val_result, test_result = evaluate(args, model, inmem_data)
+                print(f"** Val acc: {val_result[0]:.4}, Test acc: {test_result[0]:.4f} **\n")
+                logger.add_result(run, (train_acc, val_result[0], test_result[0]))
 
-    print(f"Average training time per epoch: {np.mean(duration):.2f}")
+        logger.print_statistics(run)
+        print(f"Average training time per epoch: {np.mean(duration):.2f}")
+    logger.print_statistics()
+

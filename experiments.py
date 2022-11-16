@@ -23,7 +23,7 @@ parser.add_argument('--part', type=str, nargs='+', default=['metis'], help='part
 parser.add_argument('--psize', type=int, nargs='+', default=[1024], help='number of partitions')
 parser.add_argument('--bsize', type=int, nargs='+', default=[0], help='partitions in a mega-batch')
 parser.add_argument('--sratio', type=float, nargs='+', default=[0.01], help='s-cache node ratio')
-parser.add_argument('--recycle', type=int, nargs='+', default=[1], help='initial reuse factor')
+parser.add_argument('--recycle', type=float, nargs='+', default=[1], help='initial reuse factor')
 parser.add_argument('--rho', type=float, nargs='+', default=[1.0], help='reuse multiplication factor')
 
 args = vars(parser.parse_args())

@@ -339,7 +339,7 @@ class GnnosNodePropPredDataset(BaselineNodePropPredDataset):
                     f_meta.write(json.dumps(partition_dict, indent=4, cls=utils.DtypeEncoder))
 
         # generate scache data
-        if is_new_partition or not osp.exists(scache_meta):
+        if not osp.exists(scache_meta):
             # scache goes into scache_dir
             os.makedirs(self.scache_dir, exist_ok=True)
             with utils.cwd(self.scache_dir):
@@ -447,11 +447,13 @@ if __name__ == "__main__":
         print("Passed")
 
     dataset_dir = osp.join(os.environ['DATASETS'], 'gnnos')
-    name = 'ogbn-arxiv'
-    psize = 1024
-
+    name = 'ogbn-papers100M'
+    psize = 64
     topk=0.01
-    gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir, psize=psize, topk=topk)
+    gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir,
+        partitioner=partition_utils.MetisMinCutBalanced(), psize=psize, topk=topk)
+    #  gnnos_data = GnnosNodePropPredDataset(name=name, root=dataset_dir,
+    #      partitioner=partition_utils.RandomNodePartitioner(), psize=psize, topk=topk)
 
     pg = gnnos_data.graph
     assigns = gnnos_data.assigns.clone()

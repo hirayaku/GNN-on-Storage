@@ -1,10 +1,11 @@
 import os, time
+from tokenize import Double
 import numpy as np
 import torch, dgl
+import torch.multiprocessing as mp
 import dgl.function as fn
 
-import getpy as gp
-import utils, partition_utils
+import partition_utils
 from partition_utils import partition_from
 
 def edge_cuts_from(g, assigns, psize):
@@ -131,27 +132,7 @@ class ClusterIterV2(object):
 
 import gnnos
 from graphloader import GnnosNodePropPredDataset
-
-class DoubleBuffer(object):
-    def __init__(self, cap_edges, cap_feats, in_feats, feats_dtype):
-        self.src_buf = torch.empty((cap_edges,), dtype=torch.long)
-        self.dst_buf = torch.empty((cap_edges,), dtype=torch.long)
-        self.feat_buf = torch.empty((cap_feats, in_feats), dtype=feats_dtype)
-        self.label_buf = torch.empty((cap_feats,), dtype=torch.float)
-        self.edge_buf_free = (0, cap_edges) 
-        self.feat_buf_free = (0, cap_feats)
-        self.lower_free = True
-        self.upper_free = True
-        self.edge_buf.share_memory_()
-        self.feat_buf.share_memoty_()
-        self.label_buf.share_memory_()
-
-    def alloc(self, num_edges, num_feats):
-        # TODO: alloc and dealloc asynchronously
-        if self.edge_buf_free[1] - self.edge_buf_free[0] < num_edges:
-            raise RuntimeError(f"Insufficient edge buffer")
-        if self.feat_buf_free[1] - self.feat_buf_free[0] < num_feats:
-            raise RuntimeError(f"Insufficient feature buffer")
+#  from memory_profiler import profile
 
 class GnnosIter(object):
     '''
@@ -160,8 +141,7 @@ class GnnosIter(object):
     The sampler returns a subgraph induced by a batch of clusters
     '''
     def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize,
-        share_memory=False, use_old_feat=False, seed=1):
-        self.share_memory = share_memory
+        use_old_feat=False, seed=1):
         self.use_old_feat = use_old_feat
 
         self.dataset = gnnos_dataset
@@ -195,20 +175,7 @@ class GnnosIter(object):
         self.max = int((self.psize) // self.bsize)
         self.train_pids = torch.randperm(self.psize)
 
-        # pre-allocate some buffers to use later
-        self.relabel_dict = torch.empty(self.dataset.num_nodes, dtype=torch.long)  # at most ~2GB
-        # npart_sizes = self.dcache['node_ptr'][1:] - self.dcache['node_ptr'][:-1]
-        # epart_sizes = self.dcache['edge_ptr'][1:] - self.dcache['edge_ptr'][:-1]
-        # buf_npart_size = torch.topk(npart_sizes, bsize).values.sum()
-        # self.feat_buffer = self.empty((buf_npart_size, self.dcache['feat'].shape[1]),
-        #     dtype=self.dcache['feat'].metadata.dtype)
-        # self.label_buffer = self.empty((buf_npart_size,), dtype=self.dcache['label'].metadata.dtype)
-        # buf_epart_size = int(2*torch.float().mean().item())
-        # self.edge_buffer = self.empty((2, buf_epart_size), dtype=torch.long)
-        # self.feat_buffer.share_memory_()
-        # self.label_buffer.share_memory_()
-        # self.edge_buffer.share_memory_()
-
+    #  @profile
     def load_store(self, pi):
         tic = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
@@ -254,28 +221,32 @@ class GnnosIter(object):
         # nodes that are in both scache and dcache
         scache_dcache_nids = torch.cat([self.scache['parts'][i] for i in sample_pids])
 
-        self.relabel_dict[:] = -1
-        self.relabel_dict[scache_nids] = torch.arange(scache_size)
-        self.relabel_dict[dcache_nids] = torch.arange(scache_size, cache_size)
-        batch_srcs = self.relabel_dict[batch_srcs]
+        relabel_dict = torch.empty(self.dataset.num_nodes, dtype=torch.long)  # at most ~2GB
+        relabel_dict[:] = -1
+        relabel_dict[scache_nids] = torch.arange(scache_size)
+        relabel_dict[dcache_nids] = torch.arange(scache_size, cache_size)
+        #  batch_srcs = relabel_dict[batch_srcs]
+        batch_srcs = torch.index_select(relabel_dict, 0, batch_srcs)
         # filter out non-cache destinations
-        batch_dsts = self.relabel_dict[batch_dsts]
-        print(f"relabel dcache: {time.time()-tic:.2f}s")
+        #  batch_dsts = relabel_dict[batch_dsts]
+        batch_dsts = torch.index_select(relabel_dict, 0, batch_dsts)
+        #  print(f"relabel dcache: {time.time()-tic:.2f}s")
         edge_mask = (batch_dsts != -1)
         batch_srcs, batch_dsts = batch_srcs[edge_mask], batch_dsts[edge_mask]
-        print(f"filter dcache: {time.time()-tic:.2f}s")
+        #  print(f"filter dcache: {time.time()-tic:.2f}s")
         assert (batch_srcs != -1).all()
         assert (batch_dsts != -1).all()
         print(f"dcache edges: {len(batch_srcs)}, {time.time()-tic:.2f}s")
 
         # deduplicate adj lists of nodes that appears in both scache and dcache
-        scache_batch_dsts = self.relabel_dict[scache_batch_dsts]
-        self.relabel_dict[scache_dcache_nids] = -1
-        scache_batch_srcs = self.relabel_dict[scache_batch_srcs]
-        print(f"relabel scache: {time.time()-tic:.2f}s")
+        scache_batch_dsts = relabel_dict[scache_batch_dsts]
+        relabel_dict[scache_dcache_nids] = -1
+        scache_batch_srcs = relabel_dict[scache_batch_srcs]
+        #  print(f"relabel scache: {time.time()-tic:.2f}s")
+        del relabel_dict
         edge_mask = (scache_batch_srcs != -1)
         scache_batch_srcs, scache_batch_dsts = scache_batch_srcs[edge_mask], scache_batch_dsts[edge_mask]
-        print(f"filter scache: {time.time()-tic:.2f}s")
+        #  print(f"filter scache: {time.time()-tic:.2f}s")
         print(f"scache edges: {len(scache_batch_srcs)}, {time.time()-tic:.2f}s")
 
         # assemble train_mask
@@ -309,12 +280,10 @@ class GnnosIter(object):
             self.train_pids = torch.randperm(self.psize)
             raise StopIteration
 
-from graphloader import BaselineNodePropPredDataset
-
 # make sure the megabatch graphs from in-memory ClusterIterV2 and out-of-core GnnosIter match
 if __name__ == "__main__":
     import argparse
-    from pyinstrument import Profiler
+    #  from pyinstrument import Profiler
     parser = argparse.ArgumentParser(description='samplers + trainers',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--dataset", type=str, default='ogbn-papers100M')
@@ -332,81 +301,16 @@ if __name__ == "__main__":
     print("set NUM_IO_THREADS to", args.io_threads)
     gnnos.set_io_threads(args.io_threads)
     # torch.set_num_threads(args.io_threads)
-
-    baseline_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
-    g = baseline_data.graph
-    g.ndata['label'] = baseline_data.labels
-    g.ndata['feat'] = baseline_data.node_feat
-    n_nodes = g.num_nodes()
-    idx = baseline_data.get_idx_split()
-    train_nid = idx['train']
-    val_nid = idx['valid']
-    test_nid = idx['test']
-    g.ndata['train_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
-    g.ndata['train_mask'][train_nid] = True
-    g.ndata['valid_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
-    g.ndata['valid_mask'][val_nid] = True
-    g.ndata['test_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
-    g.ndata['test_mask'][test_nid] = True
-    baseline_it = iter(ClusterIterV2(args.dataset, g, args.psize, args.bsize, args.bsize,
-        partitioner=partition_utils.MetisMinCutBalanced(), popular_ratio=0.01))
-
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize, topk=0.01)
-    it = iter(GnnosIter(data, args.bsize))
+    it = iter(GnnosIter(data, args.bsize, seed=args.seed))
 
-    iters = 0
-    duration = []
-    for i in range(args.n_epochs):
-        print("Loading starts")
-        for _ in range(len(it)):
+    for _ in range(args.n_epochs):
+        for data in it:
+            del data
 
-            profiler = Profiler()
-            profiler.start()
-            data = next(it)
-            num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, scache_nids, dcache_nids = data
-            sg = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
-            sg.create_formats_()
-            old_nids = torch.cat([scache_nids, dcache_nids])
-            gnnos_train = batch_train_mask.nonzero(as_tuple=True)[0]
-            profiler.stop()
-            profiler.print()
-
-            baseline_sg, baseline_train, *_ = next(baseline_it)
-            print(f"baseline graph: ({baseline_sg.num_nodes()}, {baseline_sg.num_edges()})")
-            print(f"gnnos graph: ({sg.num_nodes()}, {sg.num_edges()})")
-            assert baseline_sg.num_edges() == sg.num_edges()
-            assert (g.ndata['feat'][old_nids] == batch_feat).all()
-            # filter out NaN labels because NaN != NaN in Python
-            ref_labels = g.ndata['label'][old_nids]
-            ref_mask = ~torch.isnan(ref_labels)
-            assert (torch.isnan(ref_labels) == torch.isnan(batch_labels)).all()
-            assert (ref_labels[ref_mask] == batch_labels[ref_mask]).all()
-            assert (g.ndata['train_mask'][dcache_nids] == batch_train_mask[len(scache_nids):]).all()
-            assert len(baseline_train) == len(gnnos_train)
-            baseline_train_nids = torch.sort(baseline_sg.ndata[dgl.NID][baseline_train])[0]
-            gnnos_train_nids = torch.sort(old_nids[batch_train_mask])[0]
-            assert (baseline_train_nids == gnnos_train_nids).all()
-            assert (baseline_sg.in_degrees(baseline_train).sort()[0] == sg.in_degrees(gnnos_train).sort()[0]).all()
-            print("Sampling full neighbors...")
-            train_size = len(baseline_train)
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
-            baseline_dl = iter(dgl.dataloading.DataLoader(
-                baseline_sg,
-                baseline_train,
-                sampler,
-                batch_size=train_size,
-                shuffle=False,
-                drop_last=False,
-                num_workers=0))
-            gnnos_dl = iter(dgl.dataloading.DataLoader(
-                sg,
-                batch_train_mask.nonzero(as_tuple=True)[0],
-                sampler,
-                batch_size=train_size,
-                shuffle=False,
-                drop_last=False,
-                num_workers=0))
-            baseline_batch = next(baseline_dl)
-            gnnos_batch = next(gnnos_dl)
-            print(baseline_batch)
-            print(gnnos_batch)
+    #  ctx = mp.get_context('spawn')
+    #  data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize, topk=0.01)
+    #  it = iter(GnnosIterShm(data, args.bsize, ctx=ctx))
+    #  loader = ctx.Process(target=compare_partition, args=(it, args))
+    #  loader.start()
+    #  loader.join()

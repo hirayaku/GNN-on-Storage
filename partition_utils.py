@@ -23,24 +23,25 @@ class MetisNodePartitioner(NodePartitioner):
     def __init__(self, name='metis'):
         super().__init__(name)
 
-    def partition(self, g, psize, mask=None, objtype='cut'):
+    def partition(self, g, psize, mask=None, balance_edges=False, objtype='cut'):
         # change cwd to dataset dir to ensure fast intermediate data access
         with utils.cwd(os.environ['DATASETS']):
-            return dgl.metis_partition_assignment(g, psize, mask, objtype=objtype)
+            return dgl.metis_partition_assignment(g, psize, mask,
+                balance_edges=balance_edges, objtype=objtype)
 
 class MetisMinCutBalanced(MetisNodePartitioner):
     def __init__(self):
         super().__init__(name='metis-cut')
 
     def partition(self, g, psize):
-        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='cut')
+        return super().partition(g, psize, mask=g.ndata['train_mask'].int(), objtype='cut')
 
 class MetisMinVolBalanced(MetisNodePartitioner):
     def __init__(self):
         super().__init__(name='metis-vol')
 
     def partition(self, g, psize):
-        return super().partition(g, psize, g.ndata['train_mask'].int(), objtype='vol')
+        return super().partition(g, psize, mask=g.ndata['train_mask'].int(), objtype='vol')
 
 def partition_from(ids, assigns, psize):
     '''

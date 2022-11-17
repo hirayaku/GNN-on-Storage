@@ -148,8 +148,8 @@ class GnnosIter(object):
         self.psize = gnnos_dataset.psize
         self.bsize = bsize
         # train_mask and assigns are in-memory tensors - O(|V|)
-        self.dcache = dict(zip(['graph', 'assigns', 'parts', 'feat', 'label'], [
-            gnnos_dataset.graph, gnnos_dataset.assigns, gnnos_dataset.parts,
+        self.dcache = dict(zip(['graph', 'parts', 'feat', 'label'], [
+            gnnos_dataset.graph, gnnos_dataset.parts,
             gnnos_dataset.node_feat, gnnos_dataset.labels
         ]))
         part_sizes = [len(part) for part in self.dcache['parts']]
@@ -164,9 +164,9 @@ class GnnosIter(object):
 
         self.scache = dict(zip(['graph', 'nids', 'feat', 'label'], self.dataset.scache))
         # get a partitioning of scache_nids
-        self.scache['assigns'] = self.dcache['assigns'][self.scache['nids']]
-        self.scache['parts'] = partition_from(self.scache['nids'], self.scache['assigns'],
-            self.psize)
+        scache_assigns = gnnos_dataset.assigns[self.scache['nids']]
+        self.scache['parts'] = partition_from(self.scache['nids'], scache_assigns, self.psize)
+        # del gnnos_dataset.assigns
         self.scache['edge_ptr'] = self.scache['graph'].part_ptr.tensor()
         assert self.scache['edge_ptr'].shape[0] == self.psize + 2
         self.scache['sg'] = self.scache['graph'][self.psize]

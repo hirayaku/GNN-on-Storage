@@ -51,11 +51,13 @@ class DoubleBuffer(object):
         # print("Buffer free:", buf_slots)
         self.sem_free.release()
 
+# from memory_profiler import profile
 class GnnosIterShm(sampler.GnnosIter):
     '''
     Directly constructs the megabatch in the shared memory
 
     '''
+    # @profile
     def __init__(self, gnnos_dataset: GnnosNodePropPredDataset, bsize: int, seed=1, ctx=None):
         super(GnnosIterShm, self).__init__(gnnos_dataset, bsize, seed=seed)
         self.ctx = ctx or mp.get_context('spawn')
@@ -64,11 +66,14 @@ class GnnosIterShm(sampler.GnnosIter):
         scache_size = len(self.scache['nids'])
         epart_sizes = self.dcache['edge_ptr'][1:] - self.dcache['edge_ptr'][:-1]
         spart_sizes = self.scache['edge_ptr'][1:] - self.scache['edge_ptr'][:-1]
+        # TODO: we are wasting memory for 2*scache_size nodes; we don't have to keep copies of them
         node_buf_size = torch.topk(npart_sizes, 2*bsize).values.sum() + 2 * scache_size
-        edge_buf_size = 2 * (int(epart_sizes.float().mean().item() * bsize) +
-            int(spart_sizes.float().mean().item() * bsize)) + 2 * len(self.scache['sg'][0])
+        edge_buf_size = 2*int(epart_sizes.float().mean().item() * bsize) + 2*len(self.scache['sg'][0])
+        # edge_buf_size = 2 * (int(epart_sizes.float().mean().item() * bsize) +
+        #     int(spart_sizes.float().mean().item() * bsize)) + 2 * len(self.scache['sg'][0])
 
-        print(f"Buffer sizes: node[{node_buf_size}], edge[{edge_buf_size}]")
+        feat_dtype = self.dcache['feat'].metadata.dtype
+        print(f"Buffer sizes: node[{feat_dtype},{node_buf_size}], edge[{edge_buf_size}]")
         self.src_buffer = DoubleBuffer(self.ctx, (edge_buf_size,), dtype=torch.long)
         self.dst_buffer = DoubleBuffer(self.ctx, (edge_buf_size,), dtype=torch.long)
         self.feat_buffer = DoubleBuffer(self.ctx, (node_buf_size, *self.dcache['feat'].shape[1:]),
@@ -77,6 +82,7 @@ class GnnosIterShm(sampler.GnnosIter):
             dtype=self.dcache['label'].metadata.dtype)
         self.data_queue = ctx.SimpleQueue()
 
+    # @profile
     def load_store(self, pi):
         tic_0 = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
@@ -159,19 +165,46 @@ class GnnosIterShm(sampler.GnnosIter):
 
         toc = time.time()
         print(f"[L] Assemble: {toc-tic:.2f}s")
-        # self.data_queue.put((cache_size,
-        #     self.src_buffer[slice(*src_interval)],
-        #     self.dst_buffer[slice(*dst_interval)],
-        #     self.label_buffer[slice(*label_interval)],
-        #     self.feat_buffer[slice(*feat_interval)],
-        #     batch_train_mask, scache_nids, dcache_nids))
-        data = (cache_size,
-            src_interval, dst_interval, label_interval, feat_interval,
-            batch_train_mask, scache_nids, dcache_nids)
-        self.data_queue.put(data)
+        # data = (cache_size,
+        #     src_interval, dst_interval, label_interval, feat_interval,
+        #     batch_train_mask, scache_nids, dcache_nids)
+        data = cache_size, src_interval, dst_interval, label_interval, feat_interval, batch_train_mask
+        self.data_queue.put(('train', data))
         return data 
+    
+    def evaluate(self):
+        pass
+    
+    def finish(self):
+        self.data_queue.put('end')
 
 from graphloader import BaselineNodePropPredDataset
+
+def retrieve_data(data_queue: mp.SimpleQueue, buffers, args):
+    print("[W] Worker starts")
+    src_buffer, dst_buffer, label_buffer, feat_buffer = buffers
+    for _ in range(args.n_epochs):
+        while True:
+            tic = time.time()
+            data = data_queue.get()
+            if data[0] != 'train':
+                break
+            num_nodes, src_interval, dst_interval, label_interval, feat_interval, \
+                batch_train_mask = data[1]
+            batch_coo = (src_buffer[slice(*src_interval)], dst_buffer[slice(*dst_interval)])
+            batch_labels = label_buffer[slice(*label_interval)]
+            batch_feat = feat_buffer[slice(*feat_interval)]
+            print(f"[W] retrive from queue: {time.time()-tic:.2f}s")
+
+            sg = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
+            sg.create_formats_()
+            print(f"[W] dgl graph creation: {time.time()-tic:.2f}s")
+            print(f"[W] gnnos graph: ({sg.num_nodes()}, {sg.num_edges()})")
+
+            src_buffer.free(src_interval)
+            dst_buffer.free(dst_interval)
+            label_buffer.free(label_interval)
+            feat_buffer.free(feat_interval)
 
 def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
     baseline_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
@@ -192,28 +225,33 @@ def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
     baseline_it = iter(sampler.ClusterIterV2(args.dataset, g, args.psize, args.bsize, 0,
         partitioner=partition_utils.MetisMinCutBalanced(), popular_ratio=0.01))
 
+    print("[W] Worker starts")
     src_buffer, dst_buffer, label_buffer, feat_buffer = buffers
     for _ in range(args.n_epochs):
-        print("[W] Worker starts")
         for _ in range(len(baseline_it)):
-
+            tic = time.time()
             data = data_queue.get()
+            if data[0] != 'train':
+                break
+            # scache_nids, dcache_nids
             num_nodes, src_interval, dst_interval, label_interval, feat_interval, \
-                batch_train_mask, scache_nids, dcache_nids = data
+                batch_train_mask, scache_nids, dcache_nids = data[1]
             batch_coo = (src_buffer[slice(*src_interval)], dst_buffer[slice(*dst_interval)])
             batch_labels = label_buffer[slice(*label_interval)]
             batch_feat = feat_buffer[slice(*feat_interval)]
-            # data = next(it)
-            # num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask, scache_nids, dcache_nids = data
+            print(f"[W] retrive from queue: {time.time()-tic:.2f}s")
 
             sg = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
             sg.create_formats_()
-            old_nids = torch.cat([scache_nids, dcache_nids])
-            gnnos_train = batch_train_mask.nonzero(as_tuple=True)[0]
+            print(f"[W] dgl graph creation: {time.time()-tic:.2f}s")
+
             baseline_sg, baseline_train, *_ = next(baseline_it)
             print(f"[W] baseline graph: ({baseline_sg.num_nodes()}, {baseline_sg.num_edges()})")
             print(f"[W] gnnos graph: ({sg.num_nodes()}, {sg.num_edges()})")
+            print(f"[W] baseline megabatch: {time.time()-tic:.2f}s")
 
+            old_nids = torch.cat([scache_nids, dcache_nids])
+            gnnos_train = batch_train_mask.nonzero(as_tuple=True)[0]
             assert baseline_sg.num_edges() == sg.num_edges()
             assert (g.ndata['feat'][old_nids] == batch_feat).all()
             # filter out NaN labels because NaN != NaN in Python
@@ -227,6 +265,8 @@ def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
             gnnos_train_nids = torch.sort(old_nids[batch_train_mask])[0]
             assert (baseline_train_nids == gnnos_train_nids).all()
             assert (baseline_sg.in_degrees(baseline_train).sort()[0] == sg.in_degrees(gnnos_train).sort()[0]).all()
+            print(f"[W] sanity check: {time.time()-tic:.2f}s")
+
             train_size = len(baseline_train)
             ns_sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
             baseline_dl = iter(dgl.dataloading.DataLoader(
@@ -247,8 +287,9 @@ def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
                 num_workers=0))
             baseline_batch = next(baseline_dl)
             gnnos_batch = next(gnnos_dl)
-            print("[W] sampled blocks:\n", baseline_batch[-1])
-            print("[W] sampled blocks:\n", gnnos_batch[-1])
+            print("[W] baseline sampled blocks:\n", baseline_batch[-1])
+            print("[W] gnnos sampled blocks:\n", gnnos_batch[-1])
+            print(f"[W] neighbor sampling: {time.time()-tic:.2f}s")
 
             src_buffer.free(src_interval)
             dst_buffer.free(dst_interval)
@@ -257,7 +298,6 @@ def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
 
 if __name__ == "__main__":
     import argparse
-    #  from pyinstrument import Profiler
     parser = argparse.ArgumentParser(description='samplers + trainers',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--dataset", type=str, default='ogbn-papers100M')
@@ -278,11 +318,16 @@ if __name__ == "__main__":
     ctx = mp.get_context('spawn')
     data = GnnosNodePropPredDataset(name=args.dataset, root=args.root, psize=args.psize, topk=0.01)
     loader = GnnosIterShm(data, bsize=args.bsize, ctx=ctx)
+    del data
     shm_buffers = loader.src_buffer, loader.dst_buffer, loader.label_buffer, loader.feat_buffer
-    worker = ctx.Process(target=compare_partition, args=(loader.data_queue, shm_buffers, args))
+    worker = ctx.Process(target=retrieve_data, args=(loader.data_queue, shm_buffers, args))
     worker.start()
 
     for _ in range(args.n_epochs):
+        tic = time.time()
         for data in loader:
             print("Gnnos loader:", data[1], data[2], data[3], data[4])
+        print(f"Epoch time: {time.time()-tic:.2f}s")
+        loader.evaluate()
+    loader.finish()
     worker.join()

@@ -222,7 +222,7 @@ def compare_partition(data_queue: mp.SimpleQueue, buffers, args):
     g.ndata['valid_mask'][val_nid] = True
     g.ndata['test_mask'] = torch.zeros(n_nodes, dtype=torch.bool)
     g.ndata['test_mask'][test_nid] = True
-    baseline_it = iter(sampler.ClusterIterV2(args.dataset, g, args.psize, args.bsize, 0,
+    baseline_it = iter(sampler.ClusterIter(args.dataset, g, args.psize, args.bsize, 0,
         partitioner=partition_utils.MetisMinCutBalanced(), popular_ratio=0.01))
 
     print("[W] Worker starts")

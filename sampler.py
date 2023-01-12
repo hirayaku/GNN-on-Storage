@@ -8,6 +8,13 @@ import dgl.function as fn
 import partition_utils
 from partition_utils import partition_from
 
+def identify_cut_edges(g, assigns):
+    assert g.num_nodes() == assigns.shape[0]
+    with g.local_scope():
+        g.ndata['vp'] = assigns.float()
+        g.apply_edges(fn.u_sub_v('vp', 'vp', 'cut'))
+        return g.edata['cut'] != 0
+
 def edge_cuts_from(g, assigns, psize):
     '''
     return #edge cuts between pairs of partitions
@@ -37,7 +44,7 @@ def train_edge_cuts_from(g, assigns, psize):
         edge_part_sizes = torch.histc(g.edata['e_p'], bins=psize*psize, min=0, max=psize*psize)
         return edge_part_sizes.reshape((psize,psize))
 
-class ClusterIterV2(object):
+class ClusterIter(object):
     '''
     The partition sampler given a DGLGraph and partition number.
     The metis/other partitioners is used as the graph partition backend.
@@ -52,7 +59,7 @@ class ClusterIterV2(object):
         self.sample_topk = sample_topk
         self.sample_helpers = sample_helpers
 
-        cache_folder = os.path.join(os.environ['DATASETS'], "partition",
+        cache_folder = os.path.join(os.environ['DATASETS'], "gnnos",
                 dataset, partitioner.name)
         os.makedirs(cache_folder, exist_ok=True)
         cache_file = f'{cache_folder}/p{psize}.pt'
@@ -64,10 +71,11 @@ class ClusterIterV2(object):
         else:
             self.assigns = partitioner.partition(g, psize)
             torch.save(self.assigns, cache_file)
+        
+        g.edata['cut'] = identify_cut_edges(g, self.assigns)
         nontrain_mask = ~g.ndata['train_mask']
         self.parts = partition_from(nids[nontrain_mask], self.assigns[nontrain_mask], psize)
-        train_assigns = self.assigns[train_nids]
-        self.train_parts = partition_from(train_nids, train_assigns, psize)
+        self.train_parts = partition_from(train_nids, self.assigns[train_nids], psize)
         self.train_nids = train_nids
 
         torch.manual_seed(seed)
@@ -113,6 +121,8 @@ class ClusterIterV2(object):
             assert len(torch.unique(nids)) == len(nids)
 
             subgraph = dgl.node_subgraph(self.g, nids)
+            old_eids = subgraph.edata[dgl.EID]
+            subgraph.edata['cut'] = self.g.edata['cut'][old_eids]
             sg_num_nodes = subgraph.num_nodes()
             sg_train_nids = torch.arange(train_nids.shape[0])
             sg_cache_nids = torch.arange(sg_num_nodes-len(cache_nids), sg_num_nodes)

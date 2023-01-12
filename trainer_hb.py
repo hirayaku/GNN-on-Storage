@@ -8,7 +8,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
+from model.gnn import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 import gnnos
 from graphloader import BaselineNodePropPredDataset, GnnosNodePropPredDataset
 from sampler_mp import GnnosIterShm

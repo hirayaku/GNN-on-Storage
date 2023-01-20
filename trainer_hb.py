@@ -34,13 +34,11 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
         batch_size=batch_size,
         shuffle=True,
         drop_last=False,
-        num_workers=args.num_workers,
-        use_prefetch_thread=False, pin_prefetcher=False)
+        num_workers=args.num_workers)
     iterator = enumerate(dataloader)
 
     recycle_factor = args.recycle
     model.train()
-    batch_start = time.time()
     batch_iter = 0
     while batch_iter < len(dataloader) * recycle_factor:
         try:
@@ -48,11 +46,11 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
             _, (input_nodes, output_nodes, blocks) = next(iterator)
             if batch_iter == 1:
                 first_minibatch = time.time()
-                print(f"[T] mfg size:", len(input_nodes))
-            if len(output_nodes) < 0.1 * args.bsize2:
-                # skip batches with too few training nodes
-                # print(f"skip {len(output_nodes)} nodes")
-                continue
+                print(f"[T] MFG size:", len(input_nodes))
+            # if len(output_nodes) < 0.1 * args.bsize2:
+            #     # skip batches with too few training nodes
+            #     print(f"skip {len(output_nodes)} nodes")
+            #     continue
             # Load the input features as well as output labels
             x = batch_feat[input_nodes].to(device).float()
             y = batch_labels[output_nodes].to(device).flatten().long()
@@ -76,14 +74,11 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
                     batch_size=batch_size,
                     shuffle=True,
                     drop_last=False,
-                    num_workers=args.num_workers,
-                    use_prefetch_thread=False, pin_prefetcher=False)
+                    num_workers=args.num_workers)
                 iterator = enumerate(dataloader)
     batch_end = time.time()
-    print(f"[T] mega-batch overall: {batch_end-batch_start:.2f}s, compute: {batch_end-first_minibatch:.2f}s")
-    #  print(f"[T] num_iters={batch_iter+1}, num_workers={args.num_workers}")
-    print(f"[T] ############ mega-batch {time.time()-tic:.2f}s #############")
-    return train_acc
+    print(f"[T] mega-batch overall: {batch_end-tic:.2f}s, compute: {batch_end-first_minibatch:.2f}s")
+    return train_acc, batch_end-tic
 
 def evaluate(args, model, inmem_data):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
@@ -172,17 +167,26 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
     src_buffer, dst_buffer, label_buffer, feat_buffer = buffers
 
     # loop over training runs
-    duration = []
+    iter_duration = []
+    trainer_duration = []
+    train_acc = 0
+    model.reset_parameters()
     while True:
         data = data_queue.get()
         if data[0] == 'quit':
             break
         elif data[0] == 'reset':
+            resp_queue.put(('done', {
+                'time-per-iter':        trainer_duration,
+                'time-per-iter(all)':   iter_duration,
+            }))
+            iter_duration = []
+            trainer_duration = []
+            train_acc = 0
             model.reset_parameters()
-            resp_queue.put(('done',))
         elif data[0] == 'eval':
             val_result, test_result = evaluate(args, model, inmem_data)
-            resp_queue.put(('done',val_result, test_result))
+            resp_queue.put(('done', train_acc, val_result, test_result))
         elif data[0] == 'train':
             tic = time.time()
             num_nodes, src_interval, dst_interval, label_interval, feat_interval, \
@@ -196,7 +200,8 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
             assert num_nodes == batch_feat.shape[0]
             assert num_nodes == batch_labels.shape[0]
             assert num_nodes == batch_train_mask.shape[0]
-            train_acc = train_serial((num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask),
+            train_acc, train_time = train_serial(
+                (num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask),
                 args, model, optimizer, lr_scheduler, sampler)
             # free as much memory as possible, otherwise memory requirements double
             del num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask
@@ -205,6 +210,9 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
             dst_buffer.free(dst_interval)
             label_buffer.free(label_interval)
             feat_buffer.free(feat_interval)
+
+            trainer_duration.append(train_time)
+            iter_duration.append(time.time()-tic)
 
         else:
             raise RuntimeError(f"Invalid msg: {data}")
@@ -313,9 +321,10 @@ if __name__ == "__main__":
                 # print("Gnnos loader:", data[1], data[2], data[3], data[4])
                 print(f"Run {run}: epoch {epoch}, iter {loader.n}")
             if args.eval_every > 0 and (epoch + 1) % args.eval_every == 0:
-                val_acc, test_acc = loader.evaluate()
-                print("")
-
+                accus = loader.evaluate()
+                logger.add_result(run, accus)
+                print(f"Epoch {epoch+1}: Val acc {accus[1]:.4f}, Test acc {accus[2]:.4f}")
+        logger.print_statistics(run)
     loader.finish()
     logger.print_statistics()
     trainer.join()

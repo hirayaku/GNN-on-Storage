@@ -190,8 +190,8 @@ class GnnosIterShm(sampler.GnnosIter):
         if resp[0] != 'done':
             raise RuntimeError(f'Invalid response: {resp}')
         else:
-            _, val, test = resp
-            return val[0], test[0]
+            _, train, val, test = resp
+            return train, val[0], test[0]
 
     def finish(self):
         '''

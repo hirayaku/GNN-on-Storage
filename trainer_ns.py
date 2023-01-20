@@ -26,8 +26,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
     eval_dataloader = dgl.dataloading.DataLoader(
             g, eval_set, eval_sampler, device=device,
             batch_size=batch_size, shuffle=True, drop_last=False,
-            use_ddp=use_ddp, num_workers=num_workers,
-            use_prefetch_thread=False, pin_prefetcher=False)
+            use_ddp=use_ddp, num_workers=num_workers)
 
     model.eval()
     ys = []
@@ -96,7 +95,6 @@ def train(args, data, tb_writer):
             shuffle=True,
             drop_last=False,
             num_workers=args.num_workers,
-            use_prefetch_thread=False, pin_prefetcher=False
             )
 
         avg = 0

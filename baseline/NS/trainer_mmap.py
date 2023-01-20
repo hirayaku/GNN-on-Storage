@@ -11,7 +11,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
+from model.gnn import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GIN
 from graphloader import BaselineNodePropPredDataset
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter

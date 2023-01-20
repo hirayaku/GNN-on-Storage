@@ -286,7 +286,6 @@ class GnnosIter(object):
 
     def __next__(self):
         if self.n < self.max:
-            print("Iteration", self.n)
             self.n += 1
             return self.load_store(self.n-1)
         else:

@@ -35,7 +35,7 @@ def eval_ns_batching(model, g, eval_set, batch_size, fanout, num_workers, use_dd
             g, eval_set, eval_sampler, device=device,
             batch_size=batch_size, shuffle=False, drop_last=False,
             use_ddp=use_ddp, num_workers=num_workers,
-            use_prefetch_thread=False, pin_prefetcher=False)
+    )
 
     model.eval()
     ys = []
@@ -119,7 +119,7 @@ def train(args, data, partitioner, tb_writer):
                     shuffle=True,
                     drop_last=False,
                     num_workers=args.num_workers,
-                    use_prefetch_thread=False, pin_prefetcher=False)
+                )
                 iterator = enumerate(dataloader)
 
                 batch_start = time.time()
@@ -169,7 +169,7 @@ def train(args, data, partitioner, tb_writer):
                                 shuffle=True,
                                 drop_last=False,
                                 num_workers=args.num_workers,
-                                use_prefetch_thread=False, pin_prefetcher=False)
+                            )
                             iterator = enumerate(dataloader)
                 batch_end = time.time()
 

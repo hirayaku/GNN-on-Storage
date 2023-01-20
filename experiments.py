@@ -7,6 +7,7 @@ parser.add_argument('--root', type=str, default=f'{os.environ["DATASETS"]}/gnnos
 parser.add_argument('--comment', type=str, default='')
 parser.add_argument('--mem', type=str, default='256G', help='request memory budget')
 parser.add_argument('--dataset', type=str, help='dataset')
+parser.add_argument('--prefetch-timeout', type=int, default=60, help='prefetch timeout for DGL dataloaders')
 # common hparams
 parser.add_argument('--runs', type=int, nargs='+', default=[1], help='')
 parser.add_argument('--method', type=str, nargs='+', default=['HB'], help='Choose between NS, HB')
@@ -35,7 +36,7 @@ parser.add_argument('--recycle', type=float, nargs='+', default=[1], help='initi
 parser.add_argument('--rho', type=float, nargs='+', default=[1.0], help='reuse multiplication factor')
 
 args = vars(parser.parse_args())
-non_hparams = ('root', 'comment', 'mem', 'dataset')
+non_hparams = ('root', 'comment', 'mem', 'dataset', 'prefetch_timeout')
 def gen_config(args: dict):
     num_configs = 1
     for opt, value in args.items():
@@ -77,6 +78,7 @@ conda activate gnn
 cd $HOME/proj/GNNoS
 mkdir -p traces/{args['dataset']}
 date
+export DGL_PREFETCHER_TIMEOUT={args['prefetch_timeout']}
 
 set -eu
 '''

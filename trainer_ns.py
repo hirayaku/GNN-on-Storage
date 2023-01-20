@@ -12,7 +12,7 @@ import torch.distributed.optim
 import torchmetrics.functional as MF
 import dgl
 
-from modules import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
+from model.gnn import SAGE, SAGE_mlp, SAGE_res_incep, GAT, GAT_mlp, GIN
 from graphloader import BaselineNodePropPredDataset
 from logger import Logger
 from torch.utils.tensorboard import SummaryWriter
@@ -96,12 +96,13 @@ def train(args, data, tb_writer):
             shuffle=True,
             drop_last=False,
             num_workers=args.num_workers,
-            use_prefetch_thread=False, pin_prefetcher=False)
+            use_prefetch_thread=False, pin_prefetcher=False
+            )
 
         avg = 0
         for epoch in range(args.n_epochs):
-            profiler = Profiler(interval=0.01)
-            profiler.start()
+            #  profiler = Profiler(interval=0.01)
+            #  profiler.start()
 
             tic = time.time()
             tic_step = tic
@@ -132,19 +133,19 @@ def train(args, data, tb_writer):
                 if args.progress:
                     minibatches.set_postfix({'acc': train_acc.item(), 'loss': loss.item()})
                 elif (epoch_iter+1) % args.log_every == 0:
-                    profiler.stop()
-                    profiler.print()
-                    profiler.start()
                     toc_step = time.time()
                     print(f"Epoch {epoch+1}/{args.n_epochs}, Iter {epoch_iter+1} train acc: {train_acc:.4f} "
                           f"time {toc_step-tic_step:.2f}s")
                     tic_step = toc_step
 
+            #  profiler.stop()
+            #  profiler.print()
+
             if (epoch + 1) % args.eval_every == 0:
-                train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
-                        args.fanout, args.num_workers, use_ddp=False)
+                #  train_acc, _, _ = eval_ns_batching(model, g, train_nid, args.bsize2,
+                #          args.fanout, args.num_workers, use_ddp=False)
                 val_acc, val_loss, _ = eval_ns_batching(model, g, val_nid, args.bsize2,
-                        args.fanout, args.num_workers, use_ddp=False)
+                        args.test_fanout, args.num_workers, use_ddp=False)
                 test_acc, test_loss, _ = eval_ns_batching(model, g, test_nid, args.bsize3,
                         args.test_fanout, args.num_workers, use_ddp=False)
                 if run == 0:
@@ -152,20 +153,15 @@ def train(args, data, tb_writer):
                     tb_writer.add_scalar('Valid/loss', val_loss, epoch)
                     tb_writer.add_scalar('test/accu', test_acc, epoch)
                     tb_writer.add_scalar('test/loss', test_loss, epoch)
-                print(f"Val acc: {val_acc:.4f}")
-                print(f"Test acc: {test_acc:.4f}")
+                print(f"Val acc: {val_acc:.4f}, Test acc: {test_acc:.4f}")
                 logger.add_result(run, (train_acc, val_acc, test_acc))
-
-            profiler.stop()
-            profiler.print()
-            profiler.start()
 
             toc = time.time()
             print('Epoch Time(s): {:.4f}'.format(toc - tic))
             if epoch >= 1:
                 avg += toc - tic
 
-        print('Avg epoch time: {:.5f}'.format(avg / epoch))
+        print('Avg epoch time: {:.5f}'.format(avg / args.n_epochs))
         logger.print_statistics(run)
     logger.print_statistics()
 

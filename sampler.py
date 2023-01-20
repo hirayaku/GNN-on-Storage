@@ -8,12 +8,17 @@ import dgl.function as fn
 import partition_utils
 from partition_utils import partition_from
 
-def identify_cut_edges(g, assigns):
+def identify_cut_edges(g, assigns, scache):
     assert g.num_nodes() == assigns.shape[0]
+    mask_cuts = None
     with g.local_scope():
         g.ndata['vp'] = assigns.float()
         g.apply_edges(fn.u_sub_v('vp', 'vp', 'cut'))
-        return g.edata['cut'] != 0
+        mask_cuts = g.edata['cut'] != 0
+        # excluding out_edges from scache
+        eids = g.out_edges(scache, form='eid')
+        mask_cuts[eids] = False
+    return mask_cuts
 
 def edge_cuts_from(g, assigns, psize):
     '''
@@ -52,17 +57,20 @@ class ClusterIter(object):
     '''
     def __init__(self, dataset, g, psize, bsize, hsize,
             partitioner=partition_utils.RandomNodePartitioner(), seed=1,
-            sample_helpers=False, sample_topk=False, popular_ratio=0):
+            sample_helpers=False, sample_topk=False, popular_ratio=0,
+            normalize=False):
         self.g = g
         self.psize = psize
         self.bsize = bsize
         self.sample_topk = sample_topk
         self.sample_helpers = sample_helpers
+        self.normalize = normalize
 
         cache_folder = os.path.join(os.environ['DATASETS'], "gnnos",
                 dataset, partitioner.name)
         os.makedirs(cache_folder, exist_ok=True)
         cache_file = f'{cache_folder}/p{psize}.pt'
+        print(cache_file)
 
         nids = g.nodes()
         train_nids = nids[g.ndata['train_mask']]
@@ -71,8 +79,7 @@ class ClusterIter(object):
         else:
             self.assigns = partitioner.partition(g, psize)
             torch.save(self.assigns, cache_file)
-        
-        g.edata['cut'] = identify_cut_edges(g, self.assigns)
+
         nontrain_mask = ~g.ndata['train_mask']
         self.parts = partition_from(nids[nontrain_mask], self.assigns[nontrain_mask], psize)
         self.train_parts = partition_from(train_nids, self.assigns[train_nids], psize)
@@ -89,14 +96,10 @@ class ClusterIter(object):
         self.node_cache_parts = self.__get_popular_nodes__()
 
     def __get_popular_nodes__(self):
-        if self.node_cache_parts is None or self.sample_topk:
-            if self.sample_topk:
-                node_cache = torch.from_numpy(
-                        np.random.choice(np.arange(self.g.num_nodes(), dtype=np.int64),
-                            size=self.node_budget, p=self.node_prob.numpy(), replace=True)
-                        )
-            else:
-                node_cache = torch.topk(self.node_prob, self.node_budget).indices
+        if self.node_cache_parts is None:
+            node_cache = torch.topk(self.node_prob, self.node_budget).indices
+            if self.normalize:
+                self.g.edata['cut'] = identify_cut_edges(self.g, self.assigns, node_cache)
             return partition_from(node_cache, self.assigns[node_cache], self.psize)
         else:
             return self.node_cache_parts
@@ -122,7 +125,8 @@ class ClusterIter(object):
 
             subgraph = dgl.node_subgraph(self.g, nids)
             old_eids = subgraph.edata[dgl.EID]
-            subgraph.edata['cut'] = self.g.edata['cut'][old_eids]
+            if self.normalize:
+                subgraph.edata['cut'] = self.g.edata['cut'][old_eids]
             sg_num_nodes = subgraph.num_nodes()
             sg_train_nids = torch.arange(train_nids.shape[0])
             sg_cache_nids = torch.arange(sg_num_nodes-len(cache_nids), sg_num_nodes)

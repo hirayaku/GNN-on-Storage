@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import Linear as Lin
 from torch.nn import Linear, Sequential, BatchNorm1d, ReLU
 
 import dgl
@@ -44,7 +43,7 @@ class SAGE(nn.Module):
             block.edata['w'] = block.edata['cut'].float() * (self.p_cut-1)
             block.edata['w'] += torch.ones((block.num_edges(), ), device=block.device)
             block.update_all(fn.copy_e('w', 'm'), fn.sum('m', 'ws'))
-            block.ndata['ws'] = block.in_degrees() / block.ndata['ws']
+            block.dstdata['ws'] = block.in_degrees() / block.dstdata['ws']
             block.apply_edges(fn.e_mul_v('w', 'ws', 'w'))
             h = self.layers[l](block, x, block.edata['w'])
         else:

@@ -81,6 +81,7 @@ class GnnosIterShm(sampler.GnnosIter):
         self.label_buffer = DoubleBuffer(self.ctx, (node_buf_size, *self.dcache['label'].shape[1:]),
             dtype=self.dcache['label'].metadata.dtype)
         self.data_queue = ctx.SimpleQueue()
+        self.resp_queue = ctx.SimpleQueue()
 
     # @profile
     def load_store(self, pi):
@@ -109,7 +110,7 @@ class GnnosIterShm(sampler.GnnosIter):
             ranges.append((self.dcache['edge_ptr'][i], self.dcache['edge_ptr'][i+1]))
         batch_srcs = self.dcache['graph'].src_nids.gather(ranges)
         batch_dsts = self.dcache['graph'].dst_nids.gather(ranges)
-        print(f"[L] parts edges: {len(batch_srcs)}")
+        #  print(f"[L] parts edges: {len(batch_srcs)}")
 
         ranges = []
         for i in sample_pids:
@@ -119,8 +120,8 @@ class GnnosIterShm(sampler.GnnosIter):
         scache_batch_srcs = torch.cat((scache_batch_srcs, self.scache['sg'][0]))
         scache_batch_dsts = torch.cat((scache_batch_dsts, self.scache['sg'][1]))
         toc = time.time()
-        print(f"[L] Buf reserve: {tic-tic_0:.2f}s")
-        print(f"[L] Load store:  {toc-tic:.2f}s")
+        #  print(f"[L] Buf reserve: {tic-tic_0:.2f}s")
+        #  print(f"[L] Load store:  {toc-tic:.2f}s")
 
         # prepare relabel dict
         scache_nids, scache_size = self.scache['nids'], len(self.scache['nids'])
@@ -137,7 +138,7 @@ class GnnosIterShm(sampler.GnnosIter):
         # filter out non-cache destinations
         batch_srcs = relabel_dict[batch_srcs]
         batch_dsts = relabel_dict[batch_dsts]
-        print(f"[L] Relabel dcache: {time.time()-tic:.2f}s")
+        #  print(f"[L] Relabel dcache: {time.time()-tic:.2f}s")
         dcache_edge_mask = (batch_dsts != -1)
 
         # deduplicate adj lists of nodes that appears in both scache and dcache
@@ -145,7 +146,7 @@ class GnnosIterShm(sampler.GnnosIter):
         relabel_dict[scache_dcache_nids] = -1
         scache_batch_srcs = relabel_dict[scache_batch_srcs]
         del relabel_dict
-        print(f"[L] Relabel scache: {time.time()-tic:.2f}s")
+        #  print(f"[L] Relabel scache: {time.time()-tic:.2f}s")
         scache_edge_mask = (scache_batch_srcs != -1)
 
         scache_slots = scache_edge_mask.int().sum().item()
@@ -164,19 +165,39 @@ class GnnosIterShm(sampler.GnnosIter):
         batch_train_mask[scache_size:cache_size] = self.dcache['train_mask'][dcache_nids]
 
         toc = time.time()
-        print(f"[L] Assemble: {toc-tic:.2f}s")
+        #  print(f"[L] Assemble: {toc-tic:.2f}s")
         # data = (cache_size,
         #     src_interval, dst_interval, label_interval, feat_interval,
         #     batch_train_mask, scache_nids, dcache_nids)
         data = cache_size, src_interval, dst_interval, label_interval, feat_interval, batch_train_mask
         self.data_queue.put(('train', data))
-        return data 
-    
+        return data
+
+    def reset(self):
+        self.data_queue.put(('reset', ))
+        resp = self.resp_queue.get()
+        if resp[0] != 'done':
+            raise RuntimeError(f'Invalid response: {resp}')
+
     def evaluate(self):
-        pass
-    
+        '''
+        notify the worker to evaluate the model and wait for it to finish
+        expect the trainer to return a tuple of
+        ('done', (valid_acc, valid_loss), (test_acc, test_loss))
+        '''
+        self.data_queue.put(('eval',))
+        resp = self.resp_queue.get()
+        if resp[0] != 'done':
+            raise RuntimeError(f'Invalid response: {resp}')
+        else:
+            _, val, test = resp
+            return val[0], test[0]
+
     def finish(self):
-        self.data_queue.put('end')
+        '''
+        notify the worker to terminate the current epoch or run
+        '''
+        self.data_queue.put(('quit',))
 
 from graphloader import BaselineNodePropPredDataset
 

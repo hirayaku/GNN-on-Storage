@@ -15,6 +15,8 @@ class Logger(object):
         self.results[run].append(result)
 
     def print_statistics(self, run=None):
+        if len(self.results[0]) == 0:
+            return
         if run is not None:
             result = 100 * torch.tensor(self.results[run])
             argmax = result[:, 1].argmax().item()

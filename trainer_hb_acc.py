@@ -66,7 +66,7 @@ def train(args, data, partitioner, tb_writer):
     in_feats = g.ndata['feat'].shape[1]
 
     cluster_iterator = HBSampler.ClusterIter(args.dataset, g, args.psize, args.bsize, args.hsize,
-            partitioner=partitioner, sample_topk=args.popular_sample, popular_ratio=args.popular_ratio)
+        partitioner=partitioner, popular_ratio=args.popular_ratio, normalize=args.normalize)
 
     '''
     if args.model == 'gat':
@@ -215,7 +215,7 @@ if __name__ == '__main__':
     parser.add_argument("--test-fanout", type=str, default="20,20,20",
                         help="Choose sampling fanout for host-gpu hierarchy (test)")
     parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--lr', type=float, default=0.003,
+    parser.add_argument('--lr', type=float, default=0.001,
                         help="Learning rate")
     parser.add_argument('--beta1', type=float, default=0.9,
                         help='beta_1 in Adam optimizer')
@@ -241,6 +241,8 @@ if __name__ == '__main__':
                         help="Batch size for host-gpu hierarchy")
     parser.add_argument("--bsize3", type=int, default=64,
                         help="Batch size used during evaluation")
+    parser.add_argument("--popular-ratio", type=float, default=0)
+    parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--recycle", type=int, default=1,
                         help="Number of training passes over the host data before recycling")
     parser.add_argument("--rho", type=float, default=1,
@@ -251,8 +253,6 @@ if __name__ == '__main__':
                         help="number of epoch of doing inference on validation")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of graph sampling workers for host-gpu hierarchy")
-    parser.add_argument("--popular-ratio", type=float, default=0)
-    parser.add_argument("--popular-sample", action="store_true")
     parser.add_argument("--progress", action="store_true", help="show training progress bar")
     parser.add_argument("--comment", type=str, help="Extra comments to print out to the trace")
     args = parser.parse_args()
@@ -338,11 +338,7 @@ if __name__ == '__main__':
     #Features   {g.ndata['feat'].shape}"""
     )
 
-    if args.popular_sample:
-        popular = 'sample'
-    else:
-        popular = 'fixed'
-    log_path = f"log/{args.dataset}/HB-{model}-{partition}-{popular}-c{args.popular_ratio}" \
+    log_path = f"log/{args.dataset}/HB-{model}-{partition}-c{args.popular_ratio}" \
             + f"-r{args.recycle}*{args.rho}-p{args.psize}-b{args.bsize}-{time_stamp}"
     tb_writer = SummaryWriter(log_path, flush_secs=5)
 
@@ -358,7 +354,7 @@ if __name__ == '__main__':
         'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'lr-decay': args.lr_decay,
         'dropout': args.dropout, 'weight-decay': args.wt_decay,
         'partition': args.part, 'psize': args.psize, 'bsize': args.bsize, 'bsize2': args.bsize2,
-        'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio, 'popular_method': popular,
+        'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio,
         },
         {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
         )

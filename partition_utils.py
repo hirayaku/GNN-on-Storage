@@ -1,4 +1,4 @@
-import os
+import os, time
 import torch
 import dgl
 import dgl.function as fn
@@ -17,7 +17,10 @@ class RandomNodePartitioner(NodePartitioner):
         super().__init__('rand')
 
     def partition(self, g, psize):
-        return torch.randint(psize, (g.num_nodes(),))
+        tic = time.time()
+        assigns = torch.randint(psize, (g.num_nodes(),))
+        print(f"Generate partitions: {time.time()-tic:.2f}s")
+        return assigns
 
 class MetisNodePartitioner(NodePartitioner):
     def __init__(self, name='metis'):

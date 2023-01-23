@@ -71,6 +71,7 @@ class GnnosIterShm(sampler.GnnosIter):
         edge_buf_size = 2*int(epart_sizes.float().mean().item() * bsize) + 2*len(self.scache['sg'][0])
         # edge_buf_size = 2 * (int(epart_sizes.float().mean().item() * bsize) +
         #     int(spart_sizes.float().mean().item() * bsize)) + 2 * len(self.scache['sg'][0])
+        self.load_time = []
 
         feat_dtype = self.dcache['feat'].metadata.dtype
         print(f"Buffer sizes: node[{feat_dtype},{node_buf_size}], edge[{edge_buf_size}]")
@@ -85,7 +86,7 @@ class GnnosIterShm(sampler.GnnosIter):
 
     # @profile
     def load_store(self, pi):
-        tic_0 = time.time()
+        tic = time.time()
         sample_pids = self.train_pids[pi*self.bsize : (pi+1)*self.bsize]
 
         # load node data
@@ -97,7 +98,6 @@ class GnnosIterShm(sampler.GnnosIter):
         # could block here
         feat_interval = self.feat_buffer.reserve(scache_slots + dcache_slots)
         label_interval = self.label_buffer.reserve(scache_slots + dcache_slots)
-        tic = time.time()
         # TODO: add a version of TensorStore.gather_to
         self.feat_buffer[slice(*feat_interval)][:scache_slots] = self.scache['feat']
         self.feat_buffer[slice(*feat_interval)][scache_slots:] = self.dcache['feat'].gather(ranges)
@@ -165,19 +165,22 @@ class GnnosIterShm(sampler.GnnosIter):
         batch_train_mask[scache_size:cache_size] = self.dcache['train_mask'][dcache_nids]
 
         toc = time.time()
-        #  print(f"[L] Assemble: {toc-tic:.2f}s")
-        # data = (cache_size,
-        #     src_interval, dst_interval, label_interval, feat_interval,
-        #     batch_train_mask, scache_nids, dcache_nids)
+        self.load_time.append(toc-tic)
+        print(f"[L] mega-batch load: {toc-tic:.2f}s")
         data = cache_size, src_interval, dst_interval, label_interval, feat_interval, batch_train_mask
-        self.data_queue.put(('train', data))
         return data
 
     def reset(self):
+        loader_stats = self.load_time
+        self.load_time = []
         self.data_queue.put(('reset', ))
         resp = self.resp_queue.get()
         if resp[0] != 'done':
             raise RuntimeError(f'Invalid response: {resp}')
+        return loader_stats, resp[1]
+
+    def train(self, data):
+        self.data_queue.put(('train', data))
 
     def evaluate(self):
         '''

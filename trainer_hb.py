@@ -4,7 +4,8 @@ import tqdm, shutil
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.distributed.optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torchmetrics.functional as MF
 import dgl
 
@@ -47,10 +48,9 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
             if batch_iter == 1:
                 first_minibatch = time.time()
                 print(f"[T] MFG size:", len(input_nodes))
-            # if len(output_nodes) < 0.1 * args.bsize2:
-            #     # skip batches with too few training nodes
-            #     print(f"skip {len(output_nodes)} nodes")
-            #     continue
+            if len(input_nodes) == len(output_nodes):
+                # skip batches with only isolated nodes
+                continue
             # Load the input features as well as output labels
             x = batch_feat[input_nodes].to(device).float()
             y = batch_labels[output_nodes].to(device).flatten().long()
@@ -61,7 +61,7 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
             loss.backward()
             optimizer.step()
             lr_scheduler.step(loss)
-            train_acc = MF.accuracy(y_hat, y)
+            train_acc = MF.accuracy(y_hat.detach(), y).cpu()
             if (batch_iter+1) % args.log_every == 0:
                 print(f"[T] Iter {batch_iter+1}, train acc: {train_acc:.4f}")
         except StopIteration:
@@ -80,14 +80,13 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
     print(f"[T] mega-batch overall: {batch_end-tic:.2f}s, compute: {batch_end-first_minibatch:.2f}s")
     return train_acc, batch_end-tic
 
-def evaluate(args, model, inmem_data):
+def evaluate(args, model, eval_data):
     device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    data = inmem_data
-    g = data.graph
-    g.ndata['feat'] = data.node_feat
-    g.ndata['label'] = data.labels
+    g = eval_data.graph
+    g.ndata['feat'] = eval_data.node_feat
+    g.ndata['label'] = eval_data.labels
 
-    idx = data.get_idx_split()
+    idx = eval_data.get_idx_split()
     val_nid = idx['valid']
     test_nid = idx['test']
 
@@ -113,8 +112,8 @@ def evaluate(args, model, inmem_data):
             ys.append(blocks[-1].dstdata['label'].flatten().long())
             y_hats.append(model(blocks, x))
         y_hats, ys = torch.cat(y_hats), torch.cat(ys)
-        valid_acc = MF.accuracy(y_hats, ys)
-        valid_loss = F.nll_loss(y_hats, ys)
+        valid_acc = MF.accuracy(y_hats, ys).cpu()
+        valid_loss = F.nll_loss(y_hats, ys).cpu()
 
         ys = []
         y_hats = []
@@ -124,12 +123,11 @@ def evaluate(args, model, inmem_data):
             ys.append(blocks[-1].dstdata['label'].flatten().long())
             y_hats.append(model(blocks, x))
         y_hats, ys = torch.cat(y_hats), torch.cat(ys)
-        test_acc = MF.accuracy(y_hats, ys)
-        test_loss = F.nll_loss(y_hats, ys)
+        test_acc = MF.accuracy(y_hats, ys).cpu()
+        test_loss = F.nll_loss(y_hats, ys).cpu()
 
     return (valid_acc, valid_loss), (test_acc, test_loss)
 
-import torch.multiprocessing as mp
 
 def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
           buffers, in_feats, num_classes, args):
@@ -159,12 +157,9 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
         optimizer=optimizer, factor=args.lr_decay, patience=args.lr_step, verbose=True)
     sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanout)
 
-    inmem_data = None
-    if args.eval_every > 0 and args.eval_every <= args.n_epochs:
-        inmem_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
-
     print("[W] trainer starts")
     src_buffer, dst_buffer, label_buffer, feat_buffer = buffers
+    eval_data = None
 
     # loop over training runs
     iter_duration = []
@@ -172,10 +167,12 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
     train_acc = 0
     model.reset_parameters()
     while True:
+        tic = time.time()
         data = data_queue.get()
         if data[0] == 'quit':
             break
         elif data[0] == 'reset':
+            model.reset_parameters()
             resp_queue.put(('done', {
                 'time-per-iter':        trainer_duration,
                 'time-per-iter(all)':   iter_duration,
@@ -183,12 +180,12 @@ def train(data_queue: mp.SimpleQueue, resp_queue: mp.SimpleQueue,
             iter_duration = []
             trainer_duration = []
             train_acc = 0
-            model.reset_parameters()
         elif data[0] == 'eval':
-            val_result, test_result = evaluate(args, model, inmem_data)
+            if eval_data is None:
+                eval_data = BaselineNodePropPredDataset(name=args.dataset, root=args.root, mmap_feat=False)
+            val_result, test_result = evaluate(args, model, eval_data)
             resp_queue.put(('done', train_acc, val_result, test_result))
         elif data[0] == 'train':
-            tic = time.time()
             num_nodes, src_interval, dst_interval, label_interval, feat_interval, \
                 batch_train_mask = data[1]
             batch_coo = (src_buffer[slice(*src_interval)], dst_buffer[slice(*dst_interval)])
@@ -311,19 +308,23 @@ if __name__ == "__main__":
         args=(loader.data_queue, loader.resp_queue, shm_buffers, in_feats, num_classes, args))
     trainer.start()
     logger = Logger(args.runs, args)
+    iter_per_epoch = args.psize // args.bsize
 
     for run in range(args.runs):
-        loader.reset()
         for epoch in range(args.n_epochs):
             tic = time.time()
             for data in loader:
                 # loader will push data into the data queue
                 # print("Gnnos loader:", data[1], data[2], data[3], data[4])
+                loader.train(data)
                 print(f"Run {run}: epoch {epoch}, iter {loader.n}")
             if args.eval_every > 0 and (epoch + 1) % args.eval_every == 0:
                 accus = loader.evaluate()
                 logger.add_result(run, accus)
                 print(f"Epoch {epoch+1}: Val acc {accus[1]:.4f}, Test acc {accus[2]:.4f}")
+        loader_stats, trainer_stats = loader.reset()
+        print(f"Run {run}:\nloader:{loader_stats[:iter_per_epoch*2]}\n"
+            f"trainer:{trainer_stats['time-per-iter(all)'][:iter_per_epoch*2]}")
         logger.print_statistics(run)
     loader.finish()
     logger.print_statistics()

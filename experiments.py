@@ -5,6 +5,7 @@ parser = argparse.ArgumentParser(description="HierBatching experiment runner",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--root', type=str, default=f'{os.environ["DATASETS"]}/gnnos')
 parser.add_argument('--comment', type=str, default='')
+parser.add_argument('--jobs', type=int, default=4, help="number of concurrent jobs")
 parser.add_argument('--mem', type=str, default='256G', help='request memory budget')
 parser.add_argument('--dataset', type=str, help='dataset')
 parser.add_argument('--prefetch-timeout', type=int, default=60, help='prefetch timeout for DGL dataloaders')
@@ -23,10 +24,12 @@ parser.add_argument('--lr', type=float, nargs='+', default=[1e-3], help='lr')
 parser.add_argument('--lr-decay', type=float, nargs='+', default=[0.9999], help='')
 parser.add_argument('--lr-step', type=int, nargs='+', default=[100000], help='')
 parser.add_argument('--wt-decay', type=float, nargs='+', default=[0], help='')
+parser.add_argument('--layers', type=int, nargs='+', default=[3])
 parser.add_argument('--fanout', type=str, nargs='+', default=['15,10,5'], help='training fanout')
 parser.add_argument('--test-fanout', type=str, nargs='+', default=['20,20,20'], help='eval fanout')
 parser.add_argument('--log-every', type=int, nargs='+', default=[100], help='')
 parser.add_argument('--num-workers', type=int, nargs='+', default=[4], help='')
+parser.add_argument('--extra', type=str, nargs='+', default=[""], help="extra command line flags")
 # HB-related hparams below
 parser.add_argument('--part', type=str, nargs='+', default=['metis'], help='partitioners')
 parser.add_argument('--psize', type=int, nargs='+', default=[1024], help='number of partitions')
@@ -36,7 +39,7 @@ parser.add_argument('--recycle', type=float, nargs='+', default=[1], help='initi
 parser.add_argument('--rho', type=float, nargs='+', default=[1.0], help='reuse multiplication factor')
 
 args = vars(parser.parse_args())
-non_hparams = ('root', 'comment', 'mem', 'dataset', 'prefetch_timeout')
+non_hparams = ('root', 'comment', 'jobs', 'mem', 'dataset', 'prefetch_timeout')
 def gen_config(args: dict):
     num_configs = 1
     for opt, value in args.items():
@@ -88,15 +91,15 @@ sbatch_hb = '''
     python3 -u trainer_hb.py --dataset {dataset} --gpu {gpu} --root {root} --model {model} --comment "{comment}" \
     --psize {psize} --bsize {bsize} --bsize2 {minibatch} --bsize3 {eval_minibatch} --popular-ratio {sratio} \
     --num-hidden {num_hidden} --lr {lr} --lr-decay {lr_decay} --lr-step {lr_step} --part {part} --recycle {recycle} \
-    --fanout 15,10,5 --test-fanout {test_fanout} --n-epochs {epochs} --log-every {log_every} --eval-every {eval_every} \
-    --num-workers {num_workers} --runs {runs} \
+    --n-layers {layers} --fanout {fanout} --test-fanout {test_fanout} --n-epochs {epochs} --log-every {log_every} --eval-every {eval_every} \
+    --num-workers {num_workers} --runs {runs} {extra}\
     >> traces/{dataset}/{method}.{model}.c{sratio}.r{recycle}.t{bsize}.p{psize}.b{minibatch}.out 2>&1
 '''
 sbatch_ns ='''
     python3 -u trainer_ns.py --dataset {dataset} --gpu {gpu} --root {root} --model {model} --comment "{comment}" \
     --num-hidden {num_hidden} --bsize2 {minibatch} --bsize3 {eval_minibatch} --lr {lr} --lr-decay {lr_decay} --lr-step {lr_step} \
-    --fanout 15,10,5 --test-fanout {test_fanout} --n-epochs {epochs} --log-every {log_every} --eval-every {eval_every} \
-    --num-workers {num_workers} --runs {runs} \
+    --n-layers {layers} --fanout {fanout} --test-fanout {test_fanout} --n-epochs {epochs} --log-every {log_every} --eval-every {eval_every} \
+    --num-workers {num_workers} --runs {runs} {extra}\
     >> traces/{dataset}/{method}.{model}.b{minibatch}.out 2>&1
 '''
 
@@ -125,10 +128,14 @@ import tempfile
 
 with tempfile.NamedTemporaryFile(delete=False) as sbatch_file:
     sbatch_file.write(str.encode(prefix))
+    pids = []
     for num, c in enumerate(configs):
         sbatch_file.write(str.encode(make_parallel(c, f"pid{num}")))
-    wait_cmd = ['wait'] + ["${" + f"pid{num}" + "}" for num in range(len(configs))] + ['\n']
-    sbatch_file.write(str.encode(' '.join(wait_cmd)))
+        pids.append(f"pid{num}")
+        if (num+1) % args['jobs'] == 0 or num == len(configs)-1:
+            wait_cmd = ['wait'] + ["${" + pid + "}" for pid in pids] + ['\n']
+            sbatch_file.write(str.encode(' '.join(wait_cmd)))
+            pids = []
     print("Commands written to", sbatch_file.name)
 
 subprocess.run(['bash', '-c', f'sbatch -J {args["comment"]}:{sbatch_file.name} {sbatch_file.name}'])

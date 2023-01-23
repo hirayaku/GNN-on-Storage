@@ -2,7 +2,7 @@
 
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=784G
+#SBATCH --mem=0
 #SBATCH --time=24:00:00
 #SBATCH --output=traces/mag240m.log
 #SBATCH --open-mode=append
@@ -17,8 +17,10 @@ set -eu
 
 # helpers = trainer
 srun --output=traces/$DATASET/$PART.$MODEL.c$PRATIO.r$REC-$RHO.t$BSIZE.p$PSIZE.b$BSIZE2.out --open-mode=append \
-    python3 -u trainer.py --dataset $DATASET --root $ROOT --model $MODEL --comment "$COMMENT" \
-    --psize $PSIZE --bsize $BSIZE --bsize2 $BSIZE2 --bsize3 $BSIZE2 --popular-ratio $PRATIO \
-    --mlp --num-hidden $HIDDEN --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD --n-epochs 25 --log-every 500 --eval-every 1 \
-    --recycle $REC --rho $RHO --part $PART --num-workers 20 --runs $RUNS
+    python3 -u trainer_hb.py --dataset $DATASET --root $ROOT --model $MODEL --comment "$COMMENT" \
+    --psize $PSIZE --bsize $BSIZE --bsize2 $BSIZE2 --bsize3 $BSIZE3 --popular-ratio $PRATIO \
+    --num-hidden $HIDDEN --n-layers 3 --fanout 15,10,5 --test-fanout 30,30,10 --lr $LR --lr-decay $LRD --n-epochs 25 --log-every 500 --eval-every 1 \
+    --io-threads 64 --recycle $REC --rho $RHO --part $PART --num-workers 8 --runs $RUNS
+    # --mlp --num-hidden $HIDDEN --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD --n-epochs 25 --log-every 500 --eval-every 1 \
+    # --recycle $REC --rho $RHO --part $PART --num-workers 20 --runs $RUNS
 

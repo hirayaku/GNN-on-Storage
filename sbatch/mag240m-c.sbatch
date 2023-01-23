@@ -17,8 +17,8 @@ set -eu
 
 # helpers = trainer
 srun --output=traces/$DATASET/$PART.$MODEL.c$PRATIO.r$REC-$RHO.t$BSIZE.p$PSIZE.b$BSIZE2.out --open-mode=append \
-    python3 -u trainer.py --dataset $DATASET --root $ROOT --model $MODEL --comment "$COMMENT" \
+    python3 -u trainer_hb.py --dataset $DATASET --root $ROOT --model $MODEL --comment "$COMMENT" \
     --psize $PSIZE --bsize $BSIZE --bsize2 $BSIZE2 --bsize3 $BSIZE2 --popular-ratio $PRATIO \
-    --mlp --num-hidden $HIDDEN --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD --n-epochs 25 --log-every 500 --eval-every 1 \
-    --recycle $REC --rho $RHO --part $PART --num-workers 20 --runs $RUNS
+    --mlp --num-hidden $HIDDEN --n-layers 2 --fanout 25,15 --test-fanout 25,15 --lr $LR --lr-decay $LRD --n-epochs 25 --log-every 500 --eval-every 2 \
+    --recycle $REC --rho $RHO --part $PART --num-workers 10 --runs $RUNS
 

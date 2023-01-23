@@ -23,8 +23,10 @@ def train_serial(data, args, model, optimizer, lr_scheduler, sampler):
     tic = time.time()
     num_nodes, batch_coo, batch_labels, batch_feat, batch_train_mask = data
     graph = dgl.graph(('coo', batch_coo), num_nodes=num_nodes)
+    graph.create_formats_()
+    # graph.ndata['feat'] = batch_feat
+    # graph.ndata['label'] = batch_labels
     train_nids = torch.nonzero(batch_train_mask, as_tuple=True)[0]
-    # graph.create_formats_()
     # print(f"[T] dgl graph creation: {time.time()-tic:.2f}s")
 
     dataloader = dgl.dataloading.DataLoader(

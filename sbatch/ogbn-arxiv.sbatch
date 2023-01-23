@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=40
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
 #SBATCH --output=traces/ogbn-arxiv.log

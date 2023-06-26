@@ -118,15 +118,15 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
             }
         }
     }
-    CHECK_EQ(torch::sum(p_counts_).item<long>(), csr.num_edges());
+    TORCH_CHECK_EQ(torch::sum(p_counts_).item<long>(), csr.num_edges());
     LOG(INFO) << "Counting complete";
 
     // compute pos array
     auto pos_ = torch::zeros({psize*psize+1}, p_counts_.options());
     auto pos_1 = pos_.index({torch::indexing::Slice(1, torch::indexing::None)});
     torch::cumsum_out(pos_1, p_counts_.reshape({psize*psize}), 0);
-    CHECK_EQ(pos_.index({0}).item<long>(), 0);
-    CHECK_EQ(pos_.index({-1}).item<long>(), csr.num_edges());
+    TORCH_CHECK_EQ(pos_.index({0}).item<long>(), 0);
+    TORCH_CHECK_EQ(pos_.index({-1}).item<long>(), csr.num_edges());
 
     // create a unnamed COOStore (int64_t) to place the partitioned graph
     TensorInfo info = TensorOptions(TMPDIR).shape({csr.num_edges()});
@@ -199,7 +199,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const CSRStore &csr, NodePartitions partiti
         }
     }
     for (int i = 0; i < psize * psize; ++i) {
-        CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
+        TORCH_CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
     }
     LOG(INFO) << "Partition complete";
     }   // release src_buffers, dst_buffers, pos_current

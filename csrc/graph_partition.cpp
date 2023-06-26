@@ -99,15 +99,15 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
             p_counts[src_blk]++;
         }
     }
-    CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
     LOG(INFO) << "Counting complete";
 
     // compute pos array
     auto pos_ = torch::zeros({psize+1}, torch::dtype(torch::kLong));
     auto pos_1 = pos_.index({torch::indexing::Slice(1, torch::indexing::None)});
     torch::cumsum_out(pos_1, p_counts_, 0);
-    CHECK_EQ(pos_.index({0}).item<long>(), 0);
-    CHECK_EQ(pos_.index({-1}).item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(pos_.index({0}).item<long>(), 0);
+    TORCH_CHECK_EQ(pos_.index({-1}).item<long>(), coo.num_edges());
 
     // create a unnamed COOStore to place the partitioned graph
     size_t num_nodes;
@@ -182,7 +182,7 @@ BCOOStore BCOOStore::PartitionFrom1D(const COOStore &coo, NodePartitions partiti
 
     #ifndef NDEBUG
     for (int i = 0; i < psize; ++i) {
-        CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
+        TORCH_CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
     }
     #endif
     LOG(INFO) << "Partition complete";
@@ -214,15 +214,15 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
             p_counts[src_blk][dst_blk]++;
         }
     }
-    CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(torch::sum(p_counts_).item<long>(), coo.num_edges());
     LOG(INFO) << "Counting complete";
 
     // compute pos array
     auto pos_ = torch::zeros({psize*psize+1}, p_counts_.options());
     auto pos_1 = pos_.index({torch::indexing::Slice(1, torch::indexing::None)});
     torch::cumsum_out(pos_1, p_counts_.reshape({psize*psize}), 0);
-    CHECK_EQ(pos_.index({0}).item<long>(), 0);
-    CHECK_EQ(pos_.index({-1}).item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(pos_.index({0}).item<long>(), 0);
+    TORCH_CHECK_EQ(pos_.index({-1}).item<long>(), coo.num_edges());
 
     // create a unnamed COOStore to place the partitioned graph
     size_t num_nodes;
@@ -297,7 +297,7 @@ BCOOStore BCOOStore::PartitionFrom2D(const COOStore &coo, NodePartitions partiti
     }
     #ifndef NDEBUG
     for (int i = 0; i < psize * psize; ++i) {
-        CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
+        TORCH_CHECK_EQ(pos_current[i], pos_[i+1].item<long>());
     }
     #endif
     LOG(INFO) << "Partition complete";

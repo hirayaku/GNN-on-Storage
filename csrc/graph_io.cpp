@@ -57,13 +57,13 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
             d_counts[src_id+1] += 1;
         }
     }
-    CHECK_EQ(torch::sum(d_counts_).item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(torch::sum(d_counts_).item<long>(), coo.num_edges());
     LOG(INFO) << "Counting complete";
 
     // compute rowptr array
     auto ptr_tensor_ = torch::cumsum(d_counts_, 0);
-    CHECK_EQ(ptr_tensor_[0].item<long>(), 0);
-    CHECK_EQ(ptr_tensor_[num_nodes].item<long>(), coo.num_edges());
+    TORCH_CHECK_EQ(ptr_tensor_[0].item<long>(), 0);
+    TORCH_CHECK_EQ(ptr_tensor_[num_nodes].item<long>(), coo.num_edges());
     ptr_store.accessor<long>().slice_put(ptr_tensor_.data_ptr<long>(), 0, num_nodes+1);
 
     // generate colidx array
@@ -95,7 +95,7 @@ CSRStore CSRStore::NewFrom(const COOStore &coo) {
         }
     }
     for (int i = 0; i < num_nodes; ++i) {
-        CHECK_EQ(ptr_current[i], ptr_tensor_[i+1].item<long>());
+        TORCH_CHECK_EQ(ptr_current[i], ptr_tensor_[i+1].item<long>());
     }
     LOG(INFO) << "CSR complete";
     }

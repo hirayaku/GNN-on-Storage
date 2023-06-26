@@ -62,12 +62,12 @@ void testCOOStoreCreateTemp() {
 
     COOStore coo(tensor.flatten(), 2449029);
     COOStore new_coo(new_tensor.flatten(), coo.num_nodes());
-    CHECK_EQ(coo.num_edges(), new_coo.num_edges());
+    TORCH_CHECK_EQ(coo.num_edges(), new_coo.num_edges());
 
     auto edges = coo.accessor<int64_t>().slice(0, coo.num_edges());
     new_coo.accessor<int64_t>().slice_put(edges.first.data(), edges.second.data(),
         0, new_coo.num_edges());
-    CHECK_EQ(coo.accessor<int64_t>().slice(0, 100), new_coo.accessor<int64_t>().slice(0, 100));
+    TORCH_CHECK_EQ(coo.accessor<int64_t>().slice(0, 100), new_coo.accessor<int64_t>().slice(0, 100));
 
     auto new_tensor2 = gnnos::TensorStore::CreateTemp(
         tensor.metadata().path(TMPDIR).offset(8)
@@ -97,7 +97,7 @@ void testCOOStoreClone() {
     );
     auto coo_clone = COOStore(tensor.flatten(), 0);
 
-    CHECK_EQ(coo.num_edges(), coo_clone.num_edges());
+    TORCH_CHECK_EQ(coo.num_edges(), coo_clone.num_edges());
     auto edges = coo.slice(100, 200).tensor();
     auto clone_edges = coo.slice(100, 200).tensor();
     std::cout << "Comparison result: "
@@ -130,7 +130,7 @@ void testCOOStorePartition1D() {
     auto degrees_coo = degreesOf(coo);
     auto degrees_bcoo = degreesOf(bcoo);
     for (long vid = 0; vid < coo.num_nodes(); ++vid) {
-        CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
+        TORCH_CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
     }
 
     LOG(INFO) << "Degrees match; check COO blocks randomly next";
@@ -140,7 +140,7 @@ void testCOOStorePartition1D() {
         auto accessor = block.accessor<long>();
         for (int eid = 0; eid < accessor.size(); ++eid) {
             auto e = accessor[eid];
-            CHECK_EQ(assigns_vec[e.first], i);
+            TORCH_CHECK_EQ(assigns_vec[e.first], i);
         }
     }
 }
@@ -157,7 +157,7 @@ void testCOOStorePartition2D() {
     auto degrees_coo = degreesOf(coo);
     auto degrees_bcoo = degreesOf(bcoo);
     for (long vid = 0; vid < coo.num_nodes(); ++vid) {
-        CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
+        TORCH_CHECK_EQ(degrees_coo[vid], degrees_bcoo[vid]);
     }
 
     LOG(INFO) << "Degrees match; check COO blocks randomly next";
@@ -169,8 +169,8 @@ void testCOOStorePartition2D() {
             auto accessor = block.accessor<long>();
             for (int eid = 0; eid < accessor.size(); ++eid) {
                 auto e = accessor[eid];
-                CHECK_EQ(assigns_vec[e.first], from);
-                CHECK_EQ(assigns_vec[e.second], to);
+                TORCH_CHECK_EQ(assigns_vec[e.first], from);
+                TORCH_CHECK_EQ(assigns_vec[e.second], to);
             }
         }
     }
@@ -199,8 +199,8 @@ void testSaveCOOStore() {
             auto accessor = block.accessor<long>();
             for (int eid = 0; eid < accessor.size(); ++eid) {
                 auto e = accessor[eid];
-                CHECK_EQ(assigns_vec[e.first], from);
-                CHECK_EQ(assigns_vec[e.second], to);
+                TORCH_CHECK_EQ(assigns_vec[e.first], from);
+                TORCH_CHECK_EQ(assigns_vec[e.second], to);
             }
         }
     }
@@ -243,8 +243,8 @@ void testCSRToBCOO() {
             auto accessor = block.accessor<long>();
             for (int eid = 0; eid < accessor.size(); ++eid) {
                 auto e = accessor[eid];
-                CHECK_EQ(assigns_vec[e.first], from);
-                CHECK_EQ(assigns_vec[e.second], to);
+                TORCH_CHECK_EQ(assigns_vec[e.first], from);
+                TORCH_CHECK_EQ(assigns_vec[e.second], to);
             }
         }
     }
@@ -258,7 +258,7 @@ void testNodePartitions() {
     for (int i = 0; i < p.psize; ++i) {
         auto nodes = p[i];
         for (auto n : tensor_iter<int64_t>(nodes)) {
-            CHECK_EQ(assigns[n], i);
+            TORCH_CHECK_EQ(assigns[n], i);
         }
     }
 }
@@ -281,17 +281,17 @@ void testBCOOSubgraph() {
         auto degrees_2d = degreesOf(bcoo_2d_blocks);
         LOG(INFO) << "Checking Partition " << pid;
         for (long vid = 0; vid < coo.num_nodes(); ++vid) {
-            CHECK_EQ(degrees_1d[vid], degrees_2d[vid]) << "vid=" << vid;
+            TORCH_CHECK_EQ(degrees_1d[vid], degrees_2d[vid]) << "vid=" << vid;
         }
-        CHECK_EQ(std::accumulate(degrees_1d.begin(), degrees_1d.end(), 0),
+        TORCH_CHECK_EQ(std::accumulate(degrees_1d.begin(), degrees_1d.end(), 0),
             bcoo_1d.coo_block(pid).num_edges());
     }
 
     LOG(INFO) << "Getting subgraphs...";
     auto sg_2d = bcoo_2d.cluster_subgraph({0, 1});
     auto sg_1d = bcoo_1d.cluster_subgraph({0, 1});
-    CHECK_EQ(std::get<0>(sg_2d).numel(), std::get<0>(sg_1d).numel());
-    CHECK_EQ(std::get<1>(sg_2d).numel(), std::get<1>(sg_1d).numel());
+    TORCH_CHECK_EQ(std::get<0>(sg_2d).numel(), std::get<0>(sg_1d).numel());
+    TORCH_CHECK_EQ(std::get<1>(sg_2d).numel(), std::get<1>(sg_1d).numel());
 
     // bcoo_2d.cluster_subgraph({1});
     // bcoo_2d.cluster_subgraph({100});

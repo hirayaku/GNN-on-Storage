@@ -60,7 +60,7 @@ def worker_queue(dataQ: mp.Queue, notifyQ: mp.Queue, ackQ: mp.Queue):
 if __name__ == "__main__":
     torch.set_num_threads(32)
 
-    buffer = torch.empty(SIZES, dtype=torch.float)
+    buffer: torch.Tensor = torch.empty(SIZES, dtype=torch.float)
     buffer.share_memory_()
 
     context = mp.get_context('spawn')

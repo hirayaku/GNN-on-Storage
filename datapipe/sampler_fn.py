@@ -35,6 +35,7 @@ class PygNeighborSampler:
             self.sample = self._pyg_lib_sample
         except ImportError:
             self.sample = self._torch_sparse_sample
+        self.sample = self._torch_sparse_sample
 
     def __call__(self, *args, **kwargs) -> Data:
         if self.unbatch:
@@ -73,7 +74,7 @@ class PygNeighborSampler:
             self.fanout, self.replace, self.directed,
             **kwargs, **self.kw,
         )
-        row, col, node, edge = out
+        node, row, col, edge = out
         return row, col, node, edge
 
 class NodeInducedGraphSampler:

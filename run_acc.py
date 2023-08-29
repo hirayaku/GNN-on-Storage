@@ -1,5 +1,4 @@
-import os, time, random, sys, logging
-
+import os, time, random, sys, logging, json5
 main_logger = logging.getLogger()
 formatter = logging.Formatter(
     "%(asctime)s.%(msecs)03d[%(levelname)s] %(module)s: %(message)s",
@@ -7,6 +6,7 @@ formatter = logging.Formatter(
 stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setFormatter(formatter)
 main_logger.addHandler(stream_handler)
+main_logger.setLevel(logging.INFO)
 
 import numpy as np
 import torch
@@ -19,14 +19,12 @@ def train_with(conf: dict):
     env = conf['env']
     if env['verbose']:
         main_logger.setLevel(logging.DEBUG)
-    else:
-        main_logger.setLevel(logging.INFO)
     if 'cuda' not in env:
         device = torch.device('cuda:0')
     else:
         device = torch.device('cuda:{}'.format(env['cuda']))
     main_logger.info(f"Training with GPU:{device.index}")
-    
+ 
     dataset_conf, params = conf['dataset'], conf['model']
     dataset = get_dataset(dataset_conf['root'])
     indices = dataset.get_idx_split()
@@ -46,48 +44,51 @@ def train_with(conf: dict):
 
     sample_conf = conf['sample']
     if len(sample_conf['train']) == 2:
+        main_logger.info("Using the hierarchical DataLoader")
         train_loader = HierarchicalDataLoader(dataset_conf, env, 'train', sample_conf['train'])
     else:
+        main_logger.info("Using the conventional DataLoader")
         train_loader = NodeDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
     if sample_conf['eval'] is not None:
         val_loader = NodeDataLoader(dataset_conf, env, 'valid', sample_conf['eval'])
         test_loader = NodeDataLoader(dataset_conf, env, 'test', sample_conf['eval'])
-
+    
     recorder = Recorder(conf)
-    recorder.set_run(0)
-    for e in range(params['epochs']):
-        train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
-        mean_edges = train_info[2]
-        recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc}})
-        main_logger.info(
-            f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
-        )
-
-        if (e + 1) % params['eval_every'] == 0:
-            if sample_conf['eval'] is None:
-                results = eval_full(model, dataset[0], device=device,
-                                    masks=(indices['valid'], indices['test']))
-                val_loss, val_acc = results[0]
-                test_loss, test_acc = results[1]
-            else:
-                val_loss, val_acc, *_ = eval_batch(model, val_loader, device=device,
-                                                description='validation')
-                test_loss, test_acc, *_ = eval_batch(model, test_loader, device=device,
-                                                    description='test')
-            recorder.add(iters=e, data={
-                'val':    { 'loss': val_loss, 'acc': val_acc, },
-                'test':     { 'loss': test_loss, 'acc': test_acc, },
-            })
-            best_acc = recorder.current_acc()
+    for run in range(params['runs']):
+        main_logger.info(f"Starting Run No.{run}")
+        recorder.set_run(run)
+        model.reset_parameters()
+        for e in range(params['epochs']):
+            train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+            mean_edges = train_info[2]
+            recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc}})
             main_logger.info(
-                f"Current Val: {val_acc*100:.2f} | Current Test: {test_acc*100:.2f} | "
-                f"Best Val: {best_acc['val/acc']:.2f} | Test {best_acc['test/acc']:.2f}"
+                f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
             )
-    best_acc = recorder.current_acc()
-    main_logger.info(
-        "Current run finished with the following config:\n{conf}\n",
-        f"Best Val: {best_acc['val/acc']:.2f}. Final Test: {best_acc['test/acc']:.2f}"
-    )
+
+            if (e + 1) % params['eval_every'] == 0:
+                if sample_conf['eval'] is None:
+                    results = eval_full(model, dataset[0], device=device,
+                                        masks=(indices['valid'], indices['test']))
+                    val_loss, val_acc = results[0]
+                    test_loss, test_acc = results[1]
+                else:
+                    val_loss, val_acc, *_ = eval_batch(model, val_loader, devic=device,
+                                                    description='validation')
+                    test_loss, test_acc, *_ = eval_batch(model, test_loader, device=device,
+                                                        description='test')
+                recorder.add(iters=e, data={
+                    'val':    { 'loss': val_loss, 'acc': val_acc, },
+                    'test':     { 'loss': test_loss, 'acc': test_acc, },
+                })
+                best_acc = recorder.current_acc()
+                main_logger.info(
+                    f"Current Val: {val_acc*100:.2f} | Current Test: {test_acc*100:.2f} | "
+                    f"Best Val: {best_acc['val/acc']:.2f} | Test {best_acc['test/acc']:.2f}"
+                )
+
+    main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")
+    main_logger.info(f"Results: {recorder.stdmean()}")
 
 if __name__ == '__main__':
     # seed = random.randint(0,1024**3)
@@ -109,6 +110,7 @@ if __name__ == '__main__':
     # print(f"Training with GPU: {device}")
 
     conf = get_config()
+    main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
     train_with(conf)
 
     # print(f"""----Data statistics------

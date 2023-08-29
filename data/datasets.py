@@ -74,6 +74,42 @@ def load_arxiv(rootdir):
     idx = dataset.get_idx_split()
     return meta_info, data_dict, idx
 
+def load_arxiv_r(rootdir):
+    dataset = PygNodePropPredDataset(
+        name='ogbn-arxiv', root=rootdir,
+        pre_transform=T.ToUndirected(),
+    )
+    data = dataset[0]
+    meta_info = {
+        'dir_name': 'ogbn_arxiv_r',
+        'num_nodes': data.num_nodes,
+        'num_tasks': dataset.num_tasks,
+        'task_type': 'multiclass classification',
+        'num_classes': dataset.num_classes,
+        'is_hetero': dataset.is_hetero,
+        'is_directed': False,
+    }
+    data_dict = {
+        'graph': [ {
+            'format': 'coo',
+            'edge_index': [data.edge_index[0], data.edge_index[1]],
+        } ] ,
+        'node_feat': data.x,
+        'edge_feat': None,
+        'num_nodes': data.num_nodes,
+        'labels': data.y,
+    }
+    idx = dataset.get_idx_split()
+    rand_idx = torch.randperm(data.num_nodes)
+    num_train = int(data.num_nodes * 0.8)
+    num_valid = int(data.num_nodes * 0.1)
+    idx = {
+        'train': rand_idx[:num_train],
+        'valid': rand_idx[num_train:num_train+num_valid],
+        'test': rand_idx[num_train+num_valid:],
+    }
+    return meta_info, data_dict, idx
+
 def load_products(rootdir):
     dataset = PygNodePropPredDataset(name='ogbn-products', root=rootdir)
     data = dataset[0]
@@ -268,6 +304,7 @@ def load(name, root):
     load_methods = {
         'reddit': load_reddit,
         'ogbn-arxiv': load_arxiv,
+        'ogbn-arxiv-r': load_arxiv_r,
         'ogbn-products': load_products,
         'ogbn-papers100M': load_papers100m,
         'mag240m-c': load_mag240m_c,

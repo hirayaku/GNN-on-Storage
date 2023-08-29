@@ -35,7 +35,8 @@ class NodeDataLoader(object):
         batch_size = conf['batch_size']
         drop_thres = 1 if conf.get('drop_last', True) else 0
         datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
-            partial(split_fn, size=batch_size, drop_thres=drop_thres), flatten_col=1
+            # partial(split_fn, size=batch_size, drop_thres=drop_thres), flatten_col=1,
+            partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         fanout = list(map(int, conf['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout)
@@ -71,7 +72,8 @@ class NodeTorchDataLoader(object):
         index_dp = index_dp.map(make_shared)
         batch_size = conf['batch_size']
         datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
-            partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1
+            # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
+            partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         # datapipe = make_dp_worker(datapipe, self.ctx, worker_name='index_feeder') # , num_par=4)
         datapipe = datapipe.sharding_filter()
@@ -147,8 +149,9 @@ class HierarchicalDataLoader(object):
         fanout = list(map(int, conf[1]['fanout'].split(',')))
         batch_size = conf_l2['batch_size']
         datapipe = datapipe.collate(collate_fn=list).flat_map(
-            partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1)
-            # partial(even_split_fn, size=batch_size), flatten_col=1)
+            # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
+            partial(even_split_fn, size=batch_size), flatten_col=1,
+        )
         num_par = conf_l2.get('num_workers',  self.ncpus - self.cpu_i)
         sample_fn = PygNeighborSampler(fanout)
         datapipe = datapipe.par_map(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,

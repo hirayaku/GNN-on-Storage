@@ -205,7 +205,7 @@ class GAT(torch.nn.Module):
             conv.reset_parameters()
             conv.apply(init_weights)
 
-    def forward(self, x, adjs):
+    def forward_adjs(self, x, adjs):
         x = x.to(torch.float)
         end_size = adjs[-1][-1][1]
         for i, (edge_index, _, size) in enumerate(adjs):
@@ -215,6 +215,21 @@ class GAT(torch.nn.Module):
                 x = F.relu(x)
                 x = F.dropout(x, p=0.5, training=self.training)
         return torch.log_softmax(x, dim=-1)
+
+    def forward_graph(self, x, edge_index):
+        x = x.to(torch.float)
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index)
+            if i != self.num_layers - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=0.5, training=self.training)
+        return torch.log_softmax(x, dim=-1)
+
+    def forward(self, x, mfg):
+        if isinstance(mfg, list):
+            return self.forward_adjs(x, mfg)
+        else:
+            return self.forward_graph(x, mfg)
 
     # @torch.no_grad()
     # def inference(self, x_all: torch.Tensor, device: torch.cuda.device,

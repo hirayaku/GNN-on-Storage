@@ -6,7 +6,7 @@ from data.graphloader import NodePropPredDataset
 
 def get_config() -> dict:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("-c", "--config", type=str, required=True)
     args, _ = parser.parse_known_args()
     with open(args.config) as fp:
         args_dict = json5.load(fp)

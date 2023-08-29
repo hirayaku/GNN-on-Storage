@@ -1,13 +1,6 @@
 # GNN-on-Storage
 
-Prerequisites: python>=3.6, python modules: `torch, torchmetrics, dgl, tqdm, pyinstrument, mypy, ogb, tensorboard, shutils`
-
-Build `gnnos` module:
-```bash
-bash scripts/build.sh
-```
-
-Experiments: see scripts under `sbatch` folder.
+Prerequisites: python>=3.8, python modules: `torch, torchmetrics, torch_geometric, torch_sparse, tqdm, json5, pyinstrument, ogb`
 
 ## Commands to limit memory resources
 
@@ -36,10 +29,8 @@ edge_parts = [
 logger.info("Gathering completes")
 ```
 
-### One reason why torch datapipes failed
-
 Torch datapipes are composable and promising, yet it failed. One reason I suspect the cause of failure: it's really SLOW.
 
-It's slow due to the excessive decorating code. The core concept of torchdata is simple: datapipe graphs with each stage expressed as a python iterator. Note that iterating over a minimal iterator in python is in no case slow: for example, traversing a million-item list takes only 5~10 ns per iteration. Adopting the generator pattern brings flexibility in implementing datapipe stages but at a cost, generally leading to a 5~10x slowdown. Yet, up till now, we can still tolerate it somehow.
+It's slow due to the excessive decorating code. The core concept of torchdata is simple: datapipe graphs with each stage expressed as a python iterator. Note that iterating over a minimal iterator in python is in no case slow: for example, traversing a million-item list takes only 5\~10 ns per iteration. Adopting the generator pattern brings flexibility in implementing datapipe stages but at a cost, generally leading to a 5\~10x slowdown. Yet, up till now, we can still tolerate it somehow.
 
 It's the additional things that pytorch does that makes things intolerable. PyTorch datapipes by default has a lot of decorative code revolving around the core `send`/`yield` loop, which make things **~100x slower**. This overhead applies to all datapipe stages, which really sinks the datapipe performance at runtime.

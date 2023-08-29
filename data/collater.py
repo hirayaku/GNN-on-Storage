@@ -99,7 +99,8 @@ class Collator:
                     num_nodes=num_nodes,
                     part_sizes=node_part_sizes,
                     x=batch_x, y=batch_y,
-                    edge_index=edge_index, adj_t=adj_t,
+                    # edge_index=edge_index,
+                    adj_t=adj_t,
                 )
             else:
                 # don't relabel nodes, thus get original node IDs for train nodes
@@ -115,7 +116,8 @@ class Collator:
                 subgraph = Data(
                     num_nodes=self.data.num_nodes,
                     x=self.data.x, y=self.data.y,
-                    edge_index=edge_index, adj_t=adj_t,
+                    # edge_index=edge_index,
+                    adj_t=adj_t,
                 )
         finally:
             logger.debug(f"Construction done")
@@ -271,6 +273,6 @@ class CollatorPivots(Collator):
             num_pivots=num_pvt_nodes,
             part_sizes=n_part_sizes,
             x=batch_x, y=batch_y,
-            edge_index=edge_index,
+            # edge_index=edge_index,
             adj_t=adj_t,
         ), targets

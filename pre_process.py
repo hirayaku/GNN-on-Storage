@@ -32,8 +32,9 @@ def get_partitioner(dataset: NodePropPredDataset, args):
         num_labels = train_labels.max().item() + 1
         train_labels[~train_mask] = num_labels
         return P.ReFennelPartitioner(
-            data, args.pn, slack=1.2, runs=3,
+            data, args.pn, slack=1.25, runs=4,
             base=FennelStrataDegOrderPartitioner,
+            # base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
     else:
@@ -223,7 +224,7 @@ if __name__ == "__main__":
     data = dataset[0]
 
     if not args.check and not args.pivot_only:
-        print(f"#nodes: {data.num_nodes}, #edges: {data.adj_t[1].size(0)}")
+        print(f"#nodes: {data.num_nodes}, #edges: {data.adj_t.nnz()}")
 
         print(f"> Partition graph...")
         tic = time.time()

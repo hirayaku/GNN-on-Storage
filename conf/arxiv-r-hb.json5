@@ -6,10 +6,10 @@
     },
     "dataset": {
         "name": "ogbn-arxiv",
-        "root": "/mnt/md0/hb_datasets/ogbn_arxiv",
+        "root": "/mnt/md0/hb_datasets/ogbn_arxiv_r",
     },
     "model": {
-        "arch": "sage",
+        "arch": "gat",
         "num_hidden": 256,
         "num_layers": 3,
         "dropout": 0.5,

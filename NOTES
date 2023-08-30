@@ -1,0 +1,11 @@
+Output of original without changes
+
+{'mode': 'local', 'env': {'verbose': True}, 'dataset': {'name': 'ogbn-arxiv', 'root': 'output/ogbn_arxiv'}, 'model': {'arch': 'sage', 'num_hidden': 256, 'num_layers': 3, 'dropout': 0.5, 'lr': 0.001, 'runs': 5, 'epochs': 100, 'eval_every': 1, 'log_every': 100}, 'sample': {'train': [{'sampler': 'ns', 'fanout': '15,10,5', 'batch_size': 1000, 'num_samplers': 0, 'drop_last': True}], 'eval': None}}
+Best Val: 72.86. Final Test: 71.88
+
+With the Partition class
+
+{'mode': 'local', 'env': {'verbose': False}, 'dataset': {'name': 'ogbn-arxiv', 'root': 'output/ogbn_arxiv'}, 'model': {'arch': 'sage', 'num_hidden': 256, 'num_layers': 3, 'dropout': 0.5, 'lr': 0.001, 'runs': 5, 'epochs': 200, 'log_every': 100, 'eval_every': 1}, 'sample': {'train': [{'sampler': 'cluster', 'partition': 'fennel-lb', 'P': 24, 'batch_size': 3, 'pivots': True}], 'eval': None}}
+Best Val: 72.68. Final Test: 73.01
+
+

@@ -47,6 +47,7 @@ def load_reddit(rootdir):
     return meta_info, data_dict, idx
 
 def load_arxiv(rootdir):
+    print("loading arxiv...")
     dataset = PygNodePropPredDataset(
         name='ogbn-arxiv', root=rootdir,
         pre_transform=T.ToUndirected(),
@@ -72,6 +73,7 @@ def load_arxiv(rootdir):
         'labels': data.y,
     }
     idx = dataset.get_idx_split()
+    print("arxiv loaded!")
     return meta_info, data_dict, idx
 
 def load_products(rootdir):

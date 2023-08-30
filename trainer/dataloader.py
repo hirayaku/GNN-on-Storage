@@ -114,7 +114,7 @@ class PartitionDataLoader(object):
         datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
             partial(even_split_fn, size=batch_size), flatten_col=1)
         datapipe = datapipe.map_args(collate, args=(0, 1))
-        num_par = conf.get('num_workers', max(6, (self.ncpus - self.cpu_i) // 4))
+        num_par = 0 # conf.get('num_workers', max(6, (self.ncpus - self.cpu_i) // 4))
         if num_par > 0:
             datapipe = make_dp_worker(
                 datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,

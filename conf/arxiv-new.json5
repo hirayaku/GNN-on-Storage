@@ -1,8 +1,7 @@
 {
     "mode": "local",
     "env": {
-        "verbose": true,
-        // "outdir": "./archive" 
+        "verbose": false,
     },
     "dataset": {
         "name": "ogbn-arxiv",
@@ -15,18 +14,20 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 5,
-        "epochs": 100,
+        "epochs": 200,
+        "log_every" : 100,
         "eval_every": 1,
-        "log_every": 100,
     },
     "sample": {
-        "train": [{
-            "sampler": "ns",
-            "fanout": "15,10,5",
-            "batch_size": 1000,
-            "num_samplers": 0,
-            "drop_last": true,
-        }],
+        "train": [ {
+                "sampler": "cluster",
+                // "partition": "metis-tb",
+                "partition": "fennel-lb",
+                "P": 24,
+                "batch_size": 3,
+                "pivots": true,
+            }
+        ],
         "eval": null,
     }
 }

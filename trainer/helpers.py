@@ -23,13 +23,17 @@ def get_dataset(root: str):
 
 def train(model, optimizer, dataloader, device, description='train'):
     model.train()
-    minibatches = tqdm.tqdm(dataloader)
+    minibatches = tqdm.tqdm(dataloader) # prog bar
     minibatches.set_description_str(description)
     num_iters = total_loss = total_correct = total_examples = 0
     mfg_sizes = num_nodes = alive_nodes = batch_score = 0
 
-    for batch in minibatches:
-        bsize = batch.batch_size
+    for obj in minibatches:
+        batch = obj[0]
+        try:
+            bsize = batch.batch_size
+        except:
+            bsize = len(batch.y)
         dev_attrs = [key for key in batch.keys if not key.endswith('_mask')]
         batch = batch.to(device, *dev_attrs, non_blocking=True)
         optimizer.zero_grad()

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from trainer.helpers import get_config, get_model, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
-from trainer.dataloader import NodeDataLoader, HierarchicalDataLoader
+from trainer.dataloader import NodeDataLoader, HierarchicalDataLoader, PartitionDataLoader
 from trainer.recorder import Recorder
 
 def train_with(conf: dict):
@@ -45,10 +45,11 @@ def train_with(conf: dict):
     main_logger.info(f"LR scheduler: {lr_scheduler}")
 
     sample_conf = conf['sample']
-    if len(sample_conf['train']) == 2:
-        train_loader = HierarchicalDataLoader(dataset_conf, env, 'train', sample_conf['train'])
-    else:
-        train_loader = NodeDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
+    train_loader = PartitionDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
+    # if len(sample_conf['train']) == 2:
+    #     train_loader = HierarchicalDataLoader(dataset_conf, env, 'train', sample_conf['train'])
+    # else:
+    #     train_loader = NodeDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
     if sample_conf['eval'] is not None:
         val_loader = NodeDataLoader(dataset_conf, env, 'valid', sample_conf['eval'])
         test_loader = NodeDataLoader(dataset_conf, env, 'test', sample_conf['eval'])
@@ -85,7 +86,7 @@ def train_with(conf: dict):
             )
     best_acc = recorder.current_acc()
     main_logger.info(
-        "Current run finished with the following config:\n{conf}\n",
+        f"Current run finished with the following config:\n{conf}\n"
         f"Best Val: {best_acc['val/acc']:.2f}. Final Test: {best_acc['test/acc']:.2f}"
     )
 

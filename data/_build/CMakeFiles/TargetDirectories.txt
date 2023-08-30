@@ -1,5 +1,0 @@
-/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/build/CMakeFiles/fennel.dir
-/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/build/CMakeFiles/xTensor.dir
-/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/build/CMakeFiles/flatbuffer.dir
-/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/build/CMakeFiles/edit_cache.dir
-/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/build/CMakeFiles/rebuild_cache.dir

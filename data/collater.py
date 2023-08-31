@@ -3,7 +3,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import mask_to_index
 from torch_sparse import SparseTensor
-from utils import sort, iterable
+from utils import sort, parallelism
 from data.graphloader import ChunkedNodePropPredDataset
 from data.ops import scatter_append, ranges_gather, ranges_add, coo_ranges_merge
 import logging

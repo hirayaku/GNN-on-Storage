@@ -1,11 +1,11 @@
 import os, time, sys, logging, unittest, tqdm
 from functools import partial
 import torch
-import torchdata # NOTE: for prefetch
 from data.graphloader import *
 from datapipe.custom_pipes import IterableWrapper, LiteIterableWrapper, identity_fn, split_fn
 from datapipe.parallel_pipes import mp, make_dp_worker
 from trainer.dataloader import NodeDataLoader, NodeTorchDataLoader, PartitionDataLoader, HierarchicalDataLoader
+import utils
 
 logger = logging.getLogger()
 logger.level = logging.DEBUG
@@ -51,8 +51,8 @@ class TestPipe(unittest.TestCase):
         dp1 = make_dp_worker(dp1, spawn_ctx)
         dp2 = make_dp_worker(dp2, spawn_ctx)
         # we can mix spawn and fork here to save memory
-        dp1 = dp1.par_map(fn, num_par=num_workers, mp_ctx=fork_ctx)
-        dp2 = dp2.par_map(fn, num_par=num_workers, mp_ctx=fork_ctx)
+        dp1 = dp1.pmap(fn, num_par=num_workers, mp_ctx=fork_ctx)
+        dp2 = dp2.pmap(fn, num_par=num_workers, mp_ctx=fork_ctx)
         dp1.name = "dp1"
         dp2.name = "dp2"
         dp = dp1.zip(dp2)
@@ -64,8 +64,8 @@ class TestPipe(unittest.TestCase):
             print("done:", time.time() - now, "s")
     
     def test_pmap2(self):
-        dp = LiteIterableWrapper([torch.arange(8*200)]).flat_map(partial(split_fn, size=8))
-        dp = dp.par_map(identity_fn, num_par=4, mp_ctx=mp.get_context('fork'))
+        dp = LiteIterableWrapper([torch.arange(8*200)]).flatmap(partial(split_fn, size=8))
+        dp = dp.pmap(identity_fn, num_par=4, mp_ctx=mp.get_context('fork'))
         for _ in range(3):
             count = 0
             for batch in dp:
@@ -86,7 +86,7 @@ class TestPipe(unittest.TestCase):
                 print(b)
             print("done:", time.time() - now, "s")
  
-    # XXX the datapipe doesn't release memory in time
+    # FIXED the datapipe doesn't release memory in time
     def test_psample(self):
         dataloader = PartitionDataLoader(
             dataset={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
@@ -98,19 +98,19 @@ class TestPipe(unittest.TestCase):
                 "P": 1024,
                 "batch_size": 1024//8,
                 "pivots": True,
-                "num_workers": 8,
+                "num_workers": 6,
             },
         )
-        for e in range(3):
+        for e in range(1):
             now = time.time()
             logger.info(f"Epoch {e}")
-            for _ in tqdm.tqdm(dataloader):
-                pass
+            for batch in dataloader:
+                del batch
             print(f"Epoch {e} done:", time.time() - now, "s")
     
     # XXX 1. when num_intra_par == 2, dataloader gets stuck
-    # FIXED 2. par_map: some data are dropped when num_workers > 1 (mp.queue is not in-order)
-    # 3. using par_map is much slower than the torch DataLoader
+    # FIXED 2. pmap: some data are dropped when num_workers > 1 (mp.queue is not in-order)
+    # 3. using pmap is much slower than the torch DataLoader
     def test_nsample(self):
         root = '/mnt/md0/hb_datasets/ogbn_products'
         dataloader = NodeDataLoader(
@@ -121,7 +121,7 @@ class TestPipe(unittest.TestCase):
                 "sampler": "ns",
                 "batch_size": 1000,
                 "fanout": "15,10,5",
-                "num_workers": 1,
+                "num_workers": 12,
             },
         )
         for e in range(3):
@@ -190,7 +190,7 @@ class TestPipe(unittest.TestCase):
             print(f"Epoch {e} done: {time.time() - now:.2f}s. #avg-edges:", edges//iters)
 
 if __name__ == "__main__":
-    # test = unittest.TestSuite()
-    # test.addTest(TestPipe('test_nsample'))
-    # unittest.TextTestRunner().run(test)
-    unittest.main()
+    test = unittest.TestSuite()
+    test.addTest(TestPipe('test_psample'))
+    unittest.TextTestRunner().run(test)
+    # unittest.main()

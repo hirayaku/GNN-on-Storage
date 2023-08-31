@@ -8,12 +8,11 @@ print("PyTorch:", torch.__version__, *torch.__path__)
 print("PyG:", pyg.__version__, *pyg.__path__)
 print("CPU parallelism:", torch.get_num_threads())
 
-from data.graphloader import BaselineNodePropPredDataset
-from datapipe.batcher import global_batching_dp, hier_batching_dp
+from data.graphloader import NodePropPredDataset
+from shuffle import global_batching_dp, hier_batching_dp
 
-dataset = BaselineNodePropPredDataset(
-    name='ogbn-arxiv',
-    root='/opt/datasets/new',
+dataset = NodePropPredDataset(
+    root='/mnt/md0/hb_datasets/ogbn_arxiv',
     mmap=False,
 )
 assert not dataset.is_directed, "expect the dataset to be undirected"

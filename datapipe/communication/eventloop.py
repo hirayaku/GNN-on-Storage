@@ -11,8 +11,7 @@ import time
 from itertools import zip_longest
 
 import torch
-from torch.utils.data import IterDataPipe, MapDataPipe
-from datapipe import communication
+from datapipe import IterDataPipe, communication
 # from torchdata.dataloader2 import communication
 # from torchdata.dataloader2.graph._serialization import extract_wrapper
 
@@ -31,7 +30,6 @@ except ImportError:
 __all__ = [
     "DataPipeToQueuesLoop",
     "CreateProcessForDataPipeline",
-    "CreateProcessForMultipleDataPipelines",
     "CreateThreadForDataPipeline",
 ]
 
@@ -111,7 +109,7 @@ def DataPipeToQueuesLoop(source_datapipe, req_queue, res_queue, process_name, ca
     if call_on_process_init is not None:
         call_on_process_init(source_datapipe)
 
-    # NOTE: required in a fork ctx
+    # XXX could cause the process to freeze
     num_par = torch.get_num_threads()
     torch.set_num_threads(num_par)
 
@@ -132,11 +130,8 @@ def _create_datapipe_queue_loop(
     if isinstance(source_datapipe, IterDataPipe):
         pipe_type = communication.iter
         protocol_type = communication.protocol.IterDataPipeQueueProtocolServer
-    elif isinstance(source_datapipe, MapDataPipe):
-        pipe_type = communication.map  # type: ignore[misc]
-        protocol_type = communication.protocol.MapDataPipeQueueProtocolServer  # type: ignore[assignment]
     else:
-        raise Exception("Only supports IterDataPipe or MapDataPipe, got", source_datapipe)
+        raise Exception("Only supports IterDataPipe, got", source_datapipe)
 
     return pipe_type.DataPipeBehindQueues(
         source_datapipe,

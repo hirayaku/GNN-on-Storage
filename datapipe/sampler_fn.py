@@ -53,7 +53,6 @@ class PygNeighborSampler:
 
     def _pyg_lib_sample(self, data, nodes, **kwargs) -> Data:
         colptr, row, _ = data.adj_t.csr()
-        # colptr, row, perm = data.csc_data
         out = torch.ops.pyg.neighbor_sample(
             colptr, row, nodes.to(colptr.dtype),
             self.fanout, None, None, True, # csc

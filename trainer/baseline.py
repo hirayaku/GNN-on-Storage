@@ -184,7 +184,7 @@ if __name__ == '__main__':
     colptr, row, _ = to_csc(data)
     data.adj_t = SparseTensor(rowptr=colptr, col=row, sparse_sizes=data.size())
 
-    from datapipe.batcher import global_batching_dp, hier_batching_dp
+    from shuffle import global_batching_dp, hier_batching_dp
     if args.hb in ('random', 'metis', 'fennel'):
         train_blocks, assigns = make_blocks(data, train_nid, args.num_blocks, mode=args.hb)
         train_nid_dp = hier_batching_dp(

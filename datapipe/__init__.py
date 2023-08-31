@@ -1,3 +1,4 @@
+from .base_pipes import IterDataPipe, make_functional
 from multiprocessing.reduction import ForkingPickler
 import torch.multiprocessing # make sure the tensor reduction methods are registered
 

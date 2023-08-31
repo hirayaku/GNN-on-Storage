@@ -94,10 +94,19 @@ class GetNextRequest(Request):
 
 
 class GetNextResponse(Response):
-    __slots__ = "value"
+    __slots__ = "_value", "empty"
 
     def __init__(self, value):
-        self.value = value
+        self.empty = False
+        self._value = value
+    @property
+    def value(self):
+        if self.empty:
+            raise RuntimeError(f"{self.__class__}: Value already popped out.")
+        val = self._value
+        self._value = None
+        self.empty = True
+        return val
 
 
 class StopIterationResponse(Response):

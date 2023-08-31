@@ -36,8 +36,8 @@ def scatter_append(
     torch.ops.xTensor.scatter_index(scatter_pos, index, hist_cum)
     scatter(scatter_pos, src, out)
     return out, hist_cum, scatter_pos
-    # legacy implementations
     '''
+    # legacy implementations
     # group by partition assignments
     sorted_index, append_index = torch.sort(index, stable=True)
     if out is None:
@@ -96,6 +96,9 @@ def ranges_add(
         lengths: torch.Tensor,
         values: torch.Tensor,
     ) -> torch.Tensor:
+    '''
+    In-place addition to the `targets` tensor
+    '''
     assert starts.size(0) == lengths.size(0)
     assert starts.size(0) == values.size(0)
     assert (starts < targets.size(0)).all(), "out of range"

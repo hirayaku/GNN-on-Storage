@@ -12,8 +12,9 @@ from collections import deque
 from functools import partial
 from typing import Callable, Deque, List
 
-from torch.utils.data import IterDataPipe
-from torch.utils.data.graph import DataPipe
+# from torch.utils.data import IterDataPipe
+# from torch.utils.data.graph import DataPipe
+from datapipe import IterDataPipe
 # from torchdata._utils import ExceptionWrapper
 from ._utils import ExceptionWrapper
 # from torchdata.dataloader2 import communication
@@ -224,6 +225,7 @@ def DataPipeBehindQueues(
                     protocol.response_worker_exception(exc)
                     return
                 protocol.response_next(value)
+                del value   # drop reference
                 yield True  # Returns control
                 break
         else:

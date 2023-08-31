@@ -3,7 +3,7 @@ import time, math, warnings, queue, threading
 from functools import partial
 import torch
 import torch.multiprocessing as mp
-from torch.utils.data import functional_datapipe, IterDataPipe
+from datapipe.base_pipes import make_functional, IterDataPipe
 import datapipe.communication as comm
 import utils
 
@@ -20,8 +20,6 @@ def worker_init_fn(dp: IterDataPipe, num_par: Optional[int],
 
 def make_dp_worker(dp: IterDataPipe, multiprocessing_ctx, worker_name=None,
                    num_par=None, affinity=None, init_fn=None) -> IterDataPipe:
-    if affinity is not None:
-        affinity = [cpu for cpu in affinity]
     worker, req_queue, res_queue = comm.eventloop.CreateProcessForDataPipeline(
         multiprocessing_ctx, dp, process_name=worker_name,
         call_on_process_init=partial(worker_init_fn, num_par=num_par, affinity=affinity, init_fn=init_fn)
@@ -32,7 +30,7 @@ def make_dp_worker(dp: IterDataPipe, multiprocessing_ctx, worker_name=None,
     proxy_dp = comm.iter.QueueWrapper(comm.protocol.IterDataPipeQueueProtocolClient(req_queue, res_queue))
     return proxy_dp
 
-@functional_datapipe("par_map")
+@make_functional("pmap")
 class ParallelMapperDataPipe(IterDataPipe):
     '''
     Spawn `num_par` instances of `fn`, which take items from the shared `source_dp`,
@@ -120,6 +118,11 @@ class ParallelMapperDataPipe(IterDataPipe):
         thread = threading.Thread(target=self._thread_worker, daemon=True)
         thread.start()
     
+    def _process_queue_feeder(self, buf: queue.Queue):
+        while True:
+            item = buf.get()
+            self.target_queue.put(item)
+    
     def _process_loop_fn(self) -> bool:
         try:
             data = self.source_queue.get(block=True, timeout=self.QUEUE_GET_TIMEOUT)
@@ -148,6 +151,14 @@ class ParallelMapperDataPipe(IterDataPipe):
         torch.set_num_threads(self.num_intra_par)
         worker_affinity = self._worker_affinity if worker_affinity is None else worker_affinity
         utils.set_affinity(worker_affinity)
+        # # spawn a thread for enqueuing
+        # local_queue = comm.queue.ThreadingQueue()
+        # feeder = threading.Thread(
+        #     target=self._process_queue_feeder, args=(local_queue,), daemon=True
+        # )
+        # feeder.start()
+
+        # the main processing loop
         forever = True
         while forever:
             stop = self._process_loop_fn()
@@ -175,7 +186,7 @@ class ParallelMapperDataPipe(IterDataPipe):
             w.start()
         self.workers = workers
 
-@functional_datapipe("par_map2")
+@make_functional("pmapv2")
 class ParallelMapperV2DataPipe(IterDataPipe):
     '''
     Spawn `num_par` instances of `fn`, which take items from the shared `source_dp`,
@@ -264,7 +275,7 @@ class ParallelMapperV2DataPipe(IterDataPipe):
             i = (i + 1) % self.num_queues
         for source_queue in self.source_queues:
             source_queue.put(StopIteration(f"{self.__class__}: source_queue"))
-
+    
     def _create_thread_worker(self):
         thread = threading.Thread(target=self._thread_worker, daemon=True)
         thread.start()

@@ -34,15 +34,15 @@ class NodeDataLoader(object):
         index_dp = index_dp.map(make_shared)
         batch_size = conf['batch_size']
         drop_thres = 1 if conf.get('drop_last', True) else 0
-        datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
+        datapipe = datapipe.zip(index_dp).map(list).flatmap(
             # partial(split_fn, size=batch_size, drop_thres=drop_thres), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         fanout = list(map(int, conf['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout)
         num_par = conf.get('num_workers', self.ncpus - self.cpu_i)
-        datapipe = datapipe.par_map(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par,
-                                    affinity=range(self.cpu_i, self.cpu_i+num_par))
+        datapipe = datapipe.pmap(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par,
+                                 affinity=range(self.cpu_i, self.cpu_i+num_par))
 
         self.cpu_i += num_par
         self.datapipe = datapipe
@@ -71,7 +71,7 @@ class NodeTorchDataLoader(object):
             index_dp = index_dp.tensor_shuffle()
         index_dp = index_dp.map(make_shared)
         batch_size = conf['batch_size']
-        datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
+        datapipe = datapipe.zip(index_dp).map(fn=list).flatmap(
             # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
@@ -108,14 +108,13 @@ class PartitionDataLoader(object):
             pivot_dp = ObjectAsPipe(ChunkedNodePropPredDataset, pivots_dir(root, method, P),
                                     mmap={'graph': True, 'feat': False})
             datapipe = datapipe.zip(pivot_dp)
-            datapipe = datapipe.map_args(partial(CollatorPivots, split=split), args=(0,1))
+            datapipe = datapipe.map(partial(CollatorPivots, split=split), args=(0,1))
         else:
-            datapipe = datapipe.map_args(partial(Collator, split=split))
-        # datapipe = datapipe.map(fn=get_samples, output_col=-1)
+            datapipe = datapipe.map(partial(Collator, split=split))
         index_dp = TensorShuffleWrapper(torch.arange(P))
-        datapipe = datapipe.zip(index_dp).collate(collate_fn=list).flat_map(
+        datapipe = datapipe.zip(index_dp).map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1)
-        datapipe = datapipe.map_args(collate, args=(0, 1))
+        datapipe = datapipe.map(collate, args=(0, 1))
         num_par = conf.get('num_workers', max(6, (self.ncpus - self.cpu_i) // 4))
         if num_par > 0:
             datapipe = make_dp_worker(
@@ -146,16 +145,17 @@ class HierarchicalDataLoader(object):
         self.cpu_i += partition_loader.cpu_i
         # Level-2 loader, neighbor sampler
         conf_l2 = conf[1]
-        fanout = list(map(int, conf[1]['fanout'].split(',')))
+        repeats = conf_l2.get('num_repeats', 2)
         batch_size = conf_l2['batch_size']
-        datapipe = datapipe.collate(collate_fn=list).flat_map(
+        fanout = list(map(int, conf_l2['fanout'].split(',')))
+        sample_fn = PygNeighborSampler(fanout)
+        num_par = conf_l2.get('num_workers',  self.ncpus - self.cpu_i)
+        datapipe = datapipe.map(list).repeats(repeats).flatmap(
             # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
-        num_par = conf_l2.get('num_workers',  self.ncpus - self.cpu_i)
-        sample_fn = PygNeighborSampler(fanout)
-        datapipe = datapipe.par_map(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,
-                                    affinity=range(self.cpu_i, self.cpu_i+num_par))
+        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,
+                                 affinity=range(self.cpu_i, self.cpu_i+num_par))
         self.cpu_i += num_par
 
         self.batch_size = (partition_loader.batch_size, batch_size)

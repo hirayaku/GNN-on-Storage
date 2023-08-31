@@ -1,10 +1,9 @@
-from typing import final, Iterator, Optional, TypeVar, Callable
+from typing import final, Iterator, Optional, TypeVar, Callable, Tuple, Sized, Union, Dict, Any
 from functools import partial
-import copy
+import copy, warnings
 import torch
-from torch.utils.data import functional_datapipe, IterDataPipe, DataChunk
-from torch.utils.data.datapipes.iter import IterableWrapper
-from torch.utils.data.datapipes.map import SequenceWrapper
+# from torch.utils.data.dataloader import default_collate
+from datapipe.base_pipes import IterDataPipe, make_functional
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
@@ -16,8 +15,6 @@ __all__ = [
     'even_split_fn',
     'IterableWrapper',
     'LiteIterableWrapper',
-    'SequenceWrapper',
-    'FullShuffleWrapper',
     'TensorShuffleWrapper',
     'ObjectAsPipe',
 ]
@@ -68,20 +65,53 @@ def even_split_fn(input, size: int):
 # def nested_batch_with_size(size, drop_thres=0.0):
 #     return partial(nested_batch, inner_batch_size=size, drop_thres=drop_thres)
 
+class IterableWrapper(IterDataPipe):
+    r"""
+    Wraps an iterable object to create an IterDataPipe.
+
+    Args:
+        iterable: Iterable object to be wrapped into an IterDataPipe
+        deepcopy: Option to deepcopy input iterable object for each
+            iterator. The copy is made when the first element is read in ``iter()``.
+
+    .. note::
+        If ``deepcopy`` is explicitly set to ``False``, users should ensure
+        that the data pipeline doesn't contain any in-place operations over
+        the iterable instance to prevent data inconsistency across iterations.
+
+    Example:
+        >>> # xdoctest: +SKIP
+        >>> from torchdata.datapipes.iter import IterableWrapper
+        >>> dp = IterableWrapper(range(10))
+        >>> list(dp)
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    """
+    def __init__(self, iterable, deepcopy=True):
+        self.iterable = iterable
+        self.deepcopy = deepcopy
+
+    def __iter__(self):
+        source_data = self.iterable
+        if self.deepcopy:
+            try:
+                source_data = copy.deepcopy(self.iterable)
+            # For the case that data cannot be deep-copied,
+            # all in-place operations will affect iterable variable.
+            # When this DataPipe is iterated second time, it will
+            # yield modified items.
+            except TypeError:
+                warnings.warn(
+                    "The input iterable can not be deepcopied, "
+                    "please be aware of in-place modification would affect source data."
+                )
+        yield from source_data
+
+    def __len__(self):
+        return len(self.iterable)
+
 class LiteIterableWrapper(IterableWrapper):
     def __init__(self, iterable):
         super().__init__(iterable, deepcopy=False)
-
-class FullShuffleWrapper(IterDataPipe):
-    def __init__(self, sequence):
-        self._len = len(sequence)
-        self.shuffled_dp = SequenceWrapper(sequence).shuffle()
-
-    def __iter__(self):
-        return iter(self.shuffled_dp)
-
-    def __len__(self):
-        return self._len
 
 class TensorShuffleWrapper(IterDataPipe):
     def __init__(self, tensor: torch.Tensor):
@@ -122,45 +152,14 @@ class TensorShuffleWrapper(IterDataPipe):
         self._rng = torch.Generator()
         self._rng.set_state(self._rng_state)
 
-@functional_datapipe("tensor_batch")
-class TensorBatcher(IterDataPipe):
-    def __init__(self, tensor_dp, batch_size, drop_last=False, copy=False):
-        self.tensor_dp = tensor_dp
-        self.batch_size = batch_size
-        self.drop_last = drop_last
-        self.copy = copy
-
-    def __iter__(self):
-        for tensor in self.tensor_dp:
-            start = 0
-            size = len(tensor)
-            batch_size = self.batch_size
-            while start + batch_size < size:
-                item = tensor[start : start+batch_size]
-                if self.copy:
-                    item = item.detach().clone()
-                yield item
-                start += batch_size
-            if start < size and not self.drop_last:
-                item = tensor[start:]
-                if self.copy:
-                    item = item.detach().clone()
-                yield item
-
-    def __len__(self):
-        _len = len(self.tensor_dp) // self.batch_size
-        if _len * self.batch_size != len(self.tensor_dp) and not self.drop_last:
-            _len += 1
-        return _len
-
-@functional_datapipe("tensor_shuffle")
-class InBatchTensorShufflerIterDataPipe(IterDataPipe[DataChunk[T_co]]):
+@make_functional("tensor_shuffle")
+class InBatchTensorShufflerIterDataPipe(IterDataPipe):
     '''
     InBatchShuffler except that
     - each item in the datapipe is a torch tensor
     - torch.Generator used as the RNG
     '''
-    def __init__(self, datapipe: IterDataPipe[DataChunk[T_co]]):
+    def __init__(self, datapipe: IterDataPipe):
         self.datapipe = datapipe
         self._enabled = True
         self._seed: Optional[int] = None
@@ -174,7 +173,7 @@ class InBatchTensorShufflerIterDataPipe(IterDataPipe[DataChunk[T_co]]):
         self._seed = seed
         return self
 
-    def __iter__(self) -> Iterator[DataChunk[T_co]]:
+    def __iter__(self) -> Iterator:
         if not self._enabled:
             for batch in self.datapipe:
                 yield batch
@@ -241,25 +240,47 @@ class ObjectAsPipe(IterDataPipe):
     def __len__(self):
         return 1
 
+@make_functional('zip')
+class ZipperIterDataPipe(IterDataPipe[Tuple[T_co]]):
+    datapipes: Tuple[IterDataPipe]
+
+    def __init__(self, *datapipes: IterDataPipe):
+        if not all(isinstance(dp, IterDataPipe) for dp in datapipes):
+            raise TypeError("All inputs are required to be `IterDataPipe` "
+                            "for `ZipIterDataPipe`.")
+        super().__init__()
+        self.datapipes = datapipes  # type: ignore[assignment]
+
+    def __iter__(self) -> Iterator[Tuple[T_co]]:
+        iterators = [iter(datapipe) for datapipe in self.datapipes]
+        yield from zip(*iterators)
+
+    def __len__(self) -> int:
+        if all(isinstance(dp, Sized) for dp in self.datapipes):
+            return min(len(dp) for dp in self.datapipes)
+        else:
+            raise TypeError("{} instance doesn't have valid length".format(type(self).__name__))
+
 # the following pipes are borrowed from torchdata
-@functional_datapipe("repeats")
+@make_functional("repeats")
 class RepeaterIterDataPipe(IterDataPipe[T_co]):
     def __init__(self, source_datapipe: IterDataPipe[T_co], times: int) -> None:
         self.source_datapipe: IterDataPipe[T_co] = source_datapipe
         self.times: int = times
-        if times <= 1:
-            raise ValueError(f"The number of repetition must be > 1, got {times}")
+        if times < 1:
+            raise ValueError(f"The number of repetition must be >= 1, got {times}")
 
     def __iter__(self) -> Iterator[T_co]:
         for element in self.source_datapipe:
             for _ in range(self.times):
                 yield element
+            del element
 
     def __len__(self) -> int:
         return self.times * len(self.source_datapipe)
 
-@functional_datapipe("map_args")
-class MapperArgsIterDataPipe(IterDataPipe[T_co]):
+@make_functional("map")
+class MapperIterDataPipe(IterDataPipe[T_co]):
     datapipe: IterDataPipe
     fn: Optional[Callable]
 
@@ -271,19 +292,23 @@ class MapperArgsIterDataPipe(IterDataPipe[T_co]):
         self.args = args 
 
     def __iter__(self) -> Iterator[T_co]:
-        for d in self.datapipe:
-            if self.args is None:
+        if self.args is None:
+            for d in self.datapipe:
                 yield self.fn(d)
-            elif isinstance(self.args, tuple):
-                args = tuple(d[i] for i in self.args)
-                yield self.fn(*args)
-            else:
+                del d
+        elif isinstance(self.args, tuple) or isinstance(self.args, list):
+            for d in self.datapipe:
+                yield self.fn(*(d[i] for i in self.args))
+                del d
+        else:
+            for d in self.datapipe:
                 yield self.fn(d[self.args])
+                del d
 
     def __len__(self) -> int:
         return len(self.datapipe)
 
-@functional_datapipe("flat_map")
+@make_functional("flatmap")
 class FlatMapperIterDataPipe(IterDataPipe[T_co]):
     datapipe: IterDataPipe
     fn: Optional[Callable]
@@ -301,12 +326,15 @@ class FlatMapperIterDataPipe(IterDataPipe[T_co]):
         if self.flatten_col is None:
             for data in self.datapipe:
                 yield from self.fn(data)
+                del data
         else:
             for data in self.datapipe:
                 for item in self.fn(data[self.flatten_col]):
                     data_copy = copy.copy(data)
                     data_copy[self.flatten_col] = item
                     yield data_copy
+                    del data_copy
+                del data
 
 
     def __len__(self) -> int:
@@ -314,3 +342,38 @@ class FlatMapperIterDataPipe(IterDataPipe[T_co]):
             raise TypeError(f"{type(self).__name__}'s length relies on the output of its function.")
         else:
             return len(self.datapipe) * self.fn_size
+
+@make_functional("tensor_batch")
+class TensorBatcher(IterDataPipe):
+    '''
+    tensor_batch is just a specialized flatmap
+    '''
+    def __init__(self, tensor_dp, batch_size, drop_last=False, copy=False):
+        self.tensor_dp = tensor_dp
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.copy = copy
+
+    def __iter__(self):
+        for tensor in self.tensor_dp:
+            start = 0
+            size = len(tensor)
+            batch_size = self.batch_size
+            while start + batch_size < size:
+                item = tensor[start : start+batch_size]
+                if self.copy:
+                    item = item.detach().clone()
+                yield item
+                start += batch_size
+            if start < size and not self.drop_last:
+                item = tensor[start:]
+                if self.copy:
+                    item = item.detach().clone()
+                yield item
+            del tensor
+
+    def __len__(self):
+        _len = len(self.tensor_dp) // self.batch_size
+        if _len * self.batch_size != len(self.tensor_dp) and not self.drop_last:
+            _len += 1
+        return _len

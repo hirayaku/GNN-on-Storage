@@ -56,14 +56,18 @@ def get_affinity():
 def set_affinity(cpus: list[int]):
     p = psutil.Process()
     p.cpu_affinity(cpus)
-
-import resource
 def mem_usage():
-    usage=resource.getrusage(resource.RUSAGE_SELF)
-    return usage[2]/1024.0
+    p = psutil.Process()
+    mem = p.memory_info().rss
+    for child in p.children(recursive=True):
+        try:
+            mem += child.memory_info().rss
+        except psutil.NoSuchProcess:
+            pass
+    return mem / 1e6
 def report_mem(point=""):
-    usage=resource.getrusage(resource.RUSAGE_SELF)
-    print('%s: mem=%s MB' % (point, usage[2]/1024.0 ))
+    mem = mem_usage()
+    print(point, f'mem={mem:.2f} MB')
 
 from scipy.stats import wasserstein_distance
 def emd(input, target, n_classes):

@@ -76,7 +76,7 @@ class NodeTorchDataLoader(object):
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         # datapipe = make_dp_worker(datapipe, self.ctx, worker_name='index_feeder') # , num_par=4)
-        datapipe = datapipe.sharding_filter()
+        # datapipe = datapipe.sharding_filter()
 
         fanout = list(map(int, conf['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout, unbatch=True)
@@ -115,7 +115,7 @@ class PartitionDataLoader(object):
         datapipe = datapipe.zip(index_dp).map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1)
         datapipe = datapipe.map(collate, args=(0, 1))
-        num_par = conf.get('num_workers', max(6, (self.ncpus - self.cpu_i) // 4))
+        num_par = conf.get('num_workers', 0)
         if num_par > 0:
             datapipe = make_dp_worker(
                 datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,
@@ -145,7 +145,7 @@ class HierarchicalDataLoader(object):
         self.cpu_i += partition_loader.cpu_i
         # Level-2 loader, neighbor sampler
         conf_l2 = conf[1]
-        repeats = conf_l2.get('num_repeats', 2)
+        repeats = conf_l2.get('num_repeats', 1)
         batch_size = conf_l2['batch_size']
         fanout = list(map(int, conf_l2['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout)

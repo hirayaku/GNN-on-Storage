@@ -1,5 +1,5 @@
 from typing import Callable, Any
-import copy
+import copy, warnings
 import torch
 from torch_geometric.data import Data
 from torch_geometric.typing import Tensor, OptTensor
@@ -34,8 +34,8 @@ class PygNeighborSampler:
             import pyg_lib
             self.sample = self._pyg_lib_sample
         except ImportError:
+            warnings.warn("pyg-lib not found, using the legacy sampler in pytorch_sparse")
             self.sample = self._torch_sparse_sample
-        self.sample = self._torch_sparse_sample
 
     def __call__(self, *args, **kwargs) -> Data:
         if self.unbatch:

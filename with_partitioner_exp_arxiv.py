@@ -141,8 +141,12 @@ def train_custom_partitioner(epoch):
     for obj in train_loader:
         optimizer.zero_grad()
 
+        # print(obj[0].adj_t)
+
         # Memory-efficient aggregations:
         data = transform(obj[0])
+        # print(data.get_device())
+        # data = obj[0]
         train_mask = torch.zeros(obj[0].x.shape[0], dtype=torch.bool).to(device)
         train_mask[obj[1]] = 1
 
@@ -187,9 +191,9 @@ def train_custom_partitioner(epoch):
         optimizer.step()
 
         total_loss += float(loss) * int(
-            data.train_mask[rand_unlabelled_mask_full].sum()
+            train_mask[rand_unlabelled_mask_full].sum()
         )
-        total_examples += int(data.train_mask[rand_unlabelled_mask_full].sum())
+        total_examples += int(train_mask[rand_unlabelled_mask_full].sum())
         pbar.update(1)
 
     pbar.close()
@@ -284,7 +288,7 @@ def main():
     # lr = 0.002
 
     import torch
-    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu") # f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     transform = T.Compose([T.ToDevice(device), T.ToSparseTensor()])
     dataset = PygNodePropPredDataset(
         "ogbn-arxiv",  # root,
@@ -352,10 +356,10 @@ def main():
             main_logger.setLevel(logging.DEBUG)
         else:
             main_logger.setLevel(logging.INFO)
-        if 'cuda' not in env:
-            device = torch.device('cuda:0')
-        else:
-            device = torch.device('cuda:{}'.format(env['cuda']))
+        # if 'cuda' not in env:
+        #     device = torch.device('cuda:0')
+        # else:
+        device = torch.device("cpu") # 'cuda:{}'.format(env['cuda']))
         main_logger.info(f"Training with GPU:{device.index}")
 
          
@@ -364,17 +368,17 @@ def main():
         indices = dataset_upd.get_idx_split()
         out_feats = dataset_upd.num_classes
         in_feats = dataset_upd[0].x.shape[1]
-        model = get_model(in_feats, out_feats, params)
-        model = model.to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
-        if params.get('lr_schedule', None) == 'plateau':
-            lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer=optimizer, factor=params['lr_decay'],
-                patience=params['lr_step'],
-            )
-        else:
-            lr_scheduler = None
-        main_logger.info(f"LR scheduler: {lr_scheduler}")
+        # model = get_model(in_feats, out_feats, params)
+        # model = model.to(device)
+        # optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
+        # if params.get('lr_schedule', None) == 'plateau':
+        #     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #         optimizer=optimizer, factor=params['lr_decay'],
+        #         patience=params['lr_step'],
+        #     )
+        # else:
+        #     lr_scheduler = None
+        # main_logger.info(f"LR scheduler: {lr_scheduler}")
 
         sample_conf = conf['sample']
         train_loader = PartitionDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
@@ -414,6 +418,7 @@ def main():
         input_drop=0.25,
         edge_drop=0.3,
         use_attn_dst=False,
+        # use_pyg=True, # USING PYG NOW!!
     ).to(device)
 
     threshold = config.threshold

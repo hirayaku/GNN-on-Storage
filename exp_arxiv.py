@@ -299,6 +299,7 @@ def main():
         input_drop=0.25,
         edge_drop=0.3,
         use_attn_dst=False,
+        use_pyg=True, # USING PYG NOW!!
     ).to(device)
 
     threshold = config.threshold

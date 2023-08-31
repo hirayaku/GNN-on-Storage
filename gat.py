@@ -374,6 +374,81 @@ class _GATConvDGL(nn.Module):
             return rst
 
 
+class GATConvPyG(nn.Module):
+    def __init__(
+        self,
+        in_feats,
+        out_feats,
+        num_heads=1,
+        attn_drop=0.0,
+        edge_drop=0.0,
+        negative_slope=0.2,
+        residual=False,
+        activation=None,
+        use_symmetric_norm=False,
+    ):
+        from torch_geometric.nn import GATConv, SAGEConv
+        super(GATConvPyG, self).__init__()
+        self._num_heads = num_heads
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self._use_symmetric_norm = use_symmetric_norm
+        self.gat = GATConv(
+            self._in_feats, self._out_feats, num_heads,
+            negative_slope=negative_slope, attn_drop=attn_drop,
+            bias=False
+        )
+        self.edge_drop = edge_drop
+        if residual:
+            self.res_fc = nn.Linear(self._in_feats, num_heads * out_feats, bias=False)
+        else:
+            self.register_buffer("res_fc", None)
+        self._activation = activation
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        gain = nn.init.calculate_gain("relu")
+        self.gat.reset_parameters()
+        if isinstance(self.res_fc, nn.Linear):
+            nn.init.xavier_normal_(self.res_fc.weight, gain=gain)
+
+    # TODO: perm should be used to help with edge_drop
+    def forward(self, feat, edge_index, perm=None):
+        from torch_geometric.utils import dropout_adj, degree
+        src, dst, _ = edge_index.coo()
+        if self._use_symmetric_norm:
+            degs = degree(src, edge_index.size(0)).float().clamp(min=1)
+            norm = torch.pow(degs, -0.5)
+            shp = norm.shape + (1,) * (feat.dim() - 1)
+            norm = torch.reshape(norm, shp)
+            feat = feat * norm
+
+        # edge_index_drop, _ = dropout_adj(
+        #     edge_index,
+        #     p=self.edge_drop,
+        #     num_nodes=edge_index.size(0),
+        #     training=self.training
+        # )
+        rst = self.gat(feat, edge_index).view(-1, self._num_heads, self._out_feats)
+
+        if self._use_symmetric_norm:
+            degs = degree(dst, edge_index.size(1)).float().clamp(min=1)
+            norm = torch.pow(degs, 0.5)
+            shp = norm.shape + (1,) * (rst.dim() - 1)
+            norm = torch.reshape(norm, shp)
+            rst = rst * norm
+
+        # residual
+        if self.res_fc is not None:
+            resval = self.res_fc(feat).view(feat.shape[0], -1, self._out_feats)
+            rst = rst + resval
+
+        # activation
+        if self._activation is not None:
+            rst = self._activation(rst)
+        return rst
+
+
 # NOTE: IMPORTANT!!!!!!
 class CustomGAT(nn.Module):
     def __init__(
@@ -407,20 +482,36 @@ class CustomGAT(nn.Module):
             out_hidden = n_hidden if i < n_layers - 1 else n_classes
             num_heads = n_heads if i < n_layers - 1 else 1
             out_channels = n_heads
-
-            self.convs.append(
-                # GATConvDGL(
-                GATConv(
-                    in_hidden,
-                    out_hidden,
-                    num_heads=num_heads,
-                    attn_drop=attn_drop,
-                    edge_drop=edge_drop,
-                    use_attn_dst=use_attn_dst,
-                    use_symmetric_norm=use_symmetric_norm,
-                    residual=True,
+    
+            if use_pyg:
+                self.convs.append(
+                    GATConvPyG(
+                        in_hidden,
+                        out_hidden,
+                        num_heads=num_heads,
+                        attn_drop=attn_drop,
+                        edge_drop=edge_drop,
+                        # use_attn_dst=use_attn_dst,
+                        use_symmetric_norm=use_symmetric_norm,
+                        residual=True,
+                    )
                 )
-            )
+
+ 
+            else:
+                self.convs.append(
+                    # GATConvDGL(
+                    GATConv(
+                        in_hidden,
+                        out_hidden,
+                        num_heads=num_heads,
+                        attn_drop=attn_drop,
+                        edge_drop=edge_drop,
+                        use_attn_dst=use_attn_dst,
+                        use_symmetric_norm=use_symmetric_norm,
+                        residual=True,
+                    )
+                )
 
             if i < n_layers - 1:
                 self.batch_norms.append(nn.BatchNorm1d(out_channels * out_hidden))

@@ -28,12 +28,8 @@ def train(model, optimizer, dataloader, device, description='train'):
     num_iters = total_loss = total_correct = total_examples = 0
     mfg_sizes = num_nodes = alive_nodes = batch_score = 0
 
-    for obj in minibatches:
-        batch = obj[0]
-        try:
-            bsize = batch.batch_size
-        except:
-            bsize = len(batch.y)
+    for batch in minibatches:
+        bsize = batch.batch_size
         dev_attrs = [key for key in batch.keys if not key.endswith('_mask')]
         batch = batch.to(device, *dev_attrs, non_blocking=True)
         optimizer.zero_grad()
@@ -61,6 +57,51 @@ def train(model, optimizer, dataloader, device, description='train'):
         num_nodes / num_iters, alive_nodes / num_iters, # nodes, alive_nodes
         mfg_sizes / num_iters, batch_score / num_iters,
     )
+
+def train_partitioner(model, optimizer, dataloader, device, description='train'):
+    model.train()
+    minibatches = tqdm.tqdm(dataloader) # prog bar
+    minibatches.set_description_str(description)
+    num_iters = total_loss = total_correct = total_examples = 0
+    mfg_sizes = num_nodes = alive_nodes = batch_score = 0
+
+    for batch in minibatches:
+        num_train = len(batch[1])
+        # idx = batch[1]
+        train_mask = torch.zeros(len(batch[0].y), dtype=torch.bool).to(device)
+        train_mask[batch[1]] = 1
+        batch = batch[0]
+        dev_attrs = [key for key in batch.keys if not key.endswith('_mask')]
+        batch = batch.to(device, *dev_attrs, non_blocking=True)
+        optimizer.zero_grad()
+        y = batch.y[train_mask].long().view(-1)
+        y_hat = model(batch.x, batch.adj_t)[train_mask]
+        # y = batch.y[idx].long().view(-1)
+        # y_hat = model(batch.x, batch.adj_t)[idx]
+        loss = F.nll_loss(y_hat, y)
+        loss.backward()
+        optimizer.step()
+        # collect stats
+        num_iters += 1
+        total_loss += float(loss) * num_train
+        batch_correct = int((y_hat.argmax(dim=-1) == y).sum())
+        total_correct += batch_correct
+        total_examples += num_train
+        mfg_sizes += batch.adj_t.nnz()
+        num_nodes += batch.num_nodes
+        if 'alive_nodes' in batch:
+            alive_nodes += batch.alive_nodes
+        if 'quality_score' in batch:
+            batch_score += batch.quality_score
+
+    train_acc = total_correct / total_examples
+    return (
+        total_loss / total_examples, train_acc,         # loss, acc
+        num_nodes / num_iters, alive_nodes / num_iters, # nodes, alive_nodes
+        mfg_sizes / num_iters, batch_score / num_iters,
+    )
+
+
 
 @torch.no_grad()
 def eval_batch(model, dataloader, device, description='eval'):

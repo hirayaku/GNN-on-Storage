@@ -11,7 +11,7 @@ main_logger.addHandler(stream_handler)
 import numpy as np
 import torch
 from trainer.helpers import get_config, get_model, get_dataset
-from trainer.helpers import train, eval_batch, eval_full
+from trainer.helpers import train, eval_batch, eval_full, train_partitioner
 from trainer.dataloader import NodeDataLoader, HierarchicalDataLoader, PartitionDataLoader
 from trainer.recorder import Recorder
 
@@ -57,7 +57,8 @@ def train_with(conf: dict):
     recorder = Recorder(conf)
     recorder.set_run(0)
     for e in range(params['epochs']):
-        train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+        # train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+        train_loss, train_acc, *train_info = train_partitioner(model, optimizer, train_loader, device=device)
         mean_edges = train_info[2]
         recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc}})
         main_logger.info(

@@ -1,0 +1,20 @@
+[
+{
+  "directory": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data",
+  "command": "/usr/bin/c++ -DUSE_C10D_GLOO -DUSE_DISTRIBUTED -DUSE_RPC -DUSE_TENSORPIPE -Dfennel_EXPORTS -I/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -isystem /home/genericp3rson/miniconda3/envs/gnnos/lib/python3.11/site-packages/torch/include -isystem /usr/include/python3.10  -fopenmp -std=gnu++14 -fPIC -D_GLIBCXX_USE_CXX11_ABI=1 -o CMakeFiles/fennel.dir/csrc/fennel.cpp.o -c /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/fennel.cpp",
+  "file": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/fennel.cpp",
+  "output": "CMakeFiles/fennel.dir/csrc/fennel.cpp.o"
+},
+{
+  "directory": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data",
+  "command": "/usr/bin/c++ -DUSE_C10D_GLOO -DUSE_DISTRIBUTED -DUSE_RPC -DUSE_TENSORPIPE -DxTensor_EXPORTS -I/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -isystem /home/genericp3rson/miniconda3/envs/gnnos/lib/python3.11/site-packages/torch/include -isystem /usr/include/python3.10  -fopenmp -std=gnu++14 -fPIC -D_GLIBCXX_USE_CXX11_ABI=1 -o CMakeFiles/xTensor.dir/csrc/ext_tensor.cpp.o -c /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/ext_tensor.cpp",
+  "file": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/ext_tensor.cpp",
+  "output": "CMakeFiles/xTensor.dir/csrc/ext_tensor.cpp.o"
+},
+{
+  "directory": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data",
+  "command": "/usr/bin/c++ -DUSE_C10D_GLOO -DUSE_DISTRIBUTED -DUSE_RPC -DUSE_TENSORPIPE -DxTensor_EXPORTS -I/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include -isystem /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -isystem /home/genericp3rson/miniconda3/envs/gnnos/lib/python3.11/site-packages/torch/include -isystem /usr/include/python3.10  -fopenmp -std=gnu++14 -fPIC -D_GLIBCXX_USE_CXX11_ABI=1 -o CMakeFiles/xTensor.dir/csrc/ext_ops.cpp.o -c /home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/ext_ops.cpp",
+  "file": "/home/genericp3rson/Downloads/new_stuff/GNN-on-Storage/data/csrc/ext_ops.cpp",
+  "output": "CMakeFiles/xTensor.dir/csrc/ext_ops.cpp.o"
+}
+]

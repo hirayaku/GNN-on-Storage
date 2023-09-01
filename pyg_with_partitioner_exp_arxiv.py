@@ -217,11 +217,12 @@ def test(epoch):
         data = transform(data)
 
         # out = model(data.x, data.adj_t)
+        data.n_id = torch.arange(data.train_mask.shape[0]).to(device)
 
-        new_inputs = add_labels(data.x, data.y, data.n_id_all[data.train_mask])
+        new_inputs = add_labels(data.x, data.y, data.n_id[data.train_mask])
         out = model(new_inputs, data.adj_t)  # .argmax(dim=-1, keepdim=True)
 
-        unlabel_idx = data.n_id_all[data.valid_mask | data.test_mask]
+        unlabel_idx = data.n_id[data.valid_mask | data.test_mask]
         for _ in range(1):
             new_inputs[unlabel_idx, -n_classes:] = F.softmax(out[unlabel_idx], dim=-1)
             out = model(new_inputs, data.adj_t)
@@ -387,7 +388,7 @@ def main():
 
     # Increase the num_parts of the test loader if you cannot fit
     # the full batch graph into your GPU:
-    test_loader = RandomNodeLoader(data, num_parts=1) 
+    test_loader = RandomNodeLoader(data, num_parts=2) # NOTE: EDITED THE NUMBER OF PARTS!
 
     relu = torch.nn.ReLU()
 
@@ -418,6 +419,7 @@ def main():
         input_drop=0.25,
         edge_drop=0.3,
         use_attn_dst=False,
+        use_pyg=True, # USING PYG NOW!!
     ).to(device)
 
     threshold = config.threshold

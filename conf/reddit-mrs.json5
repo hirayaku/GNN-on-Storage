@@ -5,8 +5,8 @@
         "outdir": "./logdir/acc",
     },
     "dataset": {
-        "name": "ogbn-arxiv",
-        "root": "/mnt/md0/hb_datasets/ogbn_arxiv_r",
+        "name": "reddit",
+        "root": "/mnt/md0/hb_datasets/reddit",
     },
     "model": {
         "arch": "sage",
@@ -15,16 +15,16 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 5,
-        "epochs": 100,
+        "epochs": 50,
         "eval_every": 1,
     },
     "sample": {
         "train": [ {
                 "sampler": "cluster",
                 "partition": "rand",
-                "P": 64,
-                "batch_size": 4,
-                "num_repeats": 2,
+                "P": 24,
+                "batch_size": 3,
+                "num_workers": 4,
             }, {
                 "sampler": "ns",
                 "fanout": "15,10,5",

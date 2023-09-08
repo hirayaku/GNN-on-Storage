@@ -109,9 +109,9 @@ def DataPipeToQueuesLoop(source_datapipe, req_queue, res_queue, process_name, ca
     if call_on_process_init is not None:
         call_on_process_init(source_datapipe)
 
-    # XXX could cause the process to freeze
-    num_par = torch.get_num_threads()
-    torch.set_num_threads(num_par)
+    # # XXX could cause the process to freeze
+    # num_par = torch.get_num_threads()
+    # torch.set_num_threads(num_par)
 
     loop = _create_datapipe_queue_loop(source_datapipe, req_queue, res_queue, process_name, blocking_request_get=True)
 

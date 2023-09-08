@@ -5,7 +5,7 @@ from torch_geometric.data import Data
 from torch_sparse import SparseTensor
 from utils import sort, mem_usage
 from data.datasets import serialize
-from data.io import TensorMeta, TensorType, DtypeDecoder
+from data.io import TensorMeta, TensorType, DtypeDecoder, MmapTensor
 from data.io import load_tensor, madvise, MADV_OPTIONS
 import logging
 logger = logging.getLogger()
@@ -96,10 +96,6 @@ class NodePropPredDataset(object):
         for graph in graph_dicts:
             edge_format = graph['format']
             if edge_format in formats_to_load:
-                # TODO when creating the SparseTensor object, we set is_sorted to True to
-                # avoid triggering the internal sorting by torch_sparse
-                # note that this would potentially cause bugs for certain operations and
-                # has to be fixed later, e.g. add self-loops
                 if edge_format == 'coo':
                     coo_sorted = graph.get('sorted', None)
                     src = self.tensor_from_meta(graph['edge_index'][0], self.graph_mode)
@@ -107,21 +103,15 @@ class NodePropPredDataset(object):
                     self.data.edge_index = (src, dst)
                     self.formats[edge_format] = True
                 elif edge_format == 'csc':
-                    ptr = self.tensor_from_meta(graph['adj_t'][0], self.graph_mode)
+                    ptr = self.tensor_from_meta(graph['adj_t'][0])
                     ids = self.tensor_from_meta(graph['adj_t'][1], self.graph_mode)
                     self.data.adj_t = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
                     self.formats[edge_format] = True
-                    # if not self.is_directed:
-                    #     self.data.adj = self.data.adj_t
-                    #     self.formats['csr'] = True
                 elif edge_format == 'csr':
-                    ptr = self.tensor_from_meta(graph['adj'][0], self.graph_mode)
+                    ptr = self.tensor_from_meta(graph['adj'][0])
                     ids = self.tensor_from_meta(graph['adj'][1], self.graph_mode)
                     self.data.adj = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
                     self.formats[edge_format] = True
-                    # if not self.is_directed:
-                    #     self.data.adj_t = self.data.adj
-                    #     self.formats['csc'] = True
             else:
                 logger.info(f"Skipping graph data of format \"{edge_format}\"")
         
@@ -131,31 +121,39 @@ class NodePropPredDataset(object):
         if (need_csc or need_csr) and self.create_formats:
             if 'coo' not in self.formats or self.formats['coo'] is False:
                 raise ValueError(f"COO graph not found in {self.root}")
+            if self.num_nodes >= (2**63)**0.5:
+                raise RuntimeError("Can't handle graph with more than 2^31.5 nodes yet")
             if need_csc:
+                # TODO external sort
                 src, dst = self.data.edge_index
-                # TODO 1: external impl (external sort)
-                # TODO 2: sort dst * num_nodes + src instead to get fully sorted csc;
-                #         do the same in collater to avoid the risk of setting `is_sorted``=True
-                if coo_sorted != 'dst':
-                    s_dst, indices = sort(dst)
-                    s_src = src[indices]
-                    self.data.edge_index = (s_src, s_dst)
-                    coo_sorted = 'dst'
-                ptr = torch.ops.torch_sparse.ind2ptr(self.data.edge_index[1], num_nodes)
-                self.data.adj_t = SparseTensor(rowptr=ptr, col=self.data.edge_index[0],
-                                               sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
+                to_sort = MmapTensor(TensorMeta.like(dst).temp_())
+                to_sort.copy_(dst)
+                to_sort *= self.num_nodes
+                to_sort += src
+                _, indices = sort(to_sort)
+                del _, to_sort
+                s_src = src[indices]
+                s_dst = dst[indices]
+                del indices
+                self.data.edge_index = (s_src, s_dst)
+                coo_sorted = 'dst'
+                ptr = torch.ops.torch_sparse.ind2ptr(s_dst, num_nodes)
+                self.data.adj_t = SparseTensor(rowptr=ptr, col=s_src,
+                    sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
                 if need_csr and not self.is_directed:
                     self.data.adj = self.data.adj_t
                     need_csr = False
             if need_csr:
-                src, dst = self.data.edge_index
-                if coo_sorted != 'src':
-                    s_src, indices = sort(src)
-                    s_dst = dst[indices]
-                    self.data.edge_index = (s_src, s_dst)
-                    coo_sorted = 'dst'
+                to_sort = src * self.num_nodes
+                to_sort += dst
+                _, indices = sort(to_sort)
+                del _, to_sort
+                s_src = src[indices]
+                s_dst = dst[indices]
+                del indices
                 ptr = torch.ops.torch_sparse.ind2ptr(s_src, num_nodes)
-                self.data.adj = (ptr, s_dst)
+                self.data.adj = SparseTensor(rowptr=ptr, col=s_dst,
+                    sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
             logger.info("Serializing graph data in new formats...")
             self.data_dict['graph'] = [
                 {'format': 'coo', 'edge_index': self.data.edge_index, 'sorted': coo_sorted},

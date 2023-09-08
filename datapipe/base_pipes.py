@@ -5,6 +5,16 @@ from torch.utils.data import IterableDataset
 T = TypeVar('T')
 T_co = TypeVar('T_co', covariant=True)
 
+class IterData:
+    __slots__ = '_val'
+    def __init__(self, val):
+        self._val = val
+    @property
+    def value(self):
+        val = self._val
+        self._val = None
+        return val
+
 class IterDataPipe(IterableDataset[T_co]):
     '''
     IterDataPipe borrowed from torch datapipes but without hook_iterator

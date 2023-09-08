@@ -2,7 +2,7 @@
     "mode": "local",
     "env": {
         "verbose": false,
-        "outdir": "./archive",
+        "outdir": "./logdir/acc",
     },
     "dataset": {
         "name": "ogbn-arxiv",
@@ -23,7 +23,8 @@
                 "sampler": "cluster",
                 "partition": "rand",
                 "P": 24,
-                "batch_size": 3,
+                "batch_size": 6,
+                "num_workers": 4,
             }, {
                 "sampler": "ns",
                 "fanout": "15,10,5",

@@ -16,10 +16,6 @@ def get_edge_parts(parts: torch.Tensor, P:int):
 def intervalize(offsets: torch.Tensor):
     return torch.vstack([offsets[:-1], offsets[1:]])
 
-def shuffle_tensor(tensor: torch.Tensor):
-    perm = torch.randperm(tensor.size(0))
-    return tensor[perm]
-
 class Collator:
     '''
     merge partitions from the chunked graph dataset into a single graph dataset
@@ -33,13 +29,11 @@ class Collator:
         chunked: ChunkedNodePropPredDataset,
         split: Union[str, list[str], tuple[str]]='train',
         merge_nid: bool = True,
-        shuffle_idx: bool = True,
     ):
         self.data = chunked[0]
         self.node_offsets = intervalize(chunked.node_parts)
         self.edge_offsets = intervalize(self.data.edge_index[-1])
         self.merge_nid = merge_nid
-        self.shuffle_idx = shuffle_idx
         self.P = chunked.N_P
         self.idx_mask = torch.zeros(chunked.num_nodes, dtype=torch.bool)
         if not isinstance(split, list) and not isinstance(split, tuple):
@@ -121,8 +115,6 @@ class Collator:
                 )
         finally:
             logger.debug(f"Construction done")
-            if self.shuffle_idx:
-                targets = shuffle_tensor(targets)
             return subgraph, targets
 
 class CollatorPivots(Collator):
@@ -219,8 +211,6 @@ class CollatorPivots(Collator):
         gathered_dst = ranges_add(gathered_dst, edge_offsets, e_part_sizes, offset_nids)
         targets = mask_to_index(
             ranges_gather(self.idx_mask, n_intervals[0], n_part_sizes))
-        if self.shuffle_idx:
-            targets = shuffle_tensor(targets)
         logger.debug(f"Partition Adj: n={num_main_nodes}, m={gathered_src.size(0)}")
         # the pivot edge_index_inter
         e_offsets_inter = e_part_sizes_inter.cumsum(0) - e_part_sizes_inter

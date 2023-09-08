@@ -6,7 +6,7 @@ from data.graphloader import (
 )
 from data.collater import Collator, CollatorPivots
 from datapipe.custom_pipes import TensorShuffleWrapper, LiteIterableWrapper, ObjectAsPipe 
-from datapipe.custom_pipes import identity_fn, split_fn, even_split_fn
+from datapipe.custom_pipes import identity_fn, even_split_fn, shuffle_tensor
 from datapipe.parallel_pipes import mp, make_dp_worker
 from datapipe.sampler_fn import PygNeighborSampler
 
@@ -93,7 +93,7 @@ class NodeTorchDataLoader(object):
 
 
 def collate(collator: Collator, batch):
-    return collator.collate(batch)
+    return list(collator.collate(batch))
 
 class PartitionDataLoader(object):
     def __init__(self, dataset: dict, env: dict, split: str, conf: dict):
@@ -114,7 +114,10 @@ class PartitionDataLoader(object):
         index_dp = TensorShuffleWrapper(torch.arange(P))
         datapipe = datapipe.zip(index_dp).map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1)
-        datapipe = datapipe.map(collate, args=(0, 1))
+        num_repeats = conf.get('num_repeats', 1)
+        datapipe = datapipe.map(collate, args=(0, 1)).repeats(num_repeats)
+        if split == 'train':
+            datapipe = datapipe.map(fn=shuffle_tensor, args=1, inplace=True)
         num_par = conf.get('num_workers', 0)
         if num_par > 0:
             datapipe = make_dp_worker(
@@ -145,12 +148,11 @@ class HierarchicalDataLoader(object):
         self.cpu_i += partition_loader.cpu_i
         # Level-2 loader, neighbor sampler
         conf_l2 = conf[1]
-        repeats = conf_l2.get('num_repeats', 1)
         batch_size = conf_l2['batch_size']
         fanout = list(map(int, conf_l2['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout)
         num_par = conf_l2.get('num_workers',  self.ncpus - self.cpu_i)
-        datapipe = datapipe.map(list).repeats(repeats).flatmap(
+        datapipe = datapipe.map(list).flatmap(
             # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )

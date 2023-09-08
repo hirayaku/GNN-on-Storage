@@ -1,9 +1,9 @@
-from typing import final, Iterator, Optional, TypeVar, Callable, Tuple, Sized, Union, Dict, Any
+from typing import final, Iterator, Optional, TypeVar, Callable, Tuple, Sized, List
 from functools import partial
 import copy, warnings
 import torch
-# from torch.utils.data.dataloader import default_collate
-from datapipe.base_pipes import IterDataPipe, make_functional
+from torch.utils.data.datapipes.iter import UnBatcher
+from datapipe import IterDataPipe, make_functional
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
@@ -65,6 +65,7 @@ def even_split_fn(input, size: int):
 # def nested_batch_with_size(size, drop_thres=0.0):
 #     return partial(nested_batch, inner_batch_size=size, drop_thres=drop_thres)
 
+# a lot of datapipes below are adapted from torch datapipe implementations
 class IterableWrapper(IterDataPipe):
     r"""
     Wraps an iterable object to create an IterDataPipe.
@@ -273,23 +274,118 @@ class RepeaterIterDataPipe(IterDataPipe[T_co]):
     def __iter__(self) -> Iterator[T_co]:
         for element in self.source_datapipe:
             for _ in range(self.times):
-                yield element
+                yield copy.copy(element)
             del element
 
     def __len__(self) -> int:
         return self.times * len(self.source_datapipe)
+
+@make_functional('batch')
+class BatcherIterDataPipe(IterDataPipe):
+    datapipe: IterDataPipe
+    batch_size: int
+    drop_last: bool
+
+    def __init__(self,
+                 datapipe: IterDataPipe,
+                 batch_size: int,
+                 drop_last: bool = False,
+                 ) -> None:
+        assert batch_size > 0, "Batch size is required to be larger than 0!"
+        super().__init__()
+        self.datapipe = datapipe
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.wrapper_class = tuple
+
+    def __iter__(self):
+        batch: List = []
+        for x in self.datapipe:
+            batch.append(x)
+            if len(batch) == self.batch_size:
+                yield self.wrapper_class(batch)
+                batch = []
+        if len(batch) > 0:
+            if not self.drop_last:
+                yield self.wrapper_class(batch)
+                batch = []
+
+    def __len__(self) -> int:
+        if isinstance(self.datapipe, Sized):
+            if self.drop_last:
+                return len(self.datapipe) // self.batch_size
+            else:
+                return (len(self.datapipe) + self.batch_size - 1) // self.batch_size
+        else:
+            raise TypeError("{} instance doesn't have valid length".format(type(self).__name__))
+
+@make_functional('unbatch')
+class UnBatcherIterDataPipe(IterDataPipe):
+    r"""
+    Undoes batching of data (functional name: ``unbatch``). In other words, it flattens the data up to the specified level
+    within a batched DataPipe.
+
+    Args:
+        datapipe: Iterable DataPipe being un-batched
+        unbatch_level: Defaults to ``1`` (only flattening the top level). If set to ``2``,
+            it will flatten the top two levels, and ``-1`` will flatten the entire DataPipe.
+
+    Example:
+        >>> # xdoctest: +SKIP
+        >>> from torchdata.datapipes.iter import IterableWrapper
+        >>> source_dp = IterableWrapper([[[0, 1], [2]], [[3, 4], [5]], [[6]]])
+        >>> dp1 = source_dp.unbatch()
+        >>> list(dp1)
+        [[0, 1], [2], [3, 4], [5], [6]]
+        >>> dp2 = source_dp.unbatch(unbatch_level=2)
+        >>> list(dp2)
+        [0, 1, 2, 3, 4, 5, 6]
+    """
+
+    def __init__(self,
+                 datapipe: IterDataPipe,
+                 unbatch_level: int = 1):
+        self.datapipe = datapipe
+        self.unbatch_level = unbatch_level
+
+    def __iter__(self):
+        for element in self.datapipe:
+            for i in self._dive(element, unbatch_level=self.unbatch_level):
+                yield i
+
+    def _dive(self, element, unbatch_level):
+        if unbatch_level < -1:
+            raise ValueError("unbatch_level must be -1 or >= 0")
+        if unbatch_level == -1:
+            if isinstance(element, (list, tuple)):
+                for item in element:
+                    for i in self._dive(item, unbatch_level=-1):
+                        yield i
+            else:
+                yield element
+        elif unbatch_level == 0:
+            yield element
+        else:
+            if isinstance(element, (list, tuple)):
+                for item in element:
+                    for i in self._dive(item, unbatch_level=unbatch_level - 1):
+                        yield i
+            else:
+                raise IndexError(f"unbatch_level {self.unbatch_level} exceeds the depth of the DataPipe")
+
 
 @make_functional("map")
 class MapperIterDataPipe(IterDataPipe[T_co]):
     datapipe: IterDataPipe
     fn: Optional[Callable]
 
-    def __init__(self, datapipe: IterDataPipe, fn: Callable, args=None) -> None:
+    def __init__(self, datapipe: IterDataPipe, fn: Callable, args=None, inplace=False) -> None:
         self.datapipe = datapipe
         self.fn = fn  # type: ignore[assignment]
         if isinstance(args, list):
             args = tuple(args)
         self.args = args 
+        self.inplace = inplace
 
     def __iter__(self) -> Iterator[T_co]:
         if self.args is None:
@@ -301,9 +397,15 @@ class MapperIterDataPipe(IterDataPipe[T_co]):
                 yield self.fn(*(d[i] for i in self.args))
                 del d
         else:
-            for d in self.datapipe:
-                yield self.fn(d[self.args])
-                del d
+            if self.inplace:
+                for d in self.datapipe:
+                    d[self.args] = self.fn(d[self.args])
+                    yield d
+                    del d
+            else:
+                for d in self.datapipe:
+                    yield self.fn(d[self.args])
+                    del d
 
     def __len__(self) -> int:
         return len(self.datapipe)
@@ -335,7 +437,6 @@ class FlatMapperIterDataPipe(IterDataPipe[T_co]):
                     yield data_copy
                     del data_copy
                 del data
-
 
     def __len__(self) -> int:
         if self.fn_size is None:

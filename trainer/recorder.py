@@ -1,4 +1,4 @@
-import os, hashlib, pickle
+import os, hashlib, pickle, warnings
 import torch
 
 def flatten_dict(result, out=None, prefix=''):
@@ -83,6 +83,11 @@ class Recorder(object):
     def save(self, folder):
         os.makedirs(folder, exist_ok=True)
         fname = f"{folder}/{self.md5}.pkl"
+        i = 1
+        while os.path.exists(fname):
+            warnings.warn(f"trace exists for config: {str(self.info)}")
+            fname = f"{folder}/{self.md5}_{i}.pkl"
+            i += 1
         with open(fname, 'wb') as fp:
             pickle.dump(self, fp)
 

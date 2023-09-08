@@ -5,8 +5,8 @@
         "outdir": "./logdir/acc",
     },
     "dataset": {
-        "name": "ogbn-arxiv",
-        "root": "/mnt/md0/hb_datasets/ogbn_arxiv",
+        "name": "reddit",
+        "root": "/mnt/md0/hb_datasets/reddit",
     },
     "model": {
         "arch": "sage",
@@ -15,7 +15,7 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 5,
-        "epochs": 100,
+        "epochs": 50,
         "eval_every": 1,
     },
     "sample": {

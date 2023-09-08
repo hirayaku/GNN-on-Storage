@@ -3,7 +3,7 @@ import time, math, warnings, queue, threading
 from functools import partial
 import torch
 import torch.multiprocessing as mp
-from datapipe.base_pipes import make_functional, IterDataPipe
+from datapipe import make_functional, IterDataPipe
 import datapipe.communication as comm
 import utils
 
@@ -12,8 +12,6 @@ def worker_init_fn(dp: IterDataPipe, num_par: Optional[int],
                    **kwargs):
     if num_par is not None:
         torch.set_num_threads(num_par)
-    else:
-        torch.set_num_threads(1)
     utils.set_affinity(affinity)
     if init_fn is not None:
         return init_fn(dp, **kwargs)
@@ -69,6 +67,7 @@ class ParallelMapperDataPipe(IterDataPipe):
         if self.num_par == 0:
             for data in self.source_dp:
                 yield self.fn(data)
+                del data
         else:
             # assert isinstance(self.source_dp, comm.iter.QueueWrapper)
             if self.mp_ctx is None:
@@ -101,6 +100,7 @@ class ParallelMapperDataPipe(IterDataPipe):
                 else:
                     self.target_count += 1
                     yield data
+                del data
                 if stop_recvd and self.target_count == self.source_count:
                     break
             self._clear_queue(self.target_queue)
@@ -117,11 +117,6 @@ class ParallelMapperDataPipe(IterDataPipe):
     def _create_thread_worker(self):
         thread = threading.Thread(target=self._thread_worker, daemon=True)
         thread.start()
-    
-    def _process_queue_feeder(self, buf: queue.Queue):
-        while True:
-            item = buf.get()
-            self.target_queue.put(item)
     
     def _process_loop_fn(self) -> bool:
         try:
@@ -151,13 +146,6 @@ class ParallelMapperDataPipe(IterDataPipe):
         torch.set_num_threads(self.num_intra_par)
         worker_affinity = self._worker_affinity if worker_affinity is None else worker_affinity
         utils.set_affinity(worker_affinity)
-        # # spawn a thread for enqueuing
-        # local_queue = comm.queue.ThreadingQueue()
-        # feeder = threading.Thread(
-        #     target=self._process_queue_feeder, args=(local_queue,), daemon=True
-        # )
-        # feeder.start()
-
         # the main processing loop
         forever = True
         while forever:

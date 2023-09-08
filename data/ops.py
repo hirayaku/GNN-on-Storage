@@ -22,6 +22,7 @@ def scatter_append(
     mimics torch.scatter, except that the reduction operator is the non-commutative "append"
     returns an offset tensor containing the start offset of each group in the output tensor
     '''
+    assert src.size(0) == index.size(0), f"size mismatch: {src.size()}, {index.size()}"
     max_bin = int(index.max()) + 1 if max_bin is None else max_bin
     if out is None:
         out = torch.empty_like(src)

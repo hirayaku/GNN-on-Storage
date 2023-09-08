@@ -1,4 +1,4 @@
-import argparse, tqdm, json5
+import time, argparse, tqdm, json5
 import torch
 import torch.nn.functional as F
 from models.pyg import gen_model
@@ -28,6 +28,7 @@ def train(model, optimizer, dataloader, device, description='train'):
     num_iters = total_loss = total_correct = total_examples = 0
     mfg_sizes = num_nodes = alive_nodes = batch_score = 0
 
+    start = time.time()
     for batch in minibatches:
         bsize = batch.batch_size
         dev_attrs = [key for key in batch.keys if not key.endswith('_mask')]
@@ -50,12 +51,14 @@ def train(model, optimizer, dataloader, device, description='train'):
             alive_nodes += batch.alive_nodes
         if 'quality_score' in batch:
             batch_score += batch.quality_score
+    end = time.time()
 
     train_acc = total_correct / total_examples
     return (
         total_loss / total_examples, train_acc,         # loss, acc
         num_nodes / num_iters, alive_nodes / num_iters, # nodes, alive_nodes
         mfg_sizes / num_iters, batch_score / num_iters,
+        end - start,
     )
 
 @torch.no_grad()

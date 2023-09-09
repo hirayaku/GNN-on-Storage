@@ -1,8 +1,9 @@
-import time
-from functools import lru_cache
 from typing import Optional, Tuple
 import torch
-from torch_geometric.typing import OptTensor
+from torch_geometric.typing import Tensor, OptTensor
+from torch_geometric.utils import index_to_mask 
+import torch_sparse
+from torch_sparse.tensor import SparseTensor
 import utils
 
 def group(ids, assigns, psize) -> list[torch.Tensor]:
@@ -40,86 +41,72 @@ class RandomNodePartitioner(NodePartitioner):
     def __init__(self, g, psize):
         super().__init__(g, psize, name='rand')
 
-    @lru_cache
     def partition(self, **kwargs) -> torch.IntTensor:
         return torch.randint(self.psize, (self.g.size(0),), dtype=torch.int)
 
-# class SeqNodePartitioner(NodePartitioner):
-#     def __init__(self, g, psize):
-#         super().__init__(g, psize, name='seq')
-#     def partition(self, **kwargs) -> torch.IntTensor:
-#         size_per_part = self.g.size(0) // self.psize
-
-from torch_sparse.tensor import SparseTensor
-'''
-# taken from pytorch_sparse's metis.py
 def weight2metis(weight: Tensor) -> Optional[Tensor]:
-    sorted_weight = weight.sort()[0]
-    diff = sorted_weight[1:] - sorted_weight[:-1]
-    if diff.sum() == 0:
+    weight_min = weight.min()
+    weight = weight - weight_min
+    if weight.sum() == 0:
         return None
-    weight_min, weight_max = sorted_weight[0], sorted_weight[-1]
-    srange = weight_max - weight_min
-    min_diff = diff.min()
-    scale = (min_diff / srange).item()
-    tick, arange = scale.as_integer_ratio()
-    weight_ratio = (weight - weight_min).div_(srange).mul_(arange).add_(tick)
-    return weight_ratio.to(torch.long)
+    unit = weight[weight!=0].min()
+    weight += unit
+    return weight.div_(unit).round_().long()
 
+# taken from pytorch_sparse's metis.py but omit the last step
 def metis_partition(
     src: SparseTensor,
     num_parts: int,
     recursive: bool = False,
+    weighted: bool = False,
     node_weight: Optional[Tensor] = None,
 ) -> Tensor:
 
     assert num_parts >= 1
     if num_parts == 1:
-        partptr = torch.tensor([0, src.size(0)], device=src.device())
-        perm = torch.arange(src.size(0), device=src.device())
-        return src, partptr, perm
+        return torch.ones(src.size(0), dtype=torch.int)
 
     rowptr, col, value = src.csr()
     rowptr, col = rowptr.cpu(), col.cpu()
 
-    if value is not None:
+    if value is not None and weighted:
         assert value.numel() == col.numel()
         value = value.view(-1).detach().cpu()
         if value.is_floating_point():
             value = weight2metis(value)
+    else:
+        value = None
 
     if node_weight is not None:
         assert node_weight.numel() == rowptr.numel() - 1
         node_weight = node_weight.view(-1).detach().cpu()
         if node_weight.is_floating_point():
             node_weight = weight2metis(node_weight)
-        cluster = torch.ops.torch_sparse.partition2(rowptr, col, value,
-                                                    node_weight, num_parts,
-                                                    recursive)
+        cluster = torch.ops.torch_sparse.partition2(
+                rowptr, col, value, node_weight, num_parts, recursive) # type: ignore
     else:
-        cluster = torch.ops.torch_sparse.partition(rowptr, col, value,
-                                                   num_parts, recursive)
+        cluster = torch.ops.torch_sparse.partition(
+                rowptr, col, value, num_parts, recursive) # type: ignore
     cluster = cluster.to(src.device())
     return cluster
-'''
 
-from torch_sparse import SparseTensor
-from torch_geometric.utils import index_to_mask 
 class MetisNodePartitioner(NodePartitioner):
+    '''
+    When the edges are weighted, this partitioner assumes the weights are symmetrized
+    '''
     def __init__(self, g, psize, name='metis'):
         super().__init__(g, psize, name=name)
 
-    @lru_cache
     def partition(
         self,
         node_weights=None,
         edge_weights=None,
         intermediate_dir=utils.SCRATCH_DIR
-    ) -> torch.IntTensor:
+    ) -> torch.Tensor:
         if edge_weights is not None and edge_weights.dim() > 1:
             raise ValueError("METIS doesn't support multi-labels for edges")
         if node_weights is not None and node_weights.dim() > 1:
-            raise ValueError("DGL's port of METIS doesn't support multi-labels for nodes")
+            raise ValueError("This port of METIS doesn't support multi-labels for nodes")
         adj = None
         if hasattr(self.g, 'adj_t'):
             adj = self.g.adj_t
@@ -128,23 +115,26 @@ class MetisNodePartitioner(NodePartitioner):
         else:
             edge_index = self.g.edge_index
             adj = SparseTensor(
-                row=edge_index[0], col=edge_index[1], value=edge_weights,
+                row=edge_index[0], col=edge_index[1],
                 sparse_sizes=(self.g.num_nodes, self.g.num_nodes),
             )
         if not isinstance(adj, SparseTensor):
             adj = SparseTensor(
-                rowptr=adj[0], col=adj[1], value=edge_weights,
+                rowptr=adj[0], col=adj[1],
                 sparse_sizes=(self.g.num_nodes, self.g.num_nodes),
+                is_sorted=True,
             )
-        # with utils.cwd(intermediate_dir):
-        #     self.assigns = metis_partition(adj, self.psize, node_weight=node_weights)
-        #     return self.assigns
-        import dgl
-        graph = dgl.graph(adj.coo()[:-1])
+        adj = adj.set_value(edge_weights, 'csr')
+
         with utils.cwd(intermediate_dir):
-            return dgl.metis_partition_assignment(
-                graph, self.psize, node_weights,
+            return metis_partition(
+                adj, self.psize, weighted=True, node_weight=node_weights
             ).int()
+            # import dgl
+            # graph = dgl.graph(adj.coo()[:-1])
+            # return dgl.metis_partition_assignment(
+            #     graph, self.psize, node_weights,
+            # ).int()
 
 class MetisWeightedPartitioner(MetisNodePartitioner):
     def __init__(
@@ -152,7 +142,7 @@ class MetisWeightedPartitioner(MetisNodePartitioner):
             node_weights: torch.Tensor=None,
             edge_weights: torch.Tensor=None
     ):
-        self.e_w = edge_weights
+        self.edge_weights = edge_weights
         if node_weights is not None and not node_weights.is_floating_point():
             if node_weights.size(0) < g.size(0):
                 self.node_weights = index_to_mask(node_weights, g.size(0)).long()
@@ -165,7 +155,7 @@ class MetisWeightedPartitioner(MetisNodePartitioner):
     def partition(self, **kwargs):
         return super().partition(
             node_weights=self.node_weights,
-            edge_weights=self.e_w,
+            edge_weights=self.edge_weights,
             **kwargs)
 
 from typing import Optional, Union
@@ -198,9 +188,10 @@ class FennelPartitioner(NodePartitioner):
                 sparse_sizes=(self.g.num_nodes, self.g.num_nodes),
             )
         if isinstance(adj, SparseTensor):
-            self.rowptr, self.col, _ = adj.csr()
+            self.rowptr, self.col, self.weights = adj.csr()
         else:
             self.rowptr, self.col = adj
+            self.weights = None
         self.n = g.num_nodes
         self.m = self.col.size(0)
         # default alpha = k**(gamma-1) * m / n**gamma
@@ -209,16 +200,18 @@ class FennelPartitioner(NodePartitioner):
         self.use_opt = use_opt
 
     def partition(self, init_partition=None) -> torch.IntTensor:
-        # 64, 1/4
-        # 1024, 1/16
-        # 16384, 1/16
         thres = min(max(self.psize-64, 0)/15/1024, 1/16)
         if self.use_opt:
             self.assigns = torch.ops.Fennel.partition_opt(
-                self.rowptr, self.col, self.psize, self.node_order,
-                self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
-                thres,
+               self.rowptr, self.col, self.psize, self.node_order,
+               self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
+               thres,
             )
+            #  self.assigns = torch.ops.Fennel.partition_weights(
+            #      self.rowptr, self.col, self.weights, self.psize, self.node_order,
+            #      self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
+            #      thres,
+            #  )
         else:
             self.assigns = torch.ops.Fennel.partition(
                 self.rowptr, self.col, self.psize, self.node_order,

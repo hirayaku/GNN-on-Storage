@@ -447,5 +447,5 @@ def store_tensor(
         )
     # prevent auto deleting the file when next time loading it
     meta.temporary = False
-    logger.info("tensor saved to:", meta.path)
+    logger.info(f"tensor saved to: {meta.path}")
     return meta

@@ -2,7 +2,7 @@ import os
 import os.path as osp
 import numpy as np
 import torch
-from torch_geometric.datasets import Reddit
+from torch_geometric.datasets import Reddit, Flickr
 import torch_geometric.transforms as T
 from torch_geometric.utils import mask_to_index
 from ogb.nodeproppred import PygNodePropPredDataset
@@ -14,6 +14,37 @@ from data.io import is_tensor, store_tensor
 # meta_info: metadata required by graphloader.NodePropPredDataset
 # data_dict: data graph & features
 # idx: train/val/test idx
+
+def load_flickr(rootdir):
+    dataset_dir = osp.join(rootdir, 'flickr')
+    dataset = Reddit(root=dataset_dir, pre_transform=T.ToUndirected())
+    data = dataset[0]
+    num_nodes = data.x.shape[0]
+    meta_info = {
+        'dir_name': 'reddit',
+        'num_nodes': num_nodes,
+        'num_tasks': 1,
+        'task_type': 'multiclass classification',
+        'num_classes': dataset.num_classes,
+        'is_directed': False,
+        'is_hetero': False,
+    }
+    data_dict = {
+        'graph': [ {
+            'format': 'coo',
+            'edge_index': [data.edge_index[0], data.edge_index[1]],
+        } ],
+        'node_feat': data.x.numpy(),
+        'edge_feat': None,
+        'num_nodes': num_nodes,
+        'labels': data.y.numpy(),
+    }
+    idx = {
+        'train': mask_to_index(data.train_mask).numpy(),
+        'valid': mask_to_index(data.val_mask).numpy(),
+        'test': mask_to_index(data.test_mask).numpy(),
+    }
+    return meta_info, data_dict, idx
 
 def load_reddit(rootdir):
     dataset_dir = osp.join(rootdir, 'reddit')
@@ -101,8 +132,8 @@ def load_arxiv_r(rootdir):
     }
     idx = dataset.get_idx_split()
     rand_idx = torch.randperm(data.num_nodes)
-    num_train = int(data.num_nodes * 0.8)
-    num_valid = int(data.num_nodes * 0.1)
+    num_train = int(data.num_nodes * 0.2)
+    num_valid = int(data.num_nodes * 0.4)
     idx = {
         'train': rand_idx[:num_train],
         'valid': rand_idx[num_train:num_train+num_valid],
@@ -135,6 +166,35 @@ def load_products(rootdir):
     idx = dataset.get_idx_split()
     return meta_info, data_dict, idx
 
+def load_papers100m_directed(rootdir):
+    # use PygNodeProp... to save memory
+    dataset = PygNodePropPredDataset(
+        name='ogbn-papers100M', root=rootdir,
+    )
+    data = dataset[0]
+    report_mem("ogbn-papers100M (directed) dataset loaded")
+    meta_info = {
+        'dir_name': dataset.dir_name,
+        'num_nodes': data.num_nodes,
+        'num_tasks': dataset.num_tasks,
+        'task_type': 'multiclass classification',
+        'num_classes': dataset.num_classes,
+        'is_hetero': dataset.is_hetero,
+        'is_directed': True,
+    }
+    data_dict = {
+        'graph': [ {
+            'format': 'coo',
+            'edge_index': [data.edge_index[0], data.edge_index[1]], # data.edge_index.numpy(),
+        } ],
+        'node_feat': data.x.numpy(),
+        'edge_feat': None,
+        'num_nodes': data.num_nodes,
+        'labels': data.y.numpy(),
+    }
+    idx = dataset.get_idx_split()
+    return meta_info, data_dict, idx
+
 def load_papers100m(rootdir):
     # use PygNodeProp... to save memory
     dataset = PygNodePropPredDataset(
@@ -150,7 +210,7 @@ def load_papers100m(rootdir):
         'task_type': 'multiclass classification',
         'num_classes': dataset.num_classes,
         'is_hetero': dataset.is_hetero,
-        'is_directed': False,
+        'is_directed': True,
     }
     data_dict = {
         'graph': [ {
@@ -292,7 +352,7 @@ def load_igb(rootdir):
     n_labeled_idx = 227130858
     n_train = int(n_labeled_idx * 0.6)
     n_val   = int(n_labeled_idx * 0.2)
-    
+
     idx = {
         'train': torch.arange(n_train),
         'valid': torch.range(n_train, n_train + n_val),
@@ -305,7 +365,9 @@ def load(name, root):
         'reddit': load_reddit,
         'ogbn-arxiv': load_arxiv,
         'ogbn-arxiv-r': load_arxiv_r,
+        'reddit': load_reddit,
         'ogbn-products': load_products,
+        'ogbn-papers100M-di': load_papers100m_directed,
         'ogbn-papers100M': load_papers100m,
         'mag240m-c': load_mag240m_c,
         'mag240m-f': load_mag240m_f,

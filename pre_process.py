@@ -1,4 +1,4 @@
-import os, time, torch
+import sys, os, time, torch
 from torch_geometric.data import Data
 from torch_geometric.utils import index_to_mask, degree
 from torch_sparse import SparseTensor
@@ -7,7 +7,17 @@ from data.graphloader import NodePropPredDataset, ChunkedNodePropPredDataset
 import data.partitioner as P
 from data.io import TensorMeta, MmapTensor
 from data.ops import scatter, scatter_append, index_select, edge_cuts
-from graphutils.rw import lazy_rw
+from graphutils.rw import lazy_rw, edge_importance
+
+import logging
+logger = logging.getLogger()
+formatter = logging.Formatter(
+    "%(asctime)s.%(msecs)03d[%(levelname)s] %(module)s: %(message)s",
+    datefmt='%0y-%0m-%0d %0H:%0M:%0S')
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
+logger.setLevel(logging.INFO)
 
 class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
     def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
@@ -18,14 +28,29 @@ class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
 
 def get_partitioner(dataset: NodePropPredDataset, args):
     data = dataset[0]
-    train_nid = dataset.get_idx_split()['train']
+    train_nid = dataset.get_idx_split('train')
     train_mask = index_to_mask(train_nid, size=data.size(0))
     if args.part == 'rand':
         return P.RandomNodePartitioner(data, args.pn)
     elif args.part == 'metis':
         return P.MetisNodePartitioner(data, args.pn)
     elif args.part == 'metis-tb':
-        return P.MetisWeightedPartitioner(data, args.pn, train_mask.int())
+        return P.MetisWeightedPartitioner(data, args.pn, train_nid)
+    elif args.part == 'metis-w':
+        e_w = edge_importance(data, train_nid, k=args.k)
+        return P.MetisWeightedPartitioner(data, args.pn, edge_weights=e_w)
+    elif args.part == 'metis-wtb':
+        e_w = edge_importance(data, train_nid, k=args.k)
+        return P.MetisWeightedPartitioner(data, args.pn, node_weights=train_nid, edge_weights=e_w)
+    elif args.part == 'fennel':
+        train_labels = torch.ones_like(data.y.flatten(), dtype=torch.int)
+        train_labels[train_mask] = 0
+        return P.ReFennelPartitioner(
+            data, args.pn, slack=1.25, runs=4,
+            base=FennelStrataDegOrderPartitioner,
+            # base=P.FennelStrataPartitioner,
+            labels=train_labels,
+        )
     elif args.part == 'fennel-lb':
         train_labels = data.y.flatten().clone()
         train_labels = train_labels.int()
@@ -37,6 +62,8 @@ def get_partitioner(dataset: NodePropPredDataset, args):
             # base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
+    #  elif args.part == 'fennel-wlb':
+    #      ...
     else:
         raise ValueError(args.part)
 
@@ -61,7 +88,7 @@ def partition_dataset(data, n_assigns, args, dataset_dir):
     E_P = N_P * N_P
 
     # scatter nodes
-    print("Scatter node data...")
+    logger.info("Scatter node data...")
     nids = torch.arange(data.num_nodes) # original node id
     new_x = MmapTensor(TensorMeta.like(data.x, path=partition_dir).random_())
     new_x, node_interval, relabel_nids = scatter_append(
@@ -82,7 +109,7 @@ def partition_dataset(data, n_assigns, args, dataset_dir):
     e_assigns = src_assigns
 
     # scatter edges
-    print("Scatter edge data...")
+    logger.info("Scatter edge data...")
     new_src = MmapTensor(TensorMeta.like(edge_src, path=partition_dir).random_())
     new_dst = MmapTensor(TensorMeta.like(edge_dst, path=partition_dir).random_())
     new_edge_attr = None
@@ -137,7 +164,8 @@ def get_pivots(dataset: NodePropPredDataset, args):
     # pivot nids are relabeled to 0, 1, ..., n_pivots-1
     inter_adj = adj_t[pivots]
     intra_adj = inter_adj[:,pivots]
-    print("pivots(nodes/inter/intra):",pivots.size(0), inter_adj.nnz(), intra_adj.nnz())
+    logger.info("pivots(nodes/inter/intra): {}, {}, {}".format(
+        pivots.size(0), inter_adj.nnz(), intra_adj.nnz()))
     return pivots, data.x[pivots], inter_adj, intra_adj
 
 def partition_pivots(chunk_dataset, pivot_data, args, dataset_dir):
@@ -158,13 +186,13 @@ def partition_pivots(chunk_dataset, pivot_data, args, dataset_dir):
     relabel = torch.empty_like(chunk_dataset.node_map)
     relabel[chunk_dataset.node_map] = torch.arange(0, chunk_dataset.num_nodes)
     inter_src = relabel[inter_src]
-    print("pivot inter_adj partitions:\n", inter_interval)
+    logger.info("pivot inter_adj partitions:\n{}".format(inter_interval))
     # 1D partition intra_adj based on src
     intra_src, intra_interval, scatter_index = scatter_append(
         dim=0, index=pivots_assign[intra_src], src=intra_src, max_bin=args.pn
     )
     intra_dst = scatter(index=scatter_index, src=intra_dst)
-    print("pivot intra_adj partitions:\n", intra_interval)
+    logger.info("pivot intra_adj partitions:\n{}".format(intra_interval))
 
     # write to disk
     data_dict = {
@@ -216,7 +244,7 @@ if __name__ == "__main__":
     parser.add_argument('--check', action="store_true",
                         help="Check the validity of partititioned dataset")
     args = parser.parse_args()
-    print(args)
+    logger.info(args)
 
     num_par = torch.get_num_threads()
     dataset_dir = os.path.join(args.root, args.dataset.replace('-', '_'))
@@ -224,42 +252,42 @@ if __name__ == "__main__":
     data = dataset[0]
 
     if not args.check and not args.pivot_only:
-        print(f"#nodes: {data.num_nodes}, #edges: {data.adj_t.nnz()}")
+        logger.info(f"#nodes: {data.num_nodes}, #edges: {data.adj_t.nnz()}")
 
-        print(f"> Partition graph...")
+        logger.info(f"> Partition graph...")
         tic = time.time()
         n_assigns = get_partitioner(dataset, args).partition()
         toc = time.time()
         # torch.save(n_assigns, "partition.pt")
-        print(f"> Graph partitoning done, takes {toc-tic:.2f}s")
-        print(f"Partition #cuts={edge_cuts(data.edge_index, n_assigns)}")
+        logger.info(f"> Graph partitoning done, takes {toc-tic:.2f}s")
+        logger.info(f"Partition #cuts={edge_cuts(data.edge_index, n_assigns)}")
         _, node_interval, _ = scatter_append(dim=0, index=n_assigns, src=n_assigns, max_bin=args.pn)
         sizes = node_interval[1:] - node_interval[:-1]
-        print(f"Partition sizes: avg={int(sizes.float().mean())}, "
+        logger.info(f"Partition sizes: avg={int(sizes.float().mean())}, "
               f"min={sizes.min().item()}, max={sizes.max().item()}")
 
-        print("> Partition dataset...")
+        logger.info("> Partition dataset...")
         torch.set_num_threads(num_par * 4)
         tic = time.time()
         partition_dataset(data, n_assigns, args, dataset_dir)
         toc = time.time()
         torch.set_num_threads(num_par)
-        print(f"> Dataset partitioning done, takes {toc-tic:.2f}s")
+        logger.info(f"> Dataset partitioning done, takes {toc-tic:.2f}s")
 
     if not args.check:
         # select pivotal nodes, edges, and partition them
         partition_dir = get_partition_dir(dataset_dir, args)
-        print("> Select pivots...")
+        logger.info("> Select pivots...")
         tic = time.time()
         pivot_data = get_pivots(dataset, args)
         chunked = ChunkedNodePropPredDataset(partition_dir)
         pivots_dir, _ = partition_pivots(chunked, pivot_data, args, dataset_dir)
         toc = time.time()
-        print(f"> Selection done, takes {toc-tic:.2f}s")
+        logger.info(f"> Selection done, takes {toc-tic:.2f}s")
 
     if args.check:
         def check_ndata(ndata_orig: torch.Tensor, ndata_shfl: torch.Tensor, parts):
-            print("Checking ndata")
+            logger.info("Checking ndata")
             torch.set_num_threads(num_par * 4)
             offset = 0
             for i in tqdm.tqdm(range(len(parts))):
@@ -269,8 +297,8 @@ if __name__ == "__main__":
                     f"Partition {i}"
                 offset += p_size
             torch.set_num_threads(num_par)
-            print("Passed")
-        
+            logger.info("Passed")
+
         def intervalize(offsets: torch.Tensor):
             return torch.vstack([offsets[:-1], offsets[1:]]).t()
 
@@ -278,10 +306,10 @@ if __name__ == "__main__":
             def __init__(self, data, intervals):
                 self.data = data
                 self.intervals = intervals
-            
+
             def __len__(self):
                 return self.intervals.size(0)
-            
+
             def __getitem__(self, i):
                 start, end = self.intervals[i]
                 return self.data[start:end]
@@ -295,30 +323,30 @@ if __name__ == "__main__":
         node_partitions = PartitionSequence(chunked.node_map, intervalize(chunked.node_parts))
         src_partitions = PartitionSequence(chunked_data.edge_index[0], intervalize(chunked_data.edge_index[-1]))
 
-        print("Checking node feat")
+        logger.info("Checking node feat")
         check_ndata(data.x, chunked_data.x, node_partitions)
         check_ndata(data.y, chunked_data.y, node_partitions)
-        print("Checking src")
+        logger.info("Checking src")
         for i, part in enumerate(tqdm.tqdm(src_partitions)):
             assert (n_assigns[part] == (i // args.pn)).all()
-        print("Passed")
+        logger.info("Passed")
 
         dst_partitions = PartitionSequence(chunked_data.edge_index[1], intervalize(chunked_data.edge_index[-1]))
-        print("Checking dst")
+        logger.info("Checking dst")
         for i, part in enumerate(tqdm.tqdm(dst_partitions)):
             assert (n_assigns[part] == (i % args.pn)).all()
-        print("Passed")
+        logger.info("Passed")
 
         pivot = ChunkedNodePropPredDataset(pivots_dir)
         pivot_data = pivot[0]
         pivot_partitions = PartitionSequence(
             pivot_data.edge_index_inter[0], intervalize(pivot_data.edge_index_inter[-1]))
-        print("Checking pivot src")
+        logger.info("Checking pivot src")
         for i, part in enumerate(tqdm.tqdm(pivot_partitions)):
             if i != args.pn:
                 assert (n_assigns[part] == i).all(), f"Partition {i}"
-        print("Checking pivot dst")
+        logger.info("Checking pivot dst")
         global_degree = degree(data.edge_index[1], data.num_nodes)
         pivot_degree = degree(pivot_data.edge_index_inter[1], pivot_data.num_nodes)
         assert (global_degree[pivot.node_map] == pivot_degree).all()
-        print("Passed")
+        logger.info("Passed")

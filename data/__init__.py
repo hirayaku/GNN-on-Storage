@@ -10,10 +10,10 @@ except:
     print("Fail to load xTensor")
     raise
 
-logger = logging.getLogger()
-try:
-    from torch.utils.cpp_extension import load
-    load(name="SharedBuffer", sources=["data/csrc/flat_buffer.cpp"], extra_cflags=['-O2'])
-    import SharedBuffer
-except:
-    logger.warn("Fail to load module: SharedBuffer")
+# logger = logging.getLogger()
+# try:
+#     from torch.utils.cpp_extension import load
+#     load(name="SharedBuffer", sources=["data/csrc/flat_buffer.cpp"], extra_cflags=['-O2'])
+#     import SharedBuffer
+# except:
+#     logger.warn("Fail to load module: SharedBuffer")

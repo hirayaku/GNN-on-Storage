@@ -1,4 +1,3 @@
-#include <cmath>
 #include <ctime>
 #include <vector>
 #include <map>
@@ -11,21 +10,9 @@
 #include <atomic>
 #include <stdlib.h>
 #include <omp.h>
-#include <torch/extension.h>
-#include "utils.hpp"
-#include "packed.hpp"
+#include "fennel.hpp"
 
-inline auto adj(int64_t *ptr, int64_t *idx, int64_t v)
-{
-    return Slice<int64_t>(idx + ptr[v], idx + ptr[v + 1]);
-}
-
-inline float balance_score(int64_t size, float gamma, float alpha) {
-    return -alpha * gamma * std::pow(size, gamma-1);
-}
-
-using Tensor = torch::Tensor;
-using OptTensor = torch::optional<Tensor>;
+namespace fennel {
 
 /**
  * A basic implementation of Fennel
@@ -35,8 +22,7 @@ using OptTensor = torch::optional<Tensor>;
 */
 Tensor partition(
     Tensor ptr, Tensor idx, int64_t k, OptTensor node_order,
-    double gamma, double alpha, double slack,
-    OptTensor init_partition = torch::nullopt
+    double gamma, double alpha, double slack, OptTensor init_partition
 ) {
     int64_t n = ptr.size(0) - 1;
     int64_t m = idx.size(0);
@@ -148,8 +134,7 @@ void check_consistency(
 Tensor partition_opt(
     Tensor ptr, Tensor idx, int64_t k, OptTensor node_order,
     double gamma, double alpha, double slack,
-    OptTensor init_partition = torch::nullopt,
-    torch::optional<double> scan_thres=torch::nullopt
+    OptTensor init_partition, torch::optional<double> scan_thres
 ) {
     int64_t n = ptr.size(0) - 1;
     int64_t m = idx.size(0);
@@ -295,25 +280,6 @@ Tensor partition_opt(
     return vector_to_tensor(node2ptn);
 }
 
-// // per-partition data packing size and score: [size: int, score: score]
-// using packed_t = int64_t;
-// // need better tests for unpack & pack
-// inline static int32_t extract_size(packed_t packed) {
-//     uint32_t upper_bits = (uint64_t)packed >> 32;
-//     return *(int32_t *)&upper_bits;
-// }
-// inline static float extract_score(packed_t packed) {
-//     uint32_t lower_bits = ((uint64_t)packed << 32) >> 32;
-//     return *(float *)(&lower_bits);
-// }
-// inline static std::tuple<int32_t, float> unpack(packed_t packed) {
-//     return {extract_size(packed), extract_score(packed)};
-// }
-// inline static packed_t pack(int32_t size, float score) {
-//     packed_t packed = ((packed_t) size) << 32;
-//     uint32_t score_bits = *(uint32_t *)&score;
-//     return packed | (packed_t)score_bits;
-// }
 /**
  * Parallelized version of the vanilla fennel; only good for a small k.
  * Per-partition scores could be stale but have eventual consistency
@@ -321,8 +287,7 @@ Tensor partition_opt(
 Tensor partition_par(
     Tensor ptr, Tensor idx, int64_t k, OptTensor node_order,
     double gamma, double alpha, double slack,
-    OptTensor init_partition = torch::nullopt,
-    torch::optional<double> scan_thres=torch::nullopt
+    OptTensor init_partition, torch::optional<double> scan_thres
 ) {
     int num_par = omp_thread_count();
     srand(time(nullptr));
@@ -435,10 +400,9 @@ Tensor partition_par(
  * important as minimizing edge cuts.
 */
 Tensor partition_stratified(
-    Tensor ptr, Tensor idx, int64_t k,
-    OptTensor labels, OptTensor node_order,
-    double gamma, Tensor alphas, double slack,
-    OptTensor init_partition = torch::nullopt
+    Tensor ptr, Tensor idx, int64_t k, OptTensor labels, OptTensor node_order,
+    double gamma, Tensor alphas, double slack, double label_slack,
+    OptTensor init_partition
 ) {
     if (labels == torch::nullopt) {
         float alpha = alphas.index({0}).item().to<float>();
@@ -581,11 +545,9 @@ Tensor partition_stratified(
 }
 
 Tensor partition_stratified_opt(
-    Tensor ptr, Tensor idx, int64_t k,
-    OptTensor labels, OptTensor node_order,
-    double gamma, Tensor alphas, double slack,
-    OptTensor init_partition = torch::nullopt,
-    torch::optional<double> scan_thres=torch::nullopt
+    Tensor ptr, Tensor idx, int64_t k, OptTensor labels, OptTensor node_order,
+    double gamma, Tensor alphas, double slack, double label_slack,
+    OptTensor init_partition, torch::optional<double> scan_thres
 ) {
     if (labels == torch::nullopt) {
         float alpha = alphas.index({0}).item().to<float>();
@@ -799,22 +761,12 @@ Tensor partition_stratified_opt(
         ptn_to_check.clear();
     }
 
-    // // dump label 
-    // for (int label = 0; label < NL; ++label) {
-    //     std::vector<int64_t> &ptn_nodes = label2sizes[label];
-    //     auto iter = std::max_element(ptn_nodes.begin(), ptn_nodes.end());
-    //     std::cout << "Label " << label << ": max-element = " << *iter
-    //         << ", Ptn " << iter - ptn_nodes.begin()
-    //         << "(cap = " << label2cap[label] << ")\n";
-    // }
-
     return vector_to_tensor(node2ptn);
 }
 
-// not scaling with locks
+// XXX lock-based implementation, no speedups really
 Tensor partition_stratified_par(
-    Tensor ptr, Tensor idx, int64_t k,
-    OptTensor labels, OptTensor node_order,
+    Tensor ptr, Tensor idx, int64_t k, OptTensor labels, OptTensor node_order,
     double gamma, Tensor alphas, double slack,
     OptTensor init_partition = torch::nullopt,
     torch::optional<double> scan_thres=torch::nullopt
@@ -1054,31 +1006,4 @@ Tensor partition_stratified_par(
     return vector_to_tensor(node2ptn);
 }
 
-
-TORCH_LIBRARY(Fennel, m)
-{
-    m.def(
-        "partition(Tensor rowptr, Tensor col, int k, Tensor? order, "
-        "float gamma, float alpha, float slack, Tensor? init) -> Tensor",
-        partition);
-    m.def(
-        "partition_opt(Tensor rowptr, Tensor col, int k, Tensor? order, "
-        "float gamma, float alpha, float slack, Tensor? init, float? scan_thres) -> Tensor",
-        partition_opt);
-    m.def(
-        "partition_parallel(Tensor rowptr, Tensor col, int k, Tensor? order, "
-        "float gamma, float alpha, float slack, Tensor? init, float? scan_thres) -> Tensor",
-        partition_par);
-    m.def(
-        "partition_strata(Tensor rowptr, Tensor col, int k, Tensor? labels, Tensor? order,"
-        "float gamma, Tensor alphas, float slack, Tensor? init) -> Tensor",
-        partition_stratified);
-    m.def(
-        "partition_strata_opt(Tensor rowptr, Tensor col, int k, Tensor? labels, Tensor? order,"
-        "float gamma, Tensor alphas, float slack, Tensor? init, float? scan_thres) -> Tensor",
-        partition_stratified_opt);
-    m.def(
-        "partition_strata_par(Tensor rowptr, Tensor col, int k, Tensor? labels, Tensor? order,"
-        "float gamma, Tensor alphas, float slack, Tensor? init, float? scan_thres) -> Tensor",
-        partition_stratified_par);
 }

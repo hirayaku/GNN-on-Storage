@@ -35,7 +35,7 @@ endmacro()
 append_torchlib_if_found(shm)
 
 # TODO: we should put libfennel under pybind11, not TorchScript operators
-add_library(fennel SHARED csrc/fennel.cpp) #  csrc/heap.cpp
+add_library(fennel SHARED csrc/fennel_ops.cpp csrc/fennel.cpp csrc/fennel_weighted.cpp)
 set_property(TARGET fennel PROPERTY CXX_STANDARD 14)
 target_include_directories(fennel PRIVATE "csrc")
 target_link_libraries(fennel PUBLIC torch Python3::Python)

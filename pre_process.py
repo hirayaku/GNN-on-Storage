@@ -19,6 +19,13 @@ stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 logger.setLevel(logging.INFO)
 
+class FennelDegOrderPartitioner(P.FennelPartitioner):
+    def __init__(self, g, psize, name='Fennel-deg', **kwargs):
+        super().__init__(g, psize, name=name, **kwargs)
+        # overwrite node_order
+        degrees = self.rowptr[1:] - self.rowptr[:-1]
+        self.node_order = torch.sort(degrees, descending=True).indices
+
 class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
     def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
         super().__init__(g, psize, name=name, **kwargs)
@@ -35,6 +42,7 @@ def get_partitioner(dataset: NodePropPredDataset, args):
     elif args.part == 'metis':
         return P.MetisNodePartitioner(data, args.pn)
     elif args.part == 'metis-tb':
+        # only balance training nodes in each partition, thus the partition sizes vary a lot
         return P.MetisWeightedPartitioner(data, args.pn, train_nid)
     elif args.part == 'metis-w':
         e_w = edge_importance(data, train_nid, k=args.k)
@@ -42,28 +50,50 @@ def get_partitioner(dataset: NodePropPredDataset, args):
     elif args.part == 'metis-wtb':
         e_w = edge_importance(data, train_nid, k=args.k)
         return P.MetisWeightedPartitioner(data, args.pn, node_weights=train_nid, edge_weights=e_w)
+    elif args.part == 'fennel-vnl':
+        # vanilla version of fennel
+        return P.ReFennelPartitioner(
+            data, args.pn, slack=1.25, runs=4,
+            base=FennelDegOrderPartitioner,
+        )
     elif args.part == 'fennel':
+        # unlike metis-tb, fennel balances both training nodes and non-training nodes
         train_labels = torch.ones_like(data.y.flatten(), dtype=torch.int)
         train_labels[train_mask] = 0
         return P.ReFennelPartitioner(
             data, args.pn, slack=1.25, runs=4,
             base=FennelStrataDegOrderPartitioner,
-            # base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
     elif args.part == 'fennel-lb':
+        # fennel-lb balances all labels in the training set and non-training nodes
         train_labels = data.y.flatten().clone()
         train_labels = train_labels.int()
         num_labels = train_labels.max().item() + 1
         train_labels[~train_mask] = num_labels
         return P.ReFennelPartitioner(
-            data, args.pn, slack=1.25, runs=4,
+            data, args.pn, slack=1.2, runs=4,
             base=FennelStrataDegOrderPartitioner,
-            # base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
-    #  elif args.part == 'fennel-wlb':
-    #      ...
+    elif args.part == 'fennel-w':
+        e_w = edge_importance(data, train_nid, k=args.k)
+        return P.ReFennelPartitioner(
+            data, args.pn, weights=e_w, slack=1.25, runs=4,
+            base=FennelDegOrderPartitioner,
+        )
+    elif args.part == 'fennel-wlb':
+        # fennel-lb balances all labels in the training set and non-training nodes
+        train_labels = data.y.flatten().clone()
+        train_labels = train_labels.int()
+        num_labels = train_labels.max().item() + 1
+        train_labels[~train_mask] = num_labels
+        e_w = edge_importance(data, train_nid, k=args.k)
+        return P.ReFennelPartitioner(
+            data, args.pn, weights=e_w, slack=1.2, runs=4,
+            base=FennelStrataDegOrderPartitioner,
+            labels=train_labels,
+        )
     else:
         raise ValueError(args.part)
 

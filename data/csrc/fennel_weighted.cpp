@@ -43,7 +43,7 @@ Tensor partition_weighted(
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once");
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kFloat).histc(k+1, 0, k+1).to(torch::kInt64);
+    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
     TORCH_CHECK(ptn_sizes_tensor.sum().item().to<int64_t>() == n);
     auto ptn_nodes = tensor_to_vector<int64_t>(ptn_sizes_tensor);
     TORCH_CHECK(ptn_nodes.size() == k+1);
@@ -208,8 +208,9 @@ Tensor partition_stratified_weighted(
                     "init_partition tensor should cover all nodes exactly once"
         );
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kFloat).histc(k+1, 0, k+1).to(torch::kInt64);
-    TORCH_CHECK(ptn_sizes_tensor.sum().item().to<int64_t>() == n);
+    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
+    int64_t num_assigned = ptn_sizes_tensor.sum().item().to<int64_t>();
+    TORCH_CHECK(num_assigned == n, num_assigned, " != ", n);
     // map: partition -> size
     auto ptn_sizes = tensor_to_vector<int64_t>(ptn_sizes_tensor);
     TORCH_CHECK(ptn_sizes.size() == k+1);

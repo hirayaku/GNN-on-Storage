@@ -174,7 +174,7 @@ def load_papers100m_directed(rootdir):
     data = dataset[0]
     report_mem("ogbn-papers100M (directed) dataset loaded")
     meta_info = {
-        'dir_name': dataset.dir_name,
+        'dir_name': dataset.dir_name + "_di",
         'num_nodes': data.num_nodes,
         'num_tasks': dataset.num_tasks,
         'task_type': 'multiclass classification',
@@ -330,7 +330,7 @@ def load_igb(rootdir):
     from igb.dataloader import IGB260M
     dataset = IGB260M(osp.join(rootdir, "IGB"), size="full", classes=19, in_memory=False, synthetic=False)
     meta_info = {
-        'dir_name': 'igb_full',
+        'dir_name': 'igb260m',
         'num_nodes': dataset.num_nodes(),
         'num_tasks': 1,
         'task_type': 'multiclass classification',

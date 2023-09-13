@@ -114,7 +114,7 @@ class NodePropPredDataset(object):
                     self.formats[edge_format] = True
             else:
                 logger.info(f"Skipping graph data of format \"{edge_format}\"")
-        
+
         # Generate CSC/CSR if they don't exist but are required
         need_csc = 'csc' in self.formats and self.formats['csc'] is False
         need_csr = 'csr' in self.formats and self.formats['csr'] is False
@@ -130,7 +130,8 @@ class NodePropPredDataset(object):
                 to_sort.copy_(dst)
                 to_sort *= self.num_nodes
                 to_sort += src
-                _, indices = sort(to_sort)
+                # radix_sort from pyg_lib crashes for papers, fall back to torch.sort
+                _, indices = torch.sort(to_sort)
                 del _, to_sort
                 s_src = src[indices]
                 s_dst = dst[indices]
@@ -144,9 +145,10 @@ class NodePropPredDataset(object):
                     self.data.adj = self.data.adj_t
                     need_csr = False
             if need_csr:
+                to_sort = MmapTensor(TensorMeta.like(src).temp_())
                 to_sort = src * self.num_nodes
                 to_sort += dst
-                _, indices = sort(to_sort)
+                _, indices = torch.sort(to_sort)
                 del _, to_sort
                 s_src = src[indices]
                 s_dst = dst[indices]

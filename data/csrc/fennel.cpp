@@ -42,7 +42,7 @@ Tensor partition(
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once");
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    Tensor ptn_sizes = init_ptn_tensor.to(torch::kFloat).histc(k+1, 0, k+1).to(torch::kInt64);
+    Tensor ptn_sizes = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
     auto node2ptn = Slice<int>::from_tensor(init_ptn_tensor).to_vec();
     TORCH_CHECK(node2ptn.size() == n);
     auto ptn_nodes = Slice<int64_t>::from_tensor(ptn_sizes).to_vec();
@@ -154,7 +154,7 @@ Tensor partition_opt(
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once");
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    Tensor ptn_sizes = init_ptn_tensor.to(torch::kFloat).histc(k+1, 0, k+1).to(torch::kInt64);
+    Tensor ptn_sizes = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
     TORCH_CHECK(ptn_sizes.sum().item().to<int64_t>() == n);
     auto node2ptn = Slice<int>::from_tensor(init_ptn_tensor).to_vec();
     TORCH_CHECK(node2ptn.size() == n);
@@ -312,7 +312,7 @@ Tensor partition_par(
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once");
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    Tensor ptn_sizes = init_ptn_tensor.to(torch::kFloat).histc(k+1, 0, k+1).to(torch::kInt64);
+    Tensor ptn_sizes = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
     // map: node->partition, techniquely it should be a container of atomics
     auto node2ptn = Slice<int>::from_tensor(init_ptn_tensor).to_vec();
     TORCH_CHECK(node2ptn.size() == n);

@@ -2,6 +2,8 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.typing import OptTensor
 from torch_sparse import SparseTensor
+import logging
+logger = logging.getLogger()
 
 def degree(sp: SparseTensor) -> torch.Tensor:
     rowptr, _, _ = sp.csr()
@@ -47,6 +49,7 @@ def node_importance(
     score[targets] = 1 / targets.size(0)
     deg = degree(adj_t)
     rw_probs = lazy_rw(adj_t, score, deg=deg, k=k, alpha=alpha, return_all=True)
+    logger.info("lazy rw finished")
     if k == 0:
         return score
     elif k == 1:
@@ -58,6 +61,7 @@ def node_importance(
         p_e = p[u]
         p_e *= p[v]
         adj_new = adj_t.set_value(p_e, 'csr')
+        logger.info("weighted adj created")
         p_revisit = adj_new.spmm(torch.ones((n, 1))).view(-1)
         del p_e, adj_new
         temp = sum(rw_probs)
@@ -81,6 +85,7 @@ def edge_importance(
     u, v = data.edge_index
     edge_impt = (node_impt * alpha / i_deg)[u]
     edge_impt += (node_impt * alpha / i_deg)[v]
+    logger.info("edge importance generated")
     return edge_impt
 
 if __name__ == '__main__':

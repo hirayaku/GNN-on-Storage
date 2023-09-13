@@ -284,12 +284,12 @@ if __name__ == "__main__":
     if not args.check and not args.pivot_only:
         logger.info(f"#nodes: {data.num_nodes}, #edges: {data.adj_t.nnz()}")
 
-        logger.info(f"> Partition graph...")
+        logger.info(f"Partition graph...")
         tic = time.time()
         n_assigns = get_partitioner(dataset, args).partition()
         toc = time.time()
         # torch.save(n_assigns, "partition.pt")
-        logger.info(f"> Graph partitoning done, takes {toc-tic:.2f}s")
+        logger.info(f"Graph partitoning done, takes {toc-tic:.2f}s")
         logger.info(f"Partition #cuts={edge_cuts(data.edge_index, n_assigns)}")
         _, node_interval, _ = scatter_append(dim=0, index=n_assigns, src=n_assigns, max_bin=args.pn)
         sizes = node_interval[1:] - node_interval[:-1]

@@ -1,7 +1,7 @@
 import os, json, logging, ctypes, warnings, uuid
 from copy import deepcopy
 from enum import Enum
-from typing import List, Union
+from typing import List, Union, Optional
 from dataclasses import dataclass, asdict, fields
 import numpy as np
 import torch
@@ -101,7 +101,7 @@ class TensorType(Enum):
 class TensorMeta:
     shape: List[int]
     dtype: Dtype
-    path: str | None = None
+    path: Optional[str] = None
     offset: int = 0
     ro: bool = False
     temporary: bool = False

@@ -14,10 +14,15 @@ if __name__ == "__main__":
                         help="location of datasets in the original format")
     parser.add_argument('--dstdir', type=str, default=os.environ.get('DATASETS', None),
                         help="location of transformed datasets")
+    parser.add_argument('--adj-only', action="store_true",
+                        help="create adj from the already transformed dataset")
     args = parser.parse_args()
 
-    # flatten the dataset into binary files
-    dataset_dir, _ = transform(args.dataset, indir=args.srcdir, outdir=args.dstdir)
+    if args.adj_only:
+        dataset_dir = os.path.join(args.dstdir, args.dataset.replace('-', '_'))
+    else:
+        # flatten the dataset into binary files
+        dataset_dir, _ = transform(args.dataset, indir=args.srcdir, outdir=args.dstdir)
     # create csc/csr
     dataset = NodePropPredDataset(
         dataset_dir, mmap=(False,True), formats=('coo', 'csr', 'csc'),

@@ -1,0 +1,4 @@
+[submodule "mimalloc"]
+	path = data/mimalloc
+	url = https://github.com/microsoft/mimalloc.git
+    ignore = untracked

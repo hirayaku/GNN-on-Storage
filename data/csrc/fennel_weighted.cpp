@@ -263,11 +263,16 @@ Tensor partition_stratified_weighted(
     }
 
     const float min_score = balance_score(n, gamma, alphas.max().item().to<float>());
+    int64_t processed = 0;
     // scratchpad vectors
     std::vector<float> ptn_weights(k + 1, 0);
     std::vector<int> ptn_to_check; ptn_to_check.reserve(k);
     for (auto v : node_stream)
     {
+        processed++;
+        if (processed % 10000000 == 0) {
+            std::clog << processed / 1000000 << "M nodes assigned\n";
+        }
         // random assign a partition if no partition is found
         int v_ptn = rand() % k;
         auto v_adj = adj(ptr_data, idx_data, v);

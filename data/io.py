@@ -197,7 +197,7 @@ except AttributeError:
     torch.Tensor.untyped_storage = untyped_storage
 
 
-def MmapTensor(tinfo: TensorMeta=None, **kwargs) -> torch.Tensor:
+def MmapTensor(tinfo: TensorMeta, **kwargs) -> torch.Tensor:
     '''
     Create a torch.Tensor backed by an mmap storage specified by TensorMeta
     '''

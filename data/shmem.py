@@ -207,7 +207,7 @@ class ShmemManager(object):
         self.cap = os.write(fd, b'Python rules all!\n')
         # self.cap = cap
         self.fd = fd
-    
+
     def client_handler(self, client_sock: socket.socket):
         with client_sock:
             while True:

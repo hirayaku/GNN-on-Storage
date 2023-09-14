@@ -38,6 +38,9 @@ class StaticAllocatorWrapper: public Allocator {
 // the deleter for the allocated memory (munmap).
 using MapAllocator = at::MapAllocator;
 
+class MapMadvAllocator : public MapAllocator {
+};
+
 // for "file_descriptor" sharing strategy, but with no explicit fd provided
 class CustomMapAllocator : public Allocator {
     std::string filename;

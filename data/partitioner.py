@@ -1,10 +1,11 @@
 from typing import Optional, Tuple
 import torch
 from torch_geometric.typing import Tensor, OptTensor
-from torch_geometric.utils import index_to_mask 
-import torch_sparse
+from torch_geometric.utils import index_to_mask
 from torch_sparse.tensor import SparseTensor
 import utils
+import logging
+logger = logging.getLogger()
 
 def group(ids, assigns, psize) -> list[torch.Tensor]:
     '''
@@ -167,8 +168,7 @@ class FennelPartitioner(NodePartitioner):
         try:
             torch.ops.load_library('data/build/libfennel.so')
         except:
-            print("Fail to load Fennel. Did you build it?")
-            raise
+            logger.error("Fail to load Fennel. Did you build it?")
         super().__init__(g, psize, name=name)
         self.weights = weights
         self.node_order = order
@@ -257,7 +257,7 @@ class ReFennelPartitioner(NodePartitioner):
         try:
             torch.ops.load_library('data/build/libfennel.so')
         except:
-            print("Fail to load Fennel. Did you build it?")
+            logger.error("Fail to load Fennel. Did you build it?")
             raise
 
         super().__init__(g, psize, name)
@@ -274,7 +274,7 @@ class ReFennelPartitioner(NodePartitioner):
     def partition(self) -> torch.IntTensor:
         self.assigns = None
         for r in range(self.runs):
-            print(f"ReFennel Run#{r}")
+            logger.info(f"ReFennel Run#{r}")
             self.assigns = self.base_fennel.partition(init_partition=self.assigns)
             self.base_fennel.alpha *= self.beta
         return self.assigns
@@ -312,7 +312,7 @@ class FennelStrataPartitioner(FennelPartitioner):
         self.alpha[self.alpha.isnan()] = 0
         self.alpha[self.alpha.isinf()] = 0
         self.alpha *= self.scale_alpha
-        print(self.scale_alpha, old_alpha, self.alpha)
+        logger.debug(self.scale_alpha, old_alpha, self.alpha)
 
     def partition(self, init_partition=None) -> torch.IntTensor:
         self.assigns = torch.ops.Fennel.partition_strata_weighted(

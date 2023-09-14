@@ -25,6 +25,7 @@ class FennelDegOrderPartitioner(P.FennelPartitioner):
         # overwrite node_order
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
+        #  self.node_order = torch.arange(self.n)
 
 class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
     def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
@@ -32,6 +33,7 @@ class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
         # overwrite node_order
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
+        #  self.node_order = torch.arange(self.n)
 
 def get_partitioner(dataset: NodePropPredDataset, args):
     data = dataset[0]
@@ -53,7 +55,7 @@ def get_partitioner(dataset: NodePropPredDataset, args):
     elif args.part == 'fennel-vnl':
         # vanilla version of fennel
         return P.ReFennelPartitioner(
-            data, args.pn, slack=1.25, runs=4,
+            data, args.pn, slack=1.2, runs=3,
             base=FennelDegOrderPartitioner,
         )
     elif args.part == 'fennel':
@@ -61,8 +63,9 @@ def get_partitioner(dataset: NodePropPredDataset, args):
         train_labels = torch.ones_like(data.y.flatten(), dtype=torch.int)
         train_labels[train_mask] = 0
         return P.ReFennelPartitioner(
-            data, args.pn, slack=1.25, runs=4,
+            data, args.pn, slack=1.2, runs=3,
             base=FennelStrataDegOrderPartitioner,
+            #  base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
     elif args.part == 'fennel-lb':
@@ -72,14 +75,15 @@ def get_partitioner(dataset: NodePropPredDataset, args):
         num_labels = train_labels.max().item() + 1
         train_labels[~train_mask] = num_labels
         return P.ReFennelPartitioner(
-            data, args.pn, slack=1.2, runs=4,
+            data, args.pn, slack=1.2, runs=3,
             base=FennelStrataDegOrderPartitioner,
+            #  base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
     elif args.part == 'fennel-w':
         e_w = edge_importance(data, train_nid, k=args.k)
         return P.ReFennelPartitioner(
-            data, args.pn, weights=e_w, slack=1.25, runs=4,
+            data, args.pn, weights=e_w, slack=1.2, runs=3,
             base=FennelDegOrderPartitioner,
         )
     elif args.part == 'fennel-wlb':
@@ -90,8 +94,9 @@ def get_partitioner(dataset: NodePropPredDataset, args):
         train_labels[~train_mask] = num_labels
         e_w = edge_importance(data, train_nid, k=args.k)
         return P.ReFennelPartitioner(
-            data, args.pn, weights=e_w, slack=1.2, runs=4,
+            data, args.pn, weights=e_w, slack=1.2, runs=3,
             base=FennelStrataDegOrderPartitioner,
+            #  base=P.FennelStrataPartitioner,
             labels=train_labels,
         )
     else:
@@ -184,9 +189,10 @@ def get_pivots(dataset: NodePropPredDataset, args):
     targets = dataset.get_idx_split()['train']
     data = dataset[0]
     # edge_index is sorted by dst
-    src, dst = data.edge_index
+    # src, dst = data.edge_index
     # NOTE: we should really use adj not adj_t, but since the graph is symmetric...
-    adj_t = SparseTensor(row=dst, col=src, is_sorted=True, sparse_sizes=data.size())
+    # adj_t = SparseTensor(row=dst, col=src, is_sorted=True, sparse_sizes=data.size())
+    adj_t = data.adj_t
     init_score = torch.zeros(data.size(0))
     init_score[targets] = 1.0
     score = lazy_rw(adj_t, init_score, k=args.k, alpha=0.5)
@@ -278,8 +284,9 @@ if __name__ == "__main__":
 
     num_par = torch.get_num_threads()
     dataset_dir = os.path.join(args.root, args.dataset.replace('-', '_'))
-    dataset = NodePropPredDataset(dataset_dir, mmap=(True,True), formats=('coo','csc'))
+    dataset = NodePropPredDataset(dataset_dir, mmap=(True,True), formats=('coo', 'csc'))
     data = dataset[0]
+    #  data.adj_t = NodePropPredDataset(dataset_dir, mmap=True, random=True, formats=('csc'))[0].adj_t
 
     if not args.check and not args.pivot_only:
         logger.info(f"#nodes: {data.num_nodes}, #edges: {data.adj_t.nnz()}")
@@ -296,13 +303,13 @@ if __name__ == "__main__":
         logger.info(f"Partition sizes: avg={int(sizes.float().mean())}, "
               f"min={sizes.min().item()}, max={sizes.max().item()}")
 
-        logger.info("> Partition dataset...")
+        logger.info("Partition dataset...")
         torch.set_num_threads(num_par * 4)
         tic = time.time()
         partition_dataset(data, n_assigns, args, dataset_dir)
         toc = time.time()
         torch.set_num_threads(num_par)
-        logger.info(f"> Dataset partitioning done, takes {toc-tic:.2f}s")
+        logger.info(f"Dataset partitioning done, takes {toc-tic:.2f}s")
 
     if not args.check:
         # select pivotal nodes, edges, and partition them

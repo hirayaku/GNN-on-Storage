@@ -1,7 +1,7 @@
 **.swp
 **/tags
 .vscode
-
+**/.cache
 **/__pycache__
 **/dist
 **/build
@@ -9,6 +9,7 @@
 **/*.egg-info
 notebooks/*.pkl
 notebooks/*.pt
+notebooks/*.pdf
 **/.ipynb_checkpoints
 **/.DS_Store
 *.out

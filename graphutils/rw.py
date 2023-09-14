@@ -91,12 +91,14 @@ def edge_importance(
 if __name__ == '__main__':
     from data.graphloader import NodePropPredDataset
     import data.partitioner as P
-    dataset = NodePropPredDataset('/mnt/md0/hb_datasets/ogbn_arxiv', mmap=False)
+    dataset = NodePropPredDataset('/mnt/md0/hb_datasets/ogbn_papers100M', mmap=True)
     data = dataset[0]
     trains = dataset.get_idx_split('train')
     u, v = data.edge_index
     def edge_cuts(assigns, weights=None):
-        mask = assigns[u] - assigns[v] != 0
+        mask = assigns[u]
+        mask -= assigns[v]
+        mask = (mask != 0)
         if weights is None:
             return mask.sum()
         else:
@@ -107,20 +109,20 @@ if __name__ == '__main__':
             # overwrite node_order
             degrees = self.rowptr[1:] - self.rowptr[:-1]
             self.node_order = torch.sort(degrees, descending=True).indices
-    # node_impt = node_importance(data, trains, k=2)
+    node_impt = node_importance(data, trains, k=2)
     edge_impt = edge_importance(data, trains, k=3)
     print(edge_impt.sum())
 
-    assigns = P.MetisWeightedPartitioner(data, 64).partition()
-    print(edge_cuts(assigns, edge_impt))
-    assigns = P.ReFennelPartitioner(
-        data, 64, runs=3, slack=1.2,
-        base=FennelStrataDegOrderPartitioner,
-    ).partition()
-    print(edge_cuts(assigns, edge_impt))
-    # assigns = P.MetisWeightedPartitioner(
-    #     data, 64, edge_weights=torch.randint(1, 16, (data.adj.nnz(),))
-    # ).partition()
-    # print(edge_cuts(assigns))
-    assigns = P.MetisWeightedPartitioner(data, 64, edge_weights=edge_impt).partition()
-    print(edge_cuts(assigns, edge_impt))
+    #  assigns = P.MetisWeightedPartitioner(data, 64).partition()
+    #  print(edge_cuts(assigns, edge_impt))
+    #  assigns = P.ReFennelPartitioner(
+    #      data, 64, runs=3, slack=1.2,
+    #      base=FennelStrataDegOrderPartitioner,
+    #  ).partition()
+    #  print(edge_cuts(assigns, edge_impt))
+    #  # assigns = P.MetisWeightedPartitioner(
+    #  #     data, 64, edge_weights=torch.randint(1, 16, (data.adj.nnz(),))
+    #  # ).partition()
+    #  # print(edge_cuts(assigns))
+    #  assigns = P.MetisWeightedPartitioner(data, 64, edge_weights=edge_impt).partition()
+    #  print(edge_cuts(assigns, edge_impt))

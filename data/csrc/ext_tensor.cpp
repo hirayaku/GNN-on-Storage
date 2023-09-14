@@ -6,7 +6,6 @@
 #include <c10/core/Allocator.h>
 #include <ATen/MapAllocator.h>
 #include <c10/core/CPUAllocator.h>
-#include <libshm.h>
 #include "ext_ops.hpp"
 
 using Allocator = c10::Allocator;
@@ -74,6 +73,7 @@ class CustomMapAllocator : public Allocator {
     }
 };
 
+/*
 // for "file_system" sharing strategy
 class CustomLibshmAllocator : public Allocator {
     std::string filename;
@@ -104,6 +104,7 @@ class CustomLibshmAllocator : public Allocator {
         return std::make_shared<CustomLibshmAllocator>(filename, flags, size);
     }
 };
+*/
 
 // TODO: AllocatorWrapper needs to survive across process forks
 // - need to define __getstate__, __setstate__ on the exposed Python class
@@ -162,11 +163,11 @@ class AllocatorWrapper: public torch::CustomClassHolder {
         auto allocator = CustomMapAllocator::New(filename, flags, pool_size);
         return c10::make_intrusive<AllocatorWrapper>(allocator);
     }
-    static PythonObj libshm_allocator(std::string filename, int64_t pool_size) {
-        int flags = get_flags(/*ro=*/false, /*temp=*/false, /*use_shm=*/true);
-        auto allocator = CustomLibshmAllocator::New(filename, flags, pool_size);
-        return c10::make_intrusive<AllocatorWrapper>(allocator);
-    }
+    // static PythonObj libshm_allocator(std::string filename, int64_t pool_size) {
+    //     int flags = get_flags(/*ro=*/false, /*temp=*/false, /*use_shm=*/true);
+    //     auto allocator = CustomLibshmAllocator::New(filename, flags, pool_size);
+    //     return c10::make_intrusive<AllocatorWrapper>(allocator);
+    // }
 };
 
 TORCH_LIBRARY(xTensor, m) {
@@ -184,11 +185,13 @@ TORCH_LIBRARY(xTensor, m) {
         "-> __torch__.torch.classes.xTensor.AllocWrapper",
         &AllocatorWrapper::mmap_allocator
     );
+    /*
     m.def(
         "libshm_allocator(str fname, int size)"
         "-> __torch__.torch.classes.xTensor.AllocWrapper",
         &AllocatorWrapper::libshm_allocator
     );
+    */
 
     // ops
     m.def(

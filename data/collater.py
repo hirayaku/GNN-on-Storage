@@ -82,12 +82,12 @@ class Collator:
                     num_nodes, (gathered_src, gathered_dst), edge_offsets, edge_part_sizes)
                 row, _ = edge_index
                 adj_t = SparseTensor(rowptr=colptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
-                logger.debug(f"Edge-index constructed: {batch_nodes.size(0)} nodes, {row.size(0)} edges")
+                targets = mask_to_index(
+                    ranges_gather(self.idx_mask, node_intervals[0], node_part_sizes))
+                logger.debug(f"Edge-index constructed: {batch_nodes.size(0)} nodes, {row.size(0)} edges, {targets.size(0)} train")
 
                 batch_x = ranges_gather(self.data.x, node_intervals[0], node_part_sizes)
                 batch_y = ranges_gather(self.data.y, node_intervals[0], node_part_sizes)
-                targets = mask_to_index(
-                    ranges_gather(self.idx_mask, node_intervals[0], node_part_sizes))
                 logger.debug(f"Features gathering done")
                 subgraph = Data(
                     num_nodes=num_nodes,
@@ -106,7 +106,7 @@ class Collator:
                 targets = torch.zeros_like(self.idx_mask)
                 targets[batch_nodes] = self.idx_mask[batch_nodes]
                 targets = mask_to_index(targets)
-                logger.debug(f"Edge-index constructed: {batch_nodes.size(0)} nodes, {row.size(0)} edges")
+                logger.debug(f"Edge-index constructed: {batch_nodes.size(0)} nodes, {row.size(0)} edges, {targets.size(0)} train")
                 subgraph = Data(
                     num_nodes=self.data.num_nodes,
                     x=self.data.x, y=self.data.y,
@@ -160,7 +160,7 @@ class CollatorPivots(Collator):
             self.pivot_buf[batch_count:batch_count+size] = self.node_parts_pvt[start:end]
             batch_count += size
         return self.pivot_buf[:batch_count]
-    
+
     def collate(self, batch:torch.Tensor):
         '''
         Collate selected node partitions and edge partitions into a macro-batch
@@ -169,7 +169,7 @@ class CollatorPivots(Collator):
         B = batch.size(0)
         # XXX debugging purposes
         batch = batch.sort().values
-        logger.debug(f"Collate {B} parts")
+        logger.debug(f"Collate {B} parts: {batch}")
 
         # construct macro-batch edge index
         batch_nodes = self.batch_nodes(batch)
@@ -212,6 +212,7 @@ class CollatorPivots(Collator):
         targets = mask_to_index(
             ranges_gather(self.idx_mask, n_intervals[0], n_part_sizes))
         logger.debug(f"Partition Adj: n={num_main_nodes}, m={gathered_src.size(0)}")
+        #  logger.debug(f"Num_main: {num_main_nodes}, max row/col: {gathered_src.max()}, {gathered_dst.max()}")
         # the pivot edge_index_inter
         e_offsets_inter = e_part_sizes_inter.cumsum(0) - e_part_sizes_inter
         inter_src = ranges_gather(inter_src, e_intervals_inter[0], e_part_sizes_inter)
@@ -243,6 +244,7 @@ class CollatorPivots(Collator):
             [torch.tensor([inter_size]), torch.tensor([inter_size]), e_part_sizes_intra, e_part_sizes],
         )
         row, _ = edge_index
+        #  logger.debug(f"Num_nodes: {num_nodes}, max ptr/row: {ptr.size(0)-1}, {row.max()}")
         adj_t = SparseTensor(rowptr=ptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
         logger.debug(f"Macro-batch graph constructed: n={num_nodes}, m={row.size(0)}")
         del intra_src, intra_dst, inter_src, inter_dst, inter_src_t, inter_dst_t

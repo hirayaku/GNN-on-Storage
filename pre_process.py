@@ -134,11 +134,10 @@ def partition_dataset(data, n_assigns, args, dataset_dir):
 
     # 2D partitioning of edges based on n_assigns
     edge_src, edge_dst = data.edge_index
-    buf_meta = TensorMeta.like(edge_src, dtype=torch.float).temp_().random_()
+    buf_meta = TensorMeta.like(edge_src, dtype=torch.int32).temp_().random_()
     buf = MmapTensor(buf_meta.clone()), MmapTensor(buf_meta.clone())
-    float_assigns = n_assigns.float()
-    dst_assigns = index_select(float_assigns, index=edge_dst, out=buf[0])
-    src_assigns = index_select(float_assigns, index=edge_src, out=buf[1])
+    dst_assigns = index_select(n_assigns, index=edge_dst, out=buf[0])
+    src_assigns = index_select(n_assigns, index=edge_src, out=buf[1])
     src_assigns *= args.pn
     src_assigns += dst_assigns
     e_assigns = src_assigns
@@ -156,8 +155,8 @@ def partition_dataset(data, n_assigns, args, dataset_dir):
         new_edge_attr = MmapTensor(TensorMeta.like(data.edge_attr, path=partition_dir).random_())
         scatter(index=scatter_index, src=data.edge_attr, out=new_edge_attr)
     # relabel edges
-    # can we use CSC formats to save IO? Not likely to help, because most partitions are
-    # very sparse. Keeping pointer arrays will likely increase IO, in fact.
+    # TODO: we could use CSC formats to compress the diagonal partitions to save space & IO
+    # but for non-diagonal partition, COO is more likely to be efficient
     index_select(src=relabel_nids, index=new_src, out=new_src)
     index_select(src=relabel_nids, index=new_dst, out=new_dst)
 
@@ -330,7 +329,11 @@ if __name__ == "__main__":
             for i in tqdm.tqdm(range(len(parts))):
                 p_size = len(parts[i])
                 p_nodes = parts[i]
-                assert (ndata_orig[p_nodes] == ndata_shfl[offset:offset+p_size]).all(), \
+                data_orig = ndata_orig[p_nodes]
+                data_orig[data_orig.isnan()] = -1
+                data_shfl = ndata_shfl[offset:offset+p_size]
+                data_shfl[data_shfl.isnan()] = -1
+                assert (data_orig == data_shfl).all(), \
                     f"Partition {i}"
                 offset += p_size
             torch.set_num_threads(num_par)

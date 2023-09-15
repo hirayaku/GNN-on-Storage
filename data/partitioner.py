@@ -7,21 +7,6 @@ import utils
 import logging
 logger = logging.getLogger()
 
-def group(ids, assigns, psize) -> list[torch.Tensor]:
-    '''
-    return ids of each part in a list given the assignments
-    '''
-    assert ids.size(0) == assigns.size(0)
-    _, idx = torch.sort(assigns, stable=True)
-    shuffled = ids[idx]
-
-    # compute partition sizes
-    group_sizes = torch.histc(assigns.float(), bins=psize, min=0, max=psize).long()
-    group_offs = torch.cumsum(group_sizes, dim=0)
-    groups = [shuffled[:group_offs[0]]] + \
-        [shuffled[group_offs[i-1]:group_offs[i]] for i in range(1, len(group_offs))]
-    return groups
-
 class NodePartitioner(object):
     '''
     NodePartitioner generates a partition assignment tensor

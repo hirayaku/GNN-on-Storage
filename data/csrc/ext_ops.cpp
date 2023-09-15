@@ -65,11 +65,11 @@ Tensor &scatter_index(
     long *out_p = out.data_ptr<long>();
     const size_t size = index.size(0);
 
-    AT_DISPATCH_ALL_TYPES_AND2(
-        at::ScalarType::Half, at::ScalarType::Bool, index.scalar_type(), "ext_scatter_index", [&]() {
-            const auto *index_p = index.data_ptr<scalar_t>();
+    AT_DISPATCH_INDEX_TYPES(
+        index.scalar_type(), "ext_scatter_index", [&]() {
+            const auto *index_p = index.data_ptr<index_t>();
             for (size_t i = 0; i < size; ++i) {
-                auto slot = static_cast<long>(index_p[i]);
+                auto slot = index_p[i];
                 *out_p++ = start_pos[slot]++;
             }
         }

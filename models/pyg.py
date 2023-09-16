@@ -22,13 +22,10 @@ def init_weights(m):
     if isinstance(m, torch.nn.Linear):
         gain = torch.nn.init.calculate_gain('relu')
         torch.nn.init.xavier_uniform_(m.weight, gain=gain)
-        # m.bias.data.fill_(0.01)
+        if hasattr(m, 'bias'):
+            m.bias.data.fill_(0.01)
 
 class SAGE(torch.nn.Module):
-    '''
-    Compared with SAGEClassic, `out_channels` is not used in this module definition
-    The output of forward pass is a vector of size `hidden_channels`
-    '''
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
         kwargs = dict(bias=False)
         conv_layer = SAGEConv
@@ -69,18 +66,12 @@ class SAGE(torch.nn.Module):
                 x = F.relu(x)
                 x = F.dropout(x, p=0.5, training=self.training)
         return torch.log_softmax(x, dim=-1)
-    
+
     def forward(self, x, mfg):
         if isinstance(mfg, list):
             return self.forward_adjs(x, mfg)
         else:
             return self.forward_graph(x, mfg)
-
-    # @torch.no_grad()
-    # def inference(self, x_all: torch.Tensor, device: torch.cuda.device,
-    #               make_subgraph_iter: Callable[[torch.tensor],
-    #                                            DeviceIterator]):
-    #     return layerwise_inference(self, x_all, device, make_subgraph_iter)
 
 
 # Needed by SAGEResInception

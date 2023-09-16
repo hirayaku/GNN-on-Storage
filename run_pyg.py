@@ -11,9 +11,9 @@ main_logger.setLevel(logging.INFO)
 import numpy as np
 import torch
 from torch_geometric import seed_everything
+from torch_geometric.loader import NeighborLoader
 from trainer.helpers import get_config, get_model, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
-from trainer.dataloader import NodeDataLoader, NodeTorchDataLoader, PartitionDataLoader, HierarchicalDataLoader
 from trainer.recorder import Recorder
 
 def train_with(conf: dict):
@@ -29,7 +29,7 @@ def train_with(conf: dict):
     main_logger.info(f"Training with GPU:{device.index}")
 
     dataset_conf, params = conf['dataset'], conf['model']
-    dataset = get_dataset(dataset_conf['root'])
+    dataset = get_dataset(dataset_conf['root'], mmap=(False, True))
     indices = dataset.get_idx_split()
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]
@@ -46,22 +46,33 @@ def train_with(conf: dict):
     main_logger.info(f"LR scheduler: {lr_scheduler}")
 
     sample_conf = conf['sample']
-    train_conf = sample_conf['train']
-    if len(train_conf) > 1:
-        main_logger.info("Using the hierarchical DataLoader")
-        train_loader = HierarchicalDataLoader(dataset_conf, env, 'train', sample_conf['train'])
-    else:
-        train_conf = train_conf[0]
-        if train_conf['sampler'] == 'cluster':
-            main_logger.info("Using the partition DataLoader")
-            train_loader = PartitionDataLoader(dataset_conf, env, 'train', train_conf)
-        else:
-            main_logger.info("Using the conventional DataLoader")
-            train_loader = NodeDataLoader(dataset_conf, env, 'train', train_conf)
-            #  train_loader = NodeTorchDataLoader(dataset_conf, env, 'train', train_conf)
-    if sample_conf['eval'] is not None:
-        val_loader = NodeDataLoader(dataset_conf, env, 'valid', sample_conf['eval'])
-        test_loader = NodeDataLoader(dataset_conf, env, 'test', sample_conf['eval'])
+    train_conf = sample_conf['train'][0]
+    train_sizes = list(map(int, train_conf['fanout'].split(',')))
+    train_loader = NeighborLoader(
+        dataset[0], input_nodes=indices['train'],
+        num_neighbors=train_sizes,
+        batch_size=train_conf['batch_size'],
+        shuffle=True,
+        num_workers = train_conf['num_workers'],
+        persistent_workers = train_conf['num_workers'] > 0,
+    )
+
+    eval_conf = sample_conf['eval']
+    eval_sizes = list(map(int, eval_conf['fanout'].split(',')))
+    val_loader = NeighborLoader(
+        dataset[0], input_nodes=indices['valid'],
+        num_neighbors=eval_sizes,
+        batch_size=eval_conf['batch_size'],
+        num_workers = eval_conf['num_workers'],
+        persistent_workers = eval_conf['num_workers'] > 0,
+    )
+    test_loader = NeighborLoader(
+        dataset[0], input_nodes=indices['test'],
+        num_neighbors=eval_sizes,
+        batch_size=eval_conf['batch_size'],
+        num_workers = eval_conf['num_workers'],
+        persistent_workers = True,
+    )
 
     recorder = Recorder(conf)
     for run in range(params['runs']):
@@ -103,45 +114,9 @@ def train_with(conf: dict):
     recorder.save(env['outdir'])
 
 if __name__ == '__main__':
-    # time_stamp = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
-    # print(f"\n## [{os.environ['HOSTNAME']}] {args.comment} seed:{seed}")
-    # print(time_stamp)
-    # print(args)
-    # torch.cuda.set_device(args.gpu)
-    # device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    # print(f"Training with GPU: {device}")
-
+    import torch.multiprocessing
+    torch.multiprocessing.set_sharing_strategy('file_system')
     conf = get_config()
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
     train_with(conf)
 
-    # print(f"""----Data statistics------
-    # #Nodes {n_nodes}
-    # #Edges {n_edges}
-    # #Classes/Labels (multi binary labels) {n_classes}
-    # #Train samples {n_train_samples}
-    # #Val samples {n_val_samples}
-    # #Test samples {n_test_samples}
-    # #Labels     {g.ndata['label'].shape}
-    # #Features   {g.ndata['feat'].shape}"""
-    # )
-
-    # log_path = f"log/{args.dataset}/HB-{model}-{partition}-c{args.popular_ratio}" \
-    #         + f"-r{args.recycle}*{args.rho}-p{args.psize}-b{args.bsize}-{time_stamp}"
-    # tb_writer = SummaryWriter(log_path, flush_secs=5)
-    # try:
-    #     accu = train(args, data, partitioner, tb_writer)
-    # except:
-    #     shutil.rmtree(log_path)
-    #     print("** removed tensorboard log dir **")
-    #     raise
-    # tb_writer.add_hparams({
-    #     'seed': seed,'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
-    #     'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'lr-decay': args.lr_decay,
-    #     'dropout': args.dropout, 'weight-decay': args.wt_decay,
-    #     'partition': args.part, 'psize': args.psize, 'bsize': args.bsize, 'bsize2': args.bsize2,
-    #     'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio,
-    #     },
-    #     {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
-    #     )
-    # tb_writer.close()

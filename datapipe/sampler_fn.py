@@ -43,12 +43,14 @@ class PygNeighborSampler:
         else:
             data, nodes = args[0]
         sample_out = self.sample(data, nodes, **kwargs)
-        row, col, node, edge = sample_out
+        row, col, node, edge, n_nodes, n_edges = sample_out
         # slice node and edge attributes
         data = self.filter_data(data, node, row, col, edge, perm=None)
         data.batch = None
         data.input_id = nodes
         data.batch_size = nodes.size(0)
+        data.num_sampled_nodes = n_nodes
+        data.num_sampled_edges = n_edges
         return data
 
     def _pyg_lib_sample(self, data, nodes, **kwargs) -> Data:
@@ -62,8 +64,8 @@ class PygNeighborSampler:
             **kwargs,
             **self.kw,
         )
-        row, col, node, edge, *per_hop = out
-        return row, col, node, edge
+        #  row, col, node, edge, num_sampled_nodes, num_sampled_edges = out
+        return out
 
     def _torch_sparse_sample(self, data, nodes, **kwargs) -> Data:
         colptr, row, _ = data.adj_t.csr()
@@ -74,7 +76,7 @@ class PygNeighborSampler:
             **kwargs, **self.kw,
         )
         node, row, col, edge = out
-        return row, col, node, edge
+        return row, col, node, edge, None, None
 
 class NodeInducedGraphSampler:
     '''

@@ -1,0 +1,37 @@
+{
+    "mode": "local",
+    "env": {
+        "verbose": true,
+        "outdir": "./logdir/acc",
+    },
+    "dataset": {
+        "name": "ogbn-papers100M",
+        "root": "/mnt/ebs/datasets/ogbn_papers100M",
+    },
+    "model": {
+        "arch": "sage",
+        "num_hidden": 256,
+        "num_layers": 3,
+        "dropout": 0.5,
+        "lr": 1e-3,
+        "runs": 5,
+        "epochs": 50,
+        "eval_every": 2,
+    },
+    "sample": {
+        "train": [{
+            "sampler": "ns",
+            "fanout": "15,10,5",
+            "batch_size": 1000,
+            "num_workers": 8,
+            "drop_last": true,
+        }],
+        "eval": {
+            "sampler": "ns",
+            "fanout": "20,20,20",
+            "batch_size": 500,
+            "num_workers": 8,
+            "drop_last": true,
+        },
+    }
+}

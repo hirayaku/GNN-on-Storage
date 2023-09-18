@@ -1,14 +1,15 @@
 from functools import partial
 import psutil, torch
+from torch_geometric.loader.utils import filter_data
 from data.graphloader import (
     NodePropPredDataset, ChunkedNodePropPredDataset,
     partition_dir, pivots_dir
 )
 from data.collater import Collator, CollatorPivots
-from datapipe.custom_pipes import TensorShuffleWrapper, LiteIterableWrapper, ObjectAsPipe 
-from datapipe.custom_pipes import identity_fn, even_split_fn, shuffle_tensor
+from datapipe.custom_pipes import TensorShuffleWrapper, LiteIterableWrapper, ObjectAsPipe
+from datapipe.custom_pipes import even_split_fn, shuffle_tensor
 from datapipe.parallel_pipes import mp, make_dp_worker
-from datapipe.sampler_fn import PygNeighborSampler
+from datapipe.sampler_fn import PygNeighborSampler, gather_feature, filter_data
 
 def get_idx_split(dataset: NodePropPredDataset, split: str):
     return dataset.get_idx_split(split)
@@ -18,12 +19,11 @@ def make_shared(data):
     return data
 
 class NodeDataLoader(object):
-    def __init__(self, dataset: dict, env: dict, split: str, conf: dict):
+    def __init__(self, dataset: dict, split: str, conf: dict):
         self.ctx = mp.get_context('fork')
-        self.ncpus = env.get('ncpus', psutil.cpu_count())
         self.cpu_i = 0
 
-        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True}, 
+        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True},
                                  random=True, formats='csc')
         # ds[0].share_memory_()
         datapipe = LiteIterableWrapper(ds)
@@ -33,17 +33,17 @@ class NodeDataLoader(object):
             index_dp = index_dp.tensor_shuffle()
         index_dp = index_dp.map(make_shared)
         batch_size = conf['batch_size']
-        drop_thres = 1 if conf.get('drop_last', True) else 0
         datapipe = datapipe.zip(index_dp).map(list).flatmap(
-            # partial(split_fn, size=batch_size, drop_thres=drop_thres), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         fanout = list(map(int, conf['fanout'].split(',')))
-        sample_fn = PygNeighborSampler(fanout)
-        num_par = conf.get('num_workers', self.ncpus - self.cpu_i)
+        sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
+        num_par = conf.get('num_workers', 0)
         datapipe = datapipe.pmap(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par,
                                  affinity=range(self.cpu_i, self.cpu_i+num_par))
-
+        datapipe = datapipe.map(
+            partial(gather_feature, filter_data)
+        )
         self.cpu_i += num_par
         self.datapipe = datapipe
 
@@ -53,14 +53,13 @@ class NodeDataLoader(object):
 from torch.utils.data import DataLoader
 
 import queue
-def relay(data, buf):
+def relay(data, buf: queue.Queue):
     buf.put(data)
     return buf.get()
 
 class NodeTorchDataLoader(object):
-    def __init__(self, dataset: dict, env: dict, split: str, conf: dict):
+    def __init__(self, dataset: dict, split: str, conf: dict):
         self.ctx = mp.get_context('fork')
-        self.ncpus = env.get('ncpus', psutil.cpu_count())
         self.cpu_i = 0
 
         ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True}, 
@@ -80,7 +79,7 @@ class NodeTorchDataLoader(object):
 
         fanout = list(map(int, conf['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout, unbatch=True)
-        num_par = conf.get('num_workers', self.ncpus - self.cpu_i)
+        num_par = conf.get('num_workers', 0)
         datapipe = DataLoader(
             datapipe, collate_fn=sample_fn,
             num_workers=num_par, persistent_workers=(num_par > 0)
@@ -96,9 +95,8 @@ def collate(collator: Collator, batch):
     return list(collator.collate(batch))
 
 class PartitionDataLoader(object):
-    def __init__(self, dataset: dict, env: dict, split: str, conf: dict):
+    def __init__(self, dataset: dict, split: str, conf: dict):
         self.ctx = mp.get_context('fork')
-        self.ncpus = env.get('ncpus', psutil.cpu_count())
         self.cpu_i = 0
 
         root = dataset['root']
@@ -132,32 +130,33 @@ class PartitionDataLoader(object):
 
     def __iter__(self):
         return iter(self.datapipe)
-    
+
     def __len__(self):
         return (self.P + self.batch_size - 1) // self.batch_size
 
 class HierarchicalDataLoader(object):
-    def __init__(self, dataset: dict, env: dict, split: str, conf: list[dict]):
+    def __init__(self, dataset: dict, split: str, conf: list[dict]):
         self.ctx = mp.get_context('fork')
-        self.ncpus = env.get('ncpus', psutil.cpu_count())
         self.cpu_i = 0
 
         # Level-1 loader, partition-based
-        partition_loader = PartitionDataLoader(dataset, env, split, conf[0])
+        partition_loader = PartitionDataLoader(dataset, split, conf[0])
         datapipe = partition_loader.datapipe
         self.cpu_i += partition_loader.cpu_i
         # Level-2 loader, neighbor sampler
         conf_l2 = conf[1]
         batch_size = conf_l2['batch_size']
         fanout = list(map(int, conf_l2['fanout'].split(',')))
-        sample_fn = PygNeighborSampler(fanout)
-        num_par = conf_l2.get('num_workers',  self.ncpus - self.cpu_i)
+        sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
+        num_par = conf_l2.get('num_workers',  0)
         datapipe = datapipe.map(list).flatmap(
-            # partial(split_fn, size=batch_size, drop_thres=1), flatten_col=1,
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
         datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,
                                  affinity=range(self.cpu_i, self.cpu_i+num_par))
+        datapipe = datapipe.map(
+            partial(gather_feature, filter_data)
+        )
         self.cpu_i += num_par
 
         self.batch_size = (partition_loader.batch_size, batch_size)

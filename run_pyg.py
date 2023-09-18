@@ -1,3 +1,6 @@
+'''
+This is the script to run experiments in PyG to obtain both accuracy and runtime results
+'''
 import os, time, random, sys, logging, json5
 main_logger = logging.getLogger()
 formatter = logging.Formatter(
@@ -8,11 +11,10 @@ stream_handler.setFormatter(formatter)
 main_logger.addHandler(stream_handler)
 main_logger.setLevel(logging.INFO)
 
-import numpy as np
 import torch
 from torch_geometric import seed_everything
 from torch_geometric.loader import NeighborLoader
-from trainer.helpers import get_config, get_model, get_dataset
+from trainer.helpers import get_model, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
 from trainer.recorder import Recorder
 
@@ -114,9 +116,15 @@ def train_with(conf: dict):
     recorder.save(env['outdir'])
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", type=str, required=True)
+    args, _ = parser.parse_known_args()
+    with open(args.config) as fp:
+        conf = json5.load(fp)
+    main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
+
     import torch.multiprocessing
     torch.multiprocessing.set_sharing_strategy('file_system')
-    conf = get_config()
-    main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
     train_with(conf)
 

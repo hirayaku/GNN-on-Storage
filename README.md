@@ -3,6 +3,8 @@
 Prerequisites: python>=3.8, python modules:
 `torch, torchmetrics, torch_geometric, torch_sparse, tqdm, json5, psutils, ogb`
 
+Set the environment variable `SCRATCH` to fast external storage to work with tensors larger than the memory.
+
 ## Commands to limit memory resources
 
 ```

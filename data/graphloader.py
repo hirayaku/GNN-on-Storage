@@ -58,6 +58,7 @@ class NodePropPredDataset(object):
         self.create_formats = create_formats
 
         super(NodePropPredDataset, self).__init__()
+        self._mmaps = set()
         self.load_data()
 
     @property
@@ -85,7 +86,39 @@ class NodePropPredDataset(object):
         # }
         ttype, random = mode
         meta.random = random
-        return load_tensor(meta, ttype)
+        tensor = load_tensor(meta, ttype)
+        if ttype == TensorType.MmapTensor:
+            self._mmaps.add((tensor, mode))
+        return tensor
+
+    def fill_mmaps(self):
+        '''
+        restore the operating mode of mmaped tensors
+        '''
+        for tensor, mode in self._mmaps:
+            if mode[1] is True:
+                madvise(
+                    tensor.data_ptr(),
+                    tensor.numel() * tensor.element_size(),
+                    MADV_OPTIONS.MADV_RANDOM
+                )
+            else:
+                madvise(
+                    tensor.data_ptr(),
+                    tensor.numel() * tensor.element_size(),
+                    MADV_OPTIONS.MADV_NORMAL
+                )
+
+    def drop_mmaps(self):
+        '''
+        immediately free all mmaped tensors in the current dataloader
+        '''
+        for tensor, _ in self._mmaps:
+            madvise(
+                tensor.data_ptr(),
+                tensor.numel() * tensor.element_size(),
+                MADV_OPTIONS.MADV_DONTNEED
+            )
 
     def _load_graph(self):
         graph_dicts = self.data_dict['graph']

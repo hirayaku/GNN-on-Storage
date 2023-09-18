@@ -103,6 +103,7 @@ class TensorMeta:
     dtype: Dtype
     path: Optional[str] = None
     offset: int = 0
+    # ro is deprecated due to the undesired interplay between MAP_PRIVATE and MADVISE_DONTNEED
     ro: bool = False
     temporary: bool = False
     random: bool = False
@@ -125,7 +126,8 @@ class TensorMeta:
     def clone(self) -> 'TensorMeta':
         return deepcopy(self)
     def read_only_(self, enable: bool = True) -> 'TensorMeta':
-        self.ro = enable
+        warnings.warn("'ro' flag is deprecated and not effective any more")
+        # self.ro = enable
         return self
     def temp_(self, enable: bool = True) -> 'TensorMeta':
         self.temporary = enable

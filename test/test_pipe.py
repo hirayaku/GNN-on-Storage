@@ -62,14 +62,14 @@ class TestPipe(unittest.TestCase):
             for b in dp:
                 print(b)
             print("done:", time.time() - now, "s")
-    
+
     def test_pmap2(self):
         dp = LiteIterableWrapper([torch.arange(8*200)]).flatmap(partial(split_fn, size=8))
         dp = dp.pmap(identity_fn, num_par=4, mp_ctx=mp.get_context('fork'))
         for _ in range(3):
             count = 0
             for batch in dp:
-                count += 1 
+                count += 1
             print("Generated", count, "items")
 
     def test_pypeln(self):
@@ -85,37 +85,36 @@ class TestPipe(unittest.TestCase):
             for b in dp:
                 print(b)
             print("done:", time.time() - now, "s")
- 
+
     # FIXED the datapipe doesn't release memory in time
     def test_psample(self):
         dataloader = PartitionDataLoader(
             dataset={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
-            env={'ncpus': 24},
             split='train',
             conf={
                 "sampler": "cluster",
                 "partition": "fennel-lb",
-                "P": 1024,
-                "batch_size": 1024//8,
+                "P": 64,
+                "batch_size": 8,
                 "pivots": True,
-                "num_workers": 6,
+                "num_workers": 8,
             },
         )
         for e in range(1):
             now = time.time()
             logger.info(f"Epoch {e}")
             for batch in dataloader:
+                print("training nodes:", batch[1].size(0))
                 del batch
             print(f"Epoch {e} done:", time.time() - now, "s")
-    
+
     # XXX 1. when num_intra_par == 2, dataloader gets stuck
     # FIXED 2. pmap: some data are dropped when num_workers > 1 (mp.queue is not in-order)
     # 3. using pmap is much slower than the torch DataLoader
     def test_nsample(self):
-        root = '/mnt/md0/hb_datasets/ogbn_products'
+        root = '/mnt/md0/hb_datasets/ogbn_papers100M'
         dataloader = NodeDataLoader(
             dataset={'root': root},
-            env={'ncpus': 24},
             split='train',
             conf={
                 "sampler": "ns",
@@ -132,14 +131,12 @@ class TestPipe(unittest.TestCase):
             for batch in tqdm.tqdm(dataloader):
                 edges += batch.adj_t.nnz()
                 iters += 1
-                # print(batch)
             print(f"Epoch {e} done: {time.time() - now:.2f}s, {iters} batches, #avg-edges:", edges//iters)
 
     def test_torch_nsample(self):
         root = '/mnt/md0/hb_datasets/ogbn_products'
         dataloader = NodeTorchDataLoader(
             dataset={'root': root},
-            env={'ncpus': 24},
             split='train',
             conf={
                 "sampler": "ns",
@@ -155,28 +152,27 @@ class TestPipe(unittest.TestCase):
             iters = 0
             logger.info(f"Epoch {e}")
             for batch in tqdm.tqdm(dataloader):
-                edges += batch.adj_t.nnz()
+                # edges += batch.adj_t.nnz()
                 iters += 1
             print(f"Epoch {e} done: {time.time() - now:.2f}s. #avg-edges:", edges//iters)
-    
+
     def test_hbsample(self):
         dataloader = HierarchicalDataLoader(
             dataset={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
-            env={'ncpus': 24},
             split='train',
             conf=[
                 {
                     "sampler": "cluster",
                     "partition": "fennel-lb",
-                    "P": 1024,
-                    "batch_size": 128,
+                    "P": 64,
+                    "batch_size": 64//4,
                     "pivots": True,
-                    "num_workers": 0,
+                    "num_workers": 8,
                 }, {
                     "sampler": "ns",
                     "batch_size": 1000,
                     "fanout": "15,10,5",
-                    "num_workers": 12,
+                    "num_workers": 16,
                 },
             ],
         )
@@ -184,13 +180,15 @@ class TestPipe(unittest.TestCase):
             now = time.time()
             edges, iters = 0, 0
             logger.info(f"Epoch {e}")
+            #  for batch in dataloader:
             for batch in tqdm.tqdm(dataloader):
-                edges += batch.adj_t.nnz()
+                # edges += batch.adj_t.nnz()
                 iters += 1
+                del batch
             print(f"Epoch {e} done: {time.time() - now:.2f}s. #avg-edges:", edges//iters)
 
 if __name__ == "__main__":
-    test = unittest.TestSuite()
-    test.addTest(TestPipe('test_psample'))
-    unittest.TextTestRunner().run(test)
-    # unittest.main()
+    # test = unittest.TestSuite()
+    # test.addTest(TestPipe('test_psample'))
+    # unittest.TextTestRunner().run(test)
+    unittest.main()

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from models.pyg import gen_model
 from data.graphloader import NodePropPredDataset
 
+'''
 def get_config() -> dict:
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", type=str, required=True)
@@ -11,6 +12,7 @@ def get_config() -> dict:
     with open(args.config) as fp:
         args_dict = json5.load(fp)
     return args_dict
+'''
 
 def get_model(in_feats: int, out_feats:int, model_conf: dict) -> torch.nn.Module:
     args = argparse.Namespace()
@@ -18,8 +20,8 @@ def get_model(in_feats: int, out_feats:int, model_conf: dict) -> torch.nn.Module
         setattr(args, k, model_conf[k])
     return gen_model(in_feats, out_feats, args)
 
-def get_dataset(root: str):
-    return NodePropPredDataset(root, mmap=(True, True), formats=('csc',))
+def get_dataset(root: str, mmap=True, random=False):
+    return NodePropPredDataset(root, mmap=mmap, random=random, formats=('csc',))
 
 def train(model, optimizer, dataloader, device, description='train'):
     model.train()
@@ -97,3 +99,4 @@ def eval_full(model, data, device, masks, description='eval'):
         )
     else:
         return compute_acc(masks)
+

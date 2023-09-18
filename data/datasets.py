@@ -131,7 +131,8 @@ def load_arxiv_r(rootdir):
         'labels': data.y,
     }
     idx = dataset.get_idx_split()
-    rand_idx = torch.randperm(data.num_nodes)
+    np.random.seed(1)
+    rand_idx = np.random.permutation(data.num_nodes)
     num_train = int(data.num_nodes * 0.2)
     num_valid = int(data.num_nodes * 0.4)
     idx = {
@@ -299,7 +300,7 @@ def load_mag240m_f(rootdir):
     feats_info = TensorMeta(
         shape=(num_nodes, dataset.num_paper_features), dtype=Dtype.float16,
         path=osp.join(dataset.dir, 'full.npy')
-    ).read_only_().temp_(False)
+    ).temp_(False)
     feats = MmapTensor(feats_info)
     # feats = np.memmap(osp.join(dataset.dir, 'full.npy'), mode='r', dtype='float16',
     #     shape=(num_nodes, dataset.num_paper_features))

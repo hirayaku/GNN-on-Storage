@@ -246,7 +246,7 @@ class CollatorPivots(Collator):
         row, _ = edge_index
         #  logger.debug(f"Num_nodes: {num_nodes}, max ptr/row: {ptr.size(0)-1}, {row.max()}")
         adj_t = SparseTensor(rowptr=ptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
-        logger.debug(f"Macro-batch graph constructed: n={num_nodes}, m={row.size(0)}")
+        logger.debug(f"Macro-batch graph constructed: n={num_nodes}, m={row.size(0)}, t={targets.size(0)}")
         del intra_src, intra_dst, inter_src, inter_dst, inter_src_t, inter_dst_t
         del gathered_src, gathered_dst
 

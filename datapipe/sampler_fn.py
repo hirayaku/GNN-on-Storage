@@ -7,6 +7,16 @@ from torch_geometric.loader.utils import filter_data
 
 NodeSampler = Callable[[Data, OptTensor, dict], Any]
 
+def gather_feature(filter_fn, args):
+    data, input_id, node, row, col, edge, n_nodes, n_edges = args
+    data = filter_fn(data, node, row, col, edge, perm=None)
+    data.batch = None
+    data.input_id = input_id
+    data.batch_size = input_id.size(0)
+    data.num_sampled_nodes = n_nodes
+    data.num_sampled_edges = n_edges
+    return data
+
 class PygNeighborSampler:
     '''
     Wrapper of the neighbor sampler functions used in PyG
@@ -20,6 +30,7 @@ class PygNeighborSampler:
         directed=True,
         return_eid=False,
         filter_data_fn=None,
+        filter_per_worker=True,
         unbatch=False,
         **overwrite_kw
     ):
@@ -28,6 +39,7 @@ class PygNeighborSampler:
         self.directed = directed
         self.return_eid = return_eid
         self.filter_data = filter_data if filter_data_fn is None else filter_data_fn
+        self.filter_per_worker = filter_per_worker
         self.unbatch = unbatch
         self.kw = overwrite_kw
         try:
@@ -44,14 +56,19 @@ class PygNeighborSampler:
             data, nodes = args[0]
         sample_out = self.sample(data, nodes, **kwargs)
         row, col, node, edge, n_nodes, n_edges = sample_out
-        # slice node and edge attributes
-        data = self.filter_data(data, node, row, col, edge, perm=None)
-        data.batch = None
-        data.input_id = nodes
-        data.batch_size = nodes.size(0)
-        data.num_sampled_nodes = n_nodes
-        data.num_sampled_edges = n_edges
-        return data
+        args = (data, nodes, node, row, col, edge, n_nodes, n_edges)
+        if self.filter_per_worker:
+            # slice node and edge attributes
+            # data = self.filter_data(data, node, row, col, edge, perm=None)
+            # data.batch = None
+            # data.input_id = nodes
+            # data.batch_size = nodes.size(0)
+            # data.num_sampled_nodes = n_nodes
+            # data.num_sampled_edges = n_edges
+            # return data
+            return gather_feature(self.filter_data, args)
+        else:
+            return args
 
     def _pyg_lib_sample(self, data, nodes, **kwargs) -> Data:
         colptr, row, _ = data.adj_t.csr()

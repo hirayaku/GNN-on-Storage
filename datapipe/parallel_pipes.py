@@ -56,7 +56,7 @@ class ParallelMapperDataPipe(IterDataPipe):
                 warnings.warn("leftover items found in queue:", d)
         except queue.Empty:
             pass
-    
+
     def __iter__(self):
         '''
         returns an iterator by initializing the internal states or, *clearing states*
@@ -77,8 +77,8 @@ class ParallelMapperDataPipe(IterDataPipe):
                 self._worker_restart = self.mp_ctx.Event()
                 self._barrier = self.mp_ctx.Barrier(parties=self.num_par)
                 self._worker_initialized = True
-                self.source_queue = self.mp_ctx.Queue(maxsize=self.num_par*2)
-                self.target_queue = self.mp_ctx.Queue(maxsize=self.num_par*2)
+                self.source_queue = self.mp_ctx.Queue(maxsize=self.num_par)
+                self.target_queue = self.mp_ctx.Queue(maxsize=self.num_par)
                 self._create_process_group()
             else:
                 # reset states to reuse workers
@@ -104,10 +104,10 @@ class ParallelMapperDataPipe(IterDataPipe):
                 if stop_recvd and self.target_count == self.source_count:
                     break
             self._clear_queue(self.target_queue)
-    
+
     def __len__(self):
         return len(self.source_dp)
-    
+
     def _thread_worker(self):
         for data in self.source_dp:
             self.source_count += 1

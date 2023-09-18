@@ -32,7 +32,7 @@ def scatter_append(
     hist = index.bincount(minlength=max_bin)
     hist_cum = torch.zeros(max_bin+1, dtype=torch.long)
     torch.cumsum(hist, dim=0, out=hist_cum[1:])
-    scatter_pos = MmapTensor(TensorMeta.like(index, dtype=torch.long).read_only_(False).temp_())
+    scatter_pos = MmapTensor(TensorMeta.like(index, dtype=torch.long).temp_())
     torch.ops.xTensor.scatter_index(scatter_pos, index, hist_cum)
     scatter(scatter_pos, src, out)
     return out, hist_cum, scatter_pos

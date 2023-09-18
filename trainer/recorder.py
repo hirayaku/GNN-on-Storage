@@ -3,7 +3,7 @@ import torch
 
 def flatten_dict(result, out=None, prefix=''):
     if out is None:
-        out = {} 
+        out = {}
     for k, v in result.items():
         if isinstance(v, dict):
             flatten_dict(v, out=out, prefix=f"{k}/")
@@ -22,10 +22,10 @@ class Recorder(object):
         self._run = run
         if run not in self.log:
             self.log[run] = {}
-    
+
     def __iter__(self):
         return iter(self.log)
-    
+
     def add(self, iters, data: dict):
         '''
         add the data dict tagged with the iteration number into the recorder
@@ -75,8 +75,8 @@ class Recorder(object):
             test = 100 * val_test['test/acc'][val_acc.argmax()]
             return {'val/acc' : valid, 'test/acc': test}
         else:
-            return None
-    
+            return {}
+
     def stdmean(self):
         return stdmean_acc(self)
 

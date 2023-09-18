@@ -35,12 +35,12 @@ class StaticAllocatorWrapper: public Allocator {
 // Instead, we could use MapAllocator::makeDataPtr to get allocated memory in DataPtr.
 // DataPtr obj created this way is attached with a unqiue MapAllocator obj which provides
 // the deleter for the allocated memory (munmap).
-using MapAllocator = at::MapAllocator;
+// using MapAllocator = at::MapAllocator;
 
-class MapMadvAllocator : public MapAllocator {
-};
+// An alternative MapAllocator which cleans up (reclaims) the mmapped area
+// with MADV_DONTNEED when the allocated tensor is freed
+// class CleanMapAllocator : public at::MapAllocator;
 
-// for "file_descriptor" sharing strategy, but with no explicit fd provided
 class CustomMapAllocator : public Allocator {
     std::string filename;
     int flags;
@@ -64,7 +64,7 @@ class CustomMapAllocator : public Allocator {
         );
         size_t actual_size;
         std::string fname = filename;
-        auto data_ptr = MapAllocator::makeDataPtr(filename, flags, size_, &actual_size);
+        auto data_ptr = at::MapAllocator::makeDataPtr(filename, flags, size_, &actual_size);
         if (actual_size != size_) {
             TORCH_WARN("Requested ", size_, " bytes but allocated ", actual_size);
         }
@@ -134,6 +134,7 @@ class AllocatorWrapper: public torch::CustomClassHolder {
     static inline int get_flags(bool ro, bool temporary, bool use_shm) {
         int flags = 0;
         if (!ro) {
+            // mmap with MAP_SHARED
             if (use_shm) {
                 flags |= at::MappedAllocatorModes::ALLOCATOR_MAPPED_SHAREDMEM;
                 // linux kernel seems to automatically free the allocated shared memory under
@@ -144,7 +145,6 @@ class AllocatorWrapper: public torch::CustomClassHolder {
             if (temporary)
                 flags |= at::MappedAllocatorModes::ALLOCATOR_MAPPED_UNLINK;
         } else {
-            // mmap with MAP_PRIVATE
             flags |= at::MappedAllocatorModes::ALLOCATOR_MAPPED_NOCREATE;
         }
         return flags;

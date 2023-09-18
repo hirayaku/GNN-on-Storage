@@ -38,8 +38,8 @@ def split_fn(input, size: int, drop_thres:float=0):
 
 def even_split_fn(input, size: int):
     remainder = len(input) - len(input) // size * size
-    steps = len(input) // size
-    surplus = (remainder + steps - 1) // steps 
+    steps = max(len(input) // size, 1)
+    surplus = (remainder + steps - 1) // steps
     start = 0
     for _ in range(steps):
         addition = 0
@@ -231,13 +231,13 @@ class ObjectAsPipe(IterDataPipe):
         self.args = args
         self.kwargs = kwargs
         self._initialized = False
-    
+
     def __iter__(self):
         if not self._initialized:
             self._initialized = True
             self.obj = self.cls(*self.args, **self.kwargs)
         yield self.obj
-    
+
     def __len__(self):
         return 1
 

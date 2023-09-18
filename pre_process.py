@@ -313,13 +313,13 @@ if __name__ == "__main__":
     if not args.check:
         # select pivotal nodes, edges, and partition them
         partition_dir = get_partition_dir(dataset_dir, args)
-        logger.info("> Select pivots...")
+        logger.info("Select pivots...")
         tic = time.time()
         pivot_data = get_pivots(dataset, args)
         chunked = ChunkedNodePropPredDataset(partition_dir)
         pivots_dir, _ = partition_pivots(chunked, pivot_data, args, dataset_dir)
         toc = time.time()
-        logger.info(f"> Selection done, takes {toc-tic:.2f}s")
+        logger.info(f"Selection done, takes {toc-tic:.2f}s")
 
     if args.check:
         def check_ndata(ndata_orig: torch.Tensor, ndata_shfl: torch.Tensor, parts):
@@ -390,3 +390,6 @@ if __name__ == "__main__":
         pivot_degree = degree(pivot_data.edge_index_inter[1], pivot_data.num_nodes)
         assert (global_degree[pivot.node_map] == pivot_degree).all()
         logger.info("Passed")
+
+    chunked.drop_mmaps()
+    dataset.drop_mmaps()

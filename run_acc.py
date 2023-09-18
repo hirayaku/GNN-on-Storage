@@ -8,15 +8,16 @@ stream_handler.setFormatter(formatter)
 main_logger.addHandler(stream_handler)
 main_logger.setLevel(logging.INFO)
 
-import numpy as np
 import torch
 from torch_geometric import seed_everything
-from trainer.helpers import get_config, get_model, get_dataset
+from torch_geometric.loader import NeighborLoader
+from trainer.helpers import get_model, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
-from trainer.dataloader import NodeDataLoader, NodeTorchDataLoader, PartitionDataLoader, HierarchicalDataLoader
+from trainer.dataloader import NodeDataLoader, PartitionDataLoader, HierarchicalDataLoader
 from trainer.recorder import Recorder
+import utils
 
-def train_with(conf: dict):
+def train_with(conf: dict, keep_eval=True):
     env = conf['env']
     seed = env.get('seed', random.randint(0, 1024**3))
     env['seed'] = seed
@@ -30,9 +31,9 @@ def train_with(conf: dict):
 
     dataset_conf, params = conf['dataset'], conf['model']
     dataset = get_dataset(dataset_conf['root'])
-    indices = dataset.get_idx_split()
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]
+    dataset.drop_mmaps()
     model = get_model(in_feats, out_feats, params)
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
@@ -46,22 +47,23 @@ def train_with(conf: dict):
     main_logger.info(f"LR scheduler: {lr_scheduler}")
 
     sample_conf = conf['sample']
-    train_conf = sample_conf['train']
+    train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
     if len(train_conf) > 1:
         main_logger.info("Using the hierarchical DataLoader")
-        train_loader = HierarchicalDataLoader(dataset_conf, env, 'train', sample_conf['train'])
+        train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
     else:
         train_conf = train_conf[0]
         if train_conf['sampler'] == 'cluster':
             main_logger.info("Using the partition DataLoader")
-            train_loader = PartitionDataLoader(dataset_conf, env, 'train', train_conf)
+            train_loader = PartitionDataLoader(dataset_conf, 'train', train_conf)
         else:
             main_logger.info("Using the conventional DataLoader")
-            train_loader = NodeDataLoader(dataset_conf, env, 'train', train_conf)
-            #  train_loader = NodeTorchDataLoader(dataset_conf, env, 'train', train_conf)
-    if sample_conf['eval'] is not None:
-        val_loader = NodeDataLoader(dataset_conf, env, 'valid', sample_conf['eval'])
-        test_loader = NodeDataLoader(dataset_conf, env, 'test', sample_conf['eval'])
+            train_loader = NodeDataLoader(dataset_conf, 'train', train_conf)
+    eval_full_batch = eval_conf is None
+    val_loader = test_loader = None
+    if not eval_full_batch and keep_eval:
+        val_loader = NodeDataLoader(dataset_conf, 'valid', eval_conf)
+        test_loader = NodeDataLoader(dataset_conf, 'test', eval_conf)
 
     recorder = Recorder(conf)
     for run in range(params['runs']):
@@ -78,16 +80,39 @@ def train_with(conf: dict):
             )
 
             if (e + 1) % params['eval_every'] == 0:
-                if sample_conf['eval'] is None:
+                if eval_full_batch:
+                    indices = dataset.get_idx_split()
                     results = eval_full(model, dataset[0], device=device,
                                         masks=(indices['valid'], indices['test']))
                     val_loss, val_acc = results[0]
                     test_loss, test_acc = results[1]
-                else:
+                elif keep_eval:
                     val_loss, val_acc, *_ = eval_batch(model, val_loader, device=device,
                                                        description='validation')
                     test_loss, test_acc, *_ = eval_batch(model, test_loader, device=device,
-                                                        description='test')
+                                                         description='test')
+                else:
+                    with utils.parallelism(factor=4): # overcommit threads
+                        dataset = get_dataset(dataset_conf['root'], mmap=(False, True), random=True)
+                        eval_sizes = list(map(int, eval_conf['fanout'].split(',')))
+                        eval_loader = NeighborLoader(
+                            dataset[0], input_nodes=dataset.get_idx_split('valid'),
+                            num_neighbors=eval_sizes,
+                            batch_size=eval_conf['batch_size'],
+                            num_workers=0,
+                        )
+                        val_loss, val_acc, *_ = eval_batch(model, eval_loader, device=device,
+                                                        description='validation')
+                        eval_loader = NeighborLoader(
+                            dataset[0], input_nodes=dataset.get_idx_split('test'),
+                            num_neighbors=eval_sizes,
+                            batch_size=eval_conf['batch_size'],
+                            num_workers=0,
+                        )
+                        test_loss, test_acc, *_ = eval_batch(model, eval_loader, device=device,
+                                                            description='test')
+                        del eval_loader, dataset
+
                 recorder.add(iters=e, data={
                     'val':    { 'loss': val_loss, 'acc': val_acc, },
                     'test':     { 'loss': test_loss, 'acc': test_acc, },
@@ -100,20 +125,26 @@ def train_with(conf: dict):
 
     main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")
     main_logger.info(f"Results: {recorder.stdmean()}")
-    recorder.save(env['outdir'])
+    return recorder
 
 if __name__ == '__main__':
-    # time_stamp = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
-    # print(f"\n## [{os.environ['HOSTNAME']}] {args.comment} seed:{seed}")
-    # print(time_stamp)
-    # print(args)
-    # torch.cuda.set_device(args.gpu)
-    # device = torch.device(f'cuda:{torch.cuda.current_device()}')
-    # print(f"Training with GPU: {device}")
-
-    conf = get_config()
+    import argparse
+    parser = argparse.ArgumentParser()
+    # parser.add_argument("-c", "--config", type=str, required=True)
+    parser.add_argument("-c", "--config", type=str, default='conf/papers-hb.json5')
+    parser.add_argument("--keep-eval", action="store_true",
+                        help="keep evaluation dataloaders in memory")
+    args, _ = parser.parse_known_args()
+    with open(args.config) as fp:
+        conf = json5.load(fp)
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
-    train_with(conf)
+
+    import torch.multiprocessing as mp
+    mp.set_sharing_strategy('file_system')
+    recorder = train_with(conf, keep_eval=args.keep_eval)
+    env = conf.get('env', dict())
+    if 'outdir' in env:
+        recorder.save(env['outdir'])
 
     # print(f"""----Data statistics------
     # #Nodes {n_nodes}

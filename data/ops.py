@@ -104,7 +104,7 @@ def index_select(
 def coo_list_merge(
         num_nodes: int,
         coo_tensors: list[Tuple[torch.Tensor, torch.Tensor]],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
     '''
     Merge coo fragments into a unifying coo.
     NOTE: node IDs in the input coo tensors should be in the range of [0, num_nodes).
@@ -117,7 +117,7 @@ def coo_ranges_merge(
         coo_tensors: list[Tuple[torch.Tensor, torch.Tensor]],
         starts: list[torch.Tensor],
         lengths: list[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
     '''
     Merge coo fragments into a unifying coo without explictly constructing a list of coo's.
     NOTE: node IDs in the specified input coo tensors should be in the range of [0, num_nodes).

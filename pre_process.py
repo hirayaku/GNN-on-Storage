@@ -8,6 +8,7 @@ import data.partitioner as P
 from data.io import TensorMeta, MmapTensor
 from data.ops import scatter, scatter_append, index_select, edge_cuts
 from graphutils.rw import lazy_rw, edge_importance
+import utils
 
 import logging
 logger = logging.getLogger()
@@ -52,55 +53,48 @@ def get_partitioner(dataset: NodePropPredDataset, args):
     elif args.part == 'metis-wtb':
         e_w = edge_importance(data, train_nid, k=args.k)
         return P.MetisWeightedPartitioner(data, args.pn, node_weights=train_nid, edge_weights=e_w)
-    elif args.part == 'fennel-vnl':
-        # vanilla version of fennel
-        return P.ReFennelPartitioner(
-            data, args.pn, slack=1.2, runs=3,
-            base=FennelDegOrderPartitioner,
-        )
-    elif args.part == 'fennel':
-        # unlike metis-tb, fennel balances both training nodes and non-training nodes
-        train_labels = torch.ones_like(data.y.flatten(), dtype=torch.int)
-        train_labels[train_mask] = 0
-        return P.ReFennelPartitioner(
-            data, args.pn, slack=1.2, runs=3,
-            base=FennelStrataDegOrderPartitioner,
-            #  base=P.FennelStrataPartitioner,
-            labels=train_labels,
-        )
-    elif args.part == 'fennel-lb':
-        # fennel-lb balances all labels in the training set and non-training nodes
-        train_labels = data.y.flatten().clone()
-        train_labels = train_labels.int()
-        num_labels = train_labels.max().item() + 1
-        train_labels[~train_mask] = num_labels
-        return P.ReFennelPartitioner(
-            data, args.pn, slack=1.2, runs=3,
-            base=FennelStrataDegOrderPartitioner,
-            #  base=P.FennelStrataPartitioner,
-            labels=train_labels,
-        )
-    elif args.part == 'fennel-w':
-        e_w = edge_importance(data, train_nid, k=args.k)
-        return P.ReFennelPartitioner(
-            data, args.pn, weights=e_w, slack=1.2, runs=3,
-            base=FennelDegOrderPartitioner,
-        )
-    elif args.part == 'fennel-wlb':
-        # fennel-lb balances all labels in the training set and non-training nodes
-        train_labels = data.y.flatten().clone()
-        train_labels = train_labels.int()
-        num_labels = train_labels.max().item() + 1
-        train_labels[~train_mask] = num_labels
-        e_w = edge_importance(data, train_nid, k=args.k)
-        return P.ReFennelPartitioner(
-            data, args.pn, weights=e_w, slack=1.2, runs=3,
-            base=FennelStrataDegOrderPartitioner,
-            #  base=P.FennelStrataPartitioner,
-            labels=train_labels,
-        )
     else:
-        raise ValueError(args.part)
+        train_labels = data.y.flatten().clone()
+        train_labels = train_labels.int()
+        num_labels = train_labels.max().item() + 1
+        train_labels[~train_mask] = num_labels
+        if args.part == 'fennel-vnl':
+            # vanilla version of fennel
+            return P.ReFennelPartitioner(
+                data, args.pn, slack=1.1, runs=3,
+                base=FennelDegOrderPartitioner,
+            )
+        elif args.part == 'fennel':
+            # unlike metis-tb, fennel balances both training nodes and non-training nodes
+            return P.ReFennelPartitioner(
+                data, args.pn, slack=1.1, runs=3,
+                base=FennelStrataDegOrderPartitioner,
+                #  base=P.FennelStrataPartitioner,
+                labels=train_mask.int(),
+            )
+        elif args.part == 'fennel-lb':
+            # fennel-lb balances all labels in the training set and non-training nodes
+            return P.ReFennelPartitioner(
+                data, args.pn, slack=1.1, runs=3,
+                base=FennelStrataDegOrderPartitioner,
+                #  base=P.FennelStrataPartitioner,
+                labels=train_labels,
+            )
+        elif args.part == 'fennel-w':
+            e_w = edge_importance(data, train_nid, k=args.k)
+            return P.ReFennelPartitioner(
+                data, args.pn, weights=e_w, slack=1.1, runs=3,
+                base=FennelDegOrderPartitioner,
+            )
+        elif args.part == 'fennel-wlb':
+            e_w = edge_importance(data, train_nid, k=args.k)
+            return P.ReFennelPartitioner(
+                data, args.pn, weights=e_w, slack=1.1, runs=3,
+                base=FennelStrataDegOrderPartitioner,
+                labels=train_labels,
+            )
+        else:
+            raise ValueError(args.part)
 
 def get_partition_dir(root, args):
     return os.path.join(root, f"{args.part}-P{args.pn}")
@@ -221,13 +215,13 @@ def partition_pivots(chunk_dataset, pivot_data, args, dataset_dir):
     relabel = torch.empty_like(chunk_dataset.node_map)
     relabel[chunk_dataset.node_map] = torch.arange(0, chunk_dataset.num_nodes)
     inter_src = relabel[inter_src]
-    logger.info("pivot inter_adj partitions:\n{}".format(inter_interval))
+    logger.debug("pivot inter_adj partitions:\n{}".format(inter_interval))
     # 1D partition intra_adj based on src
     intra_src, intra_interval, scatter_index = scatter_append(
         dim=0, index=pivots_assign[intra_src], src=intra_src, max_bin=args.pn
     )
     intra_dst = scatter(index=scatter_index, src=intra_dst)
-    logger.info("pivot intra_adj partitions:\n{}".format(intra_interval))
+    logger.debug("pivot intra_adj partitions:\n{}".format(intra_interval))
 
     # write to disk
     data_dict = {
@@ -281,7 +275,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     logger.info(args)
 
-    num_par = torch.get_num_threads()
     dataset_dir = os.path.join(args.root, args.dataset.replace('-', '_'))
     dataset = NodePropPredDataset(dataset_dir, mmap=(True,True), formats=('coo', 'csc'))
     data = dataset[0]
@@ -303,11 +296,10 @@ if __name__ == "__main__":
               f"min={sizes.min().item()}, max={sizes.max().item()}")
 
         logger.info("Partition dataset...")
-        torch.set_num_threads(num_par * 4)
-        tic = time.time()
-        partition_dataset(data, n_assigns, args, dataset_dir)
-        toc = time.time()
-        torch.set_num_threads(num_par)
+        with utils.parallelism(4):
+            tic = time.time()
+            partition_dataset(data, n_assigns, args, dataset_dir)
+            toc = time.time()
         logger.info(f"Dataset partitioning done, takes {toc-tic:.2f}s")
 
     if not args.check:
@@ -324,19 +316,18 @@ if __name__ == "__main__":
     if args.check:
         def check_ndata(ndata_orig: torch.Tensor, ndata_shfl: torch.Tensor, parts):
             logger.info("Checking ndata")
-            torch.set_num_threads(num_par * 4)
-            offset = 0
-            for i in tqdm.tqdm(range(len(parts))):
-                p_size = len(parts[i])
-                p_nodes = parts[i]
-                data_orig = ndata_orig[p_nodes]
-                data_orig[data_orig.isnan()] = -1
-                data_shfl = ndata_shfl[offset:offset+p_size]
-                data_shfl[data_shfl.isnan()] = -1
-                assert (data_orig == data_shfl).all(), \
-                    f"Partition {i}"
-                offset += p_size
-            torch.set_num_threads(num_par)
+            with utils.parallelism(4):
+                offset = 0
+                for i in tqdm.tqdm(range(len(parts))):
+                    p_size = len(parts[i])
+                    p_nodes = parts[i]
+                    data_orig = ndata_orig[p_nodes]
+                    data_orig[data_orig.isnan()] = -1
+                    data_shfl = ndata_shfl[offset:offset+p_size]
+                    data_shfl[data_shfl.isnan()] = -1
+                    assert (data_orig == data_shfl).all(), \
+                        f"Partition {i}"
+                    offset += p_size
             logger.info("Passed")
 
         def intervalize(offsets: torch.Tensor):
@@ -360,8 +351,15 @@ if __name__ == "__main__":
         chunked_data = chunked[0]
         n_assigns = chunked.node_assign[chunked.node_map]
         assert (n_assigns[1:] >= n_assigns[:-1]).all()
-        node_partitions = PartitionSequence(chunked.node_map, intervalize(chunked.node_parts))
+        node_parts = intervalize(chunked.node_parts)
+        node_partitions = PartitionSequence(chunked.node_map, node_parts)
         src_partitions = PartitionSequence(chunked_data.edge_index[0], intervalize(chunked_data.edge_index[-1]))
+
+        train_nodes = chunked.get_idx_split('train')
+        train_mask = index_to_mask(train_nodes, chunked.num_nodes)
+        remapped_partitions = PartitionSequence(torch.arange(chunked.num_nodes), node_parts)
+        train_sizes = [int(train_mask[part].sum()) for part in remapped_partitions]
+        logger.info(f"Training nodes per partition: \n{train_sizes}")
 
         logger.info("Checking node feat")
         check_ndata(data.x, chunked_data.x, node_partitions)

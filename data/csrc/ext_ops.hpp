@@ -18,12 +18,13 @@ Tensor &ranges_add(Tensor &target, const Tensor &, const Tensor &, const Tensor 
 
 // merge the input list of edges in COO formats (assuming edges are sorted by dst)
 // doesn't relabel nodes; just merge the COOs into a (n,n) adj matrix
-// @return tuple of <coo, rowptr, rowoff>
-std::tuple<Tensor, Tensor, Tensor> coo_list_merge(
+// @return tuple of <colptr, row>
+std::tuple<Tensor, Tensor> coo_list_merge(
     long num_nodes, const std::vector<EdgeType> &edges
 );
 
-std::tuple<Tensor, Tensor, Tensor> coo_ranges_merge(
+// @return tuple of <colptr, row>
+std::tuple<Tensor, Tensor> coo_ranges_merge(
     long num_nodes,
     const std::vector<EdgeType> &coo_list,
     const std::vector<Tensor> &starts,

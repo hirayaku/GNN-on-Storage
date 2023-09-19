@@ -103,16 +103,16 @@ if __name__ == '__main__':
             return mask.sum()
         else:
             return weights[mask].sum()
-    class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
-        def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
-            super().__init__(g, psize, name=name, **kwargs)
-            # overwrite node_order
-            degrees = self.rowptr[1:] - self.rowptr[:-1]
-            self.node_order = torch.sort(degrees, descending=True).indices
     node_impt = node_importance(data, trains, k=2)
     edge_impt = edge_importance(data, trains, k=3)
     print(edge_impt.sum())
 
+    # class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
+    #     def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
+    #         super().__init__(g, psize, name=name, **kwargs)
+    #         # overwrite node_order
+    #         degrees = self.rowptr[1:] - self.rowptr[:-1]
+    #         self.node_order = torch.sort(degrees, descending=True).indices
     #  assigns = P.MetisWeightedPartitioner(data, 64).partition()
     #  print(edge_cuts(assigns, edge_impt))
     #  assigns = P.ReFennelPartitioner(

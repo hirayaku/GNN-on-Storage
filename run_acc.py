@@ -1,4 +1,4 @@
-import os, time, random, sys, logging, json5
+import os, time, random, sys, gc, logging, json5
 main_logger = logging.getLogger()
 formatter = logging.Formatter(
     "%(asctime)s.%(msecs)03d[%(levelname)s] %(module)s: %(message)s",
@@ -11,6 +11,7 @@ main_logger.setLevel(logging.INFO)
 import torch
 from torch_geometric import seed_everything
 from torch_geometric.loader import NeighborLoader
+from data.graphloader import NodePropPredDataset
 from trainer.helpers import get_model, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
 from trainer.dataloader import NodeDataLoader, PartitionDataLoader, HierarchicalDataLoader
@@ -87,31 +88,38 @@ def train_with(conf: dict, keep_eval=True):
                     val_loss, val_acc = results[0]
                     test_loss, test_acc = results[1]
                 elif keep_eval:
-                    val_loss, val_acc, *_ = eval_batch(model, val_loader, device=device,
-                                                       description='validation')
-                    test_loss, test_acc, *_ = eval_batch(model, test_loader, device=device,
-                                                         description='test')
+                    val_loss, val_acc, *_ = eval_batch(
+                        model, val_loader, device=device, description='validation'
+                    )
+                    test_loss, test_acc, *_ = eval_batch(
+                        model, test_loader, device=device, description='test'
+                    )
                 else:
                     with utils.parallelism(factor=4): # overcommit threads
-                        dataset = get_dataset(dataset_conf['root'], mmap=(False, True), random=True)
+                        dataset = NodePropPredDataset(
+                            dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
+                        )
                         eval_sizes = list(map(int, eval_conf['fanout'].split(',')))
                         eval_loader = NeighborLoader(
                             dataset[0], input_nodes=dataset.get_idx_split('valid'),
                             num_neighbors=eval_sizes,
                             batch_size=eval_conf['batch_size'],
-                            num_workers=0,
+                            num_workers=eval_conf['num_workers'],
                         )
-                        val_loss, val_acc, *_ = eval_batch(model, eval_loader, device=device,
-                                                        description='validation')
+                        val_loss, val_acc, *_ = eval_batch(
+                            model, eval_loader, device=device, description='validation'
+                        )
                         eval_loader = NeighborLoader(
                             dataset[0], input_nodes=dataset.get_idx_split('test'),
                             num_neighbors=eval_sizes,
                             batch_size=eval_conf['batch_size'],
-                            num_workers=0,
+                            num_workers=eval_conf['num_workers'],
                         )
-                        test_loss, test_acc, *_ = eval_batch(model, eval_loader, device=device,
-                                                            description='test')
+                        test_loss, test_acc, *_ = eval_batch(
+                            model, eval_loader, device=device, description='test'
+                        )
                         del eval_loader, dataset
+                        gc.collect() # make sure the dataloader memory gets reclaimed
 
                 recorder.add(iters=e, data={
                     'val':    { 'loss': val_loss, 'acc': val_acc, },
@@ -130,8 +138,7 @@ def train_with(conf: dict, keep_eval=True):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    # parser.add_argument("-c", "--config", type=str, required=True)
-    parser.add_argument("-c", "--config", type=str, default='conf/papers-hb.json5')
+    parser.add_argument("-c", "--config", type=str, required=True)
     parser.add_argument("--keep-eval", action="store_true",
                         help="keep evaluation dataloaders in memory")
     args, _ = parser.parse_known_args()

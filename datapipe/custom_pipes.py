@@ -37,19 +37,24 @@ def split_fn(input, size: int, drop_thres:float=0):
         yield input[start:]
 
 def even_split_fn(input, size: int):
-    remainder = len(input) - len(input) // size * size
-    steps = max(len(input) // size, 1)
-    surplus = (remainder + steps - 1) // steps
-    start = 0
-    for _ in range(steps):
-        addition = 0
-        if remainder > 0:
-            addition = surplus if remainder > surplus else remainder
+    '''
+    evenly split the `input` into segments of rougly `size`
+    when `len(input) < size`, yield input directly
+    '''
+    if len(input) < size:
+        yield input
+    else:
+        remainder = len(input) - len(input) // size * size
+        steps = len(input) // size
+        surplus = (remainder + steps - 1) // steps
+        start = 0
+        for _ in range(steps):
+            addition = min(surplus, remainder)
             remainder -= addition
-        end = start + size + addition
-        yield input[start:end]
-        start = end
-    assert start == len(input), f"yielded {start} but input has {len(input)}"
+            end = start + size + addition
+            yield input[start:end]
+            start = end
+        assert start == len(input), f"yielded {start} but input has {len(input)}"
 
 # def nested_batch(batch, inner_batch_size, drop_thres=0.0):
 #     if isinstance(batch, tuple):

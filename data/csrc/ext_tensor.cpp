@@ -215,12 +215,12 @@ TORCH_LIBRARY(xTensor, m) {
     );
     m.def(
         "coo_list_merge(int num_nodes, (Tensor, Tensor)[] edges)"
-        "-> (Tensor, Tensor, Tensor)",
+        "-> (Tensor, Tensor)",
         &coo_list_merge
     );
     m.def(
         "coo_ranges_merge(int n, (Tensor, Tensor)[] edges, Tensor[] starts, Tensor[] sizes)"
-        "-> (Tensor, Tensor, Tensor)",
+        "-> (Tensor, Tensor)",
         &coo_ranges_merge
     );
 

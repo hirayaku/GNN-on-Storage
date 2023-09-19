@@ -213,11 +213,11 @@ class NodePropPredDataset(object):
     def load_data(self):
         self.data = Data()
         self._load_graph()
-        logger.info("Dataset edge index loaded: {:.2f} MB".format(mem_usage()))
+        logger.debug("Dataset edge index loaded: {:.2f} MB".format(mem_usage()))
         self._load_labels()
         self._load_node_feat()
         # self._load_edge_feat()
-        logger.info("Dataset fully loaded: {:.2f} MB".format(mem_usage()))
+        logger.debug("Dataset fully loaded: {:.2f} MB".format(mem_usage()))
  
     def get_idx_split(self, split=None):
         idx_dict = self.idx_dict

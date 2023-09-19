@@ -43,7 +43,8 @@ Tensor partition_weighted(
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once");
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
+    // auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
+    auto ptn_sizes_tensor = init_ptn_tensor.bincount({}, k+1);
     TORCH_CHECK(ptn_sizes_tensor.sum().item().to<int64_t>() == n);
     auto ptn_nodes = tensor_to_vector<int64_t>(ptn_sizes_tensor);
     TORCH_CHECK(ptn_nodes.size() == k+1);
@@ -185,12 +186,17 @@ Tensor partition_stratified_weighted(
     auto ptr_data = ptr.data_ptr<int64_t>();
     auto idx_data = idx.data_ptr<int64_t>();
     auto wgt_data = weights.value().data_ptr<float>();
+
     // hard cap for #nodes in each partition
     int64_t cap = (int64_t)((float)n / k * slack);
-
-    // map: label -> cap
+    // per-label cap for #nodes in each partition
     auto label_tensor = labels.value();
     int NL = label_tensor.max().item().to<int>() + 1;
+    const std::vector<float> label2cap = tensor_to_vector<float>(
+        label_tensor.bincount({}, NL).to(torch::kFloat) / k * label_slack
+    );
+    float train_cap = std::accumulate(label2cap.begin(), label2cap.end() - 1, 0);
+    std::cout << "Cap for training nodes per partition: " << train_cap << "\n";
     // map: node -> label
     const std::vector<int> node2label = tensor_to_vector<int>(
         label_tensor.to(torch::kInt32)
@@ -208,7 +214,8 @@ Tensor partition_stratified_weighted(
                     "init_partition tensor should cover all nodes exactly once"
         );
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
+    // auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
+    auto ptn_sizes_tensor = init_ptn_tensor.bincount({}, k+1);
     int64_t num_assigned = ptn_sizes_tensor.sum().item().to<int64_t>();
     TORCH_CHECK(num_assigned == n, num_assigned, " != ", n);
     // map: partition -> size
@@ -301,18 +308,19 @@ Tensor partition_stratified_weighted(
             // balance score per partition for current label
             std::vector<float> &ptn_balance_scores = label2scores[label];
             // size per partition for current label
-            std::vector<int64_t> &ptn_nodes = label2sizes[label];
+            std::vector<int64_t> &ptn_label_sizes = label2sizes[label];
             // ordered score per partition for current label
             rev_scoreset &ord_scores = label2ord_scores[label];
             // alpha for the current label
             float alpha = label2alpha[label];
+            float label_cap = label2cap[label];
             // remove v from its original partition
             // O(log(k))
             int old_ptn = node2ptn[v];
 
             if (old_ptn != k) {
                 float old_ptn_score = ptn_balance_scores[old_ptn];
-                float updated_score = balance_score(ptn_nodes[old_ptn]-1, gamma, alpha);
+                float updated_score = balance_score(ptn_label_sizes[old_ptn]-1, gamma, alpha);
                 // replace {old_score, ptn} with {new_score, ptn}
                 size_t erased = ord_scores.erase({old_ptn_score, old_ptn});
                 TORCH_CHECK(
@@ -321,7 +329,7 @@ Tensor partition_stratified_weighted(
                 );
                 ord_scores.insert({updated_score, old_ptn});
                 ptn_balance_scores[old_ptn] = updated_score;
-                --ptn_nodes[old_ptn];
+                --ptn_label_sizes[old_ptn];
                 --ptn_sizes[old_ptn];
             }
 
@@ -331,6 +339,7 @@ Tensor partition_stratified_weighted(
             if (ptn_to_check.size() >= k * scan_thres.value_or(1.0)) {
                 for (size_t i = 0; i < k; ++i) {
                     if (ptn_sizes[i] >= cap) continue;
+                    if (ptn_label_sizes[i] >= label_cap) continue;
                     float ptn_score = ptn_weights[i] + ptn_balance_scores[i];
                     if (ptn_score > current_max) {
                         current_max = ptn_score;
@@ -352,14 +361,14 @@ Tensor partition_stratified_weighted(
                 if (v_ptn != score_pair.second && score_pair.first > current_max) {
                     v_ptn = score_pair.second;
                 }
-                // TORCH_CHECK(ptn_nodes[v_ptn] <= cap, "the assigned partition exceeds the label cap");
+                // TORCH_CHECK(ptn_label_sizes[v_ptn] <= cap, "the assigned partition exceeds the label cap");
             }
             // add v to partition v_ptn
             node2ptn[v] = v_ptn;
             TORCH_CHECK(v_ptn != k);
 
             float old_ptn_score = ptn_balance_scores[v_ptn];
-            float updated_score = balance_score(ptn_nodes[v_ptn]+1, gamma, alpha);
+            float updated_score = balance_score(ptn_label_sizes[v_ptn]+1, gamma, alpha);
             ptn_balance_scores[v_ptn] = updated_score;
             size_t erased = ord_scores.erase({old_ptn_score, v_ptn});
             TORCH_CHECK(
@@ -368,7 +377,7 @@ Tensor partition_stratified_weighted(
                 ": should erase exactly 1 element but see ", erased
             );
             ord_scores.insert({updated_score, v_ptn});
-            ++ptn_nodes[v_ptn];
+            ++ptn_label_sizes[v_ptn];
             ++ptn_sizes[v_ptn];
 
         } // labeled case ends

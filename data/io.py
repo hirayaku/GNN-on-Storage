@@ -139,7 +139,7 @@ class TensorMeta:
     def like(tensor: torch.Tensor, dtype=None, path=None):
         return TensorMeta(
             shape=list(tensor.shape),
-            dtype=Dtype.from_torch(tensor.dtype if dtype is None else dtype),
+            dtype=tensor.dtype if dtype is None else dtype,
             path=path,
         )
 
@@ -227,6 +227,18 @@ def MmapTensor(tinfo: TensorMeta, **kwargs) -> torch.Tensor:
         madvise(data.data_ptr(), data.numel() * data.element_size(), MADV_OPTIONS.MADV_RANDOM)
     data._meta = tinfo.clone()
     return data
+
+def ShmTensor(tinfo: TensorMeta, **kwargs) -> torch.Tensor:
+    '''
+    Create a torch.Tensor backed by posix shared memory specified by TensorMeta
+    '''
+    for f in fields(tinfo):
+        if f in kwargs:
+            setattr(tinfo, f, kwargs[f])
+    shared_tensor = torch.tensor([1], dtype=tinfo.dtype.to_torch())
+    new_storage = shared_tensor.untyped_storage()._new_shared(tinfo.nbytes())
+    new_tensor = shared_tensor.new(new_storage).view(tinfo.shape)
+    return new_tensor
 
 '''
 class MmapTensor(torch.Tensor):
@@ -427,7 +439,7 @@ def store_tensor(
         tensor.tofile(path)
         meta = TensorMeta(
             shape=tensor.shape,
-            dtype=Dtype.from_str(str(tensor.dtype)),
+            dtype=tensor.dtype,
             path=path, offset=0
         )
     elif isinstance(tensor, torch.Tensor):
@@ -437,14 +449,14 @@ def store_tensor(
             tensor.numpy().tofile(path)
             meta = TensorMeta(
                 shape=tensor.shape,
-                dtype=Dtype.from_torch(tensor.dtype),
+                dtype=tensor.dtype,
                 path=path, offset=0
             )
     else:
         tinfo = tensor.save(path)
         meta = TensorMeta(
             shape=tinfo.shape,
-            dtype=Dtype.from_torch(tinfo.dtype),
+            dtype=tinfo.dtype,
             path=tinfo.path, offset=tinfo.offset
         )
     # prevent auto deleting the file when next time loading it

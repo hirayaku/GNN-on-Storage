@@ -172,8 +172,9 @@ Tensor &ranges_add(
     return target;
 }
 
-std::tuple<Tensor, Tensor, Tensor>
-coo_list_merge(long num_nodes, const std::vector<EdgeType> &undirected) {
+std::tuple<Tensor, Tensor> coo_list_merge(
+    long num_nodes, const std::vector<EdgeType> &undirected
+) {
     Tensor deg = torch::zeros({num_nodes}, torch::dtype(torch::kInt32));
     int *deg_ptr = deg.data_ptr<int>();
 
@@ -216,13 +217,10 @@ coo_list_merge(long num_nodes, const std::vector<EdgeType> &undirected) {
         [](const auto &ee) { return std::get<0>(ee).size(0); }
     );
     long num_edges = std::accumulate(sizes.begin(), sizes.end(), 0);
-    Tensor coo = torch::empty({2, num_edges}, torch::dtype(torch::kInt64));
-    Tensor src = coo.narrow(0, 0, 1).flatten();
-    Tensor dst = coo.narrow(0, 1, 1).flatten();
-    // Tensor src = torch::empty({num_edges}, torch::dtype(torch::kInt64));
-    // Tensor dst = torch::empty({num_edges}, torch::dtype(torch::kInt64));
+    Tensor src = torch::empty({num_edges}, torch::dtype(torch::kInt64));
     auto *src_out = src.data_ptr<long>();
-    auto *dst_out = dst.data_ptr<long>();
+    // Tensor dst = torch::empty({num_edges}, torch::dtype(torch::kInt64));
+    // auto *dst_out = dst.data_ptr<long>();
 
     // scatter edges to their dst bins
     dynamic_parallel_for(0, undirected.size(),
@@ -244,7 +242,7 @@ coo_list_merge(long num_nodes, const std::vector<EdgeType> &undirected) {
                     // new nid encountered
                     atomic_add(off_ptr[prev_nid], nid_count, prev_off);
                     std::copy(src_ptr + ei - nid_count, src_ptr + ei, src_out + prev_off);
-                    std::copy(dst_ptr + ei - nid_count, dst_ptr + ei, dst_out + prev_off);
+                    // std::copy(dst_ptr + ei - nid_count, dst_ptr + ei, dst_out + prev_off);
                     prev_nid = nid;
                     nid_count = 1;
                 }
@@ -252,15 +250,15 @@ coo_list_merge(long num_nodes, const std::vector<EdgeType> &undirected) {
             }
             atomic_add(off_ptr[prev_nid], nid_count, prev_off);
             std::copy(src_ptr + ei - nid_count, src_ptr + ei, src_out + prev_off);
-            std::copy(dst_ptr + ei - nid_count, dst_ptr + ei, dst_out + prev_off);
+            // std::copy(dst_ptr + ei - nid_count, dst_ptr + ei, dst_out + prev_off);
         }, 1 // block_size = 1
     );
 
-    return {coo, rowptr, rowoff};
+    return {rowptr, src};
 }
 
 
-std::tuple<Tensor, Tensor, Tensor> coo_ranges_merge(
+std::tuple<Tensor, Tensor> coo_ranges_merge(
     long num_nodes,
     const std::vector<EdgeType> &coo_list,
     const std::vector<Tensor> &starts,

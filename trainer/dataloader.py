@@ -23,9 +23,9 @@ class NodeDataLoader(object):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
-        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True},
+        ds = NodePropPredDataset(dataset['root'], mmap={'graph': False, 'feat': True},
                                  random=True, formats='csc')
-        # ds[0].share_memory_()
+        ds[0].share_memory_()
         datapipe = LiteIterableWrapper(ds)
         index = ds.get_idx_split(split)
         index_dp = LiteIterableWrapper([index])
@@ -152,8 +152,8 @@ class HierarchicalDataLoader(object):
         datapipe = datapipe.map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
         )
-        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,
-                                 affinity=range(self.cpu_i, self.cpu_i+num_par))
+        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)
+                                #  affinity=range(self.cpu_i, self.cpu_i+num_par))
         datapipe = datapipe.map(
             partial(gather_feature, filter_data)
         )

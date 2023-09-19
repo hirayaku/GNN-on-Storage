@@ -5,6 +5,7 @@ from torch_geometric.utils import mask_to_index
 from torch_sparse import SparseTensor
 from utils import sort, parallelism
 from data.graphloader import ChunkedNodePropPredDataset
+from data.io import ShmTensor, TensorMeta
 from data.ops import scatter_append, ranges_gather, ranges_add, coo_ranges_merge
 import logging
 logger = logging.getLogger()
@@ -78,9 +79,9 @@ class Collator:
                 gathered_dst = ranges_add(gathered_dst, edge_offsets, edge_part_sizes, offset_nids)
                 logger.debug(f"Partition Adj gathered")
                 num_nodes = node_part_sizes.sum().item()
-                edge_index, colptr, _ = coo_ranges_merge(
-                    num_nodes, (gathered_src, gathered_dst), edge_offsets, edge_part_sizes)
-                row, _ = edge_index
+                colptr, row = coo_ranges_merge(
+                    num_nodes, (gathered_src, gathered_dst), edge_offsets, edge_part_sizes
+                )
                 adj_t = SparseTensor(rowptr=colptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
                 targets = mask_to_index(
                     ranges_gather(self.idx_mask, node_intervals[0], node_part_sizes))
@@ -98,10 +99,9 @@ class Collator:
                 )
             else:
                 # don't relabel nodes, thus get original node IDs for train nodes
-                edge_index, colptr, _ = coo_ranges_merge(
+                colptr, row = coo_ranges_merge(
                     self.data.num_nodes, (src, dst), edge_intervals[0], edge_part_sizes
                 )
-                row, _ = edge_index
                 adj_t = SparseTensor(rowptr=colptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
                 targets = torch.zeros_like(self.idx_mask)
                 targets[batch_nodes] = self.idx_mask[batch_nodes]
@@ -237,22 +237,21 @@ class CollatorPivots(Collator):
         intra_offsets = e_part_sizes_intra.cumsum(0) - e_part_sizes_intra
         logger.debug(f"Intra Adj constructed: m={intra_src.size(0)}")
 
-        edge_index, ptr, _ = coo_ranges_merge(num_nodes,
+        ptr, ids = coo_ranges_merge(num_nodes,
             [ (inter_src, inter_dst), (inter_src_t, inter_dst_t), (intra_src, intra_dst), 
               (gathered_src, gathered_dst)],
             [torch.tensor([0]), torch.tensor([0]), intra_offsets, edge_offsets],
             [torch.tensor([inter_size]), torch.tensor([inter_size]), e_part_sizes_intra, e_part_sizes],
         )
-        row, _ = edge_index
         #  logger.debug(f"Num_nodes: {num_nodes}, max ptr/row: {ptr.size(0)-1}, {row.max()}")
-        adj_t = SparseTensor(rowptr=ptr, col=row, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
-        logger.debug(f"Macro-batch graph constructed: n={num_nodes}, m={row.size(0)}, t={targets.size(0)}")
+        adj_t = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
+        logger.debug(f"Macro-batch graph constructed: n={num_nodes}, m={ids.size(0)}, t={targets.size(0)}")
         del intra_src, intra_dst, inter_src, inter_dst, inter_src_t, inter_dst_t
         del gathered_src, gathered_dst
 
         batch_x_shape = list(self.data.x.shape)
         batch_x_shape[0] = num_nodes
-        batch_x = torch.empty(batch_x_shape, dtype=self.data.x.dtype)
+        batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
         batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
         batch_x[num_main_nodes:] = self.data_pvt.x
         batch_y_shape = list(self.data.y.shape)

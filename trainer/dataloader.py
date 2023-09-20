@@ -9,10 +9,7 @@ from data.collater import Collator, CollatorPivots
 from datapipe.custom_pipes import TensorShuffleWrapper, LiteIterableWrapper, ObjectAsPipe
 from datapipe.custom_pipes import even_split_fn, shuffle_tensor
 from datapipe.parallel_pipes import mp, make_dp_worker
-from datapipe.sampler_fn import PygNeighborSampler, gather_feature, filter_data
-
-def get_idx_split(dataset: NodePropPredDataset, split: str):
-    return dataset.get_idx_split(split)
+from datapipe.sampler_fn import PygNeighborSampler, gather_feature, filter_and_pin
 
 def make_shared(data):
     data.share_memory_()
@@ -39,11 +36,10 @@ class NodeDataLoader(object):
         fanout = list(map(int, conf['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
         num_par = conf.get('num_workers', 0)
-        datapipe = datapipe.pmap(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par,
-                                 affinity=range(self.cpu_i, self.cpu_i+num_par))
-        datapipe = datapipe.map(
-            partial(gather_feature, filter_data)
-        )
+        datapipe = datapipe.pmap(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par)
+        datapipe = datapipe.prefetch(
+            fn=partial(gather_feature, filter_fn=filter_and_pin)
+        ).prefetch_cuda()
         self.cpu_i += num_par
         self.datapipe = datapipe
 
@@ -151,12 +147,12 @@ class HierarchicalDataLoader(object):
         num_par = conf_l2.get('num_workers',  0)
         datapipe = datapipe.map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
-        )
+        ) # .prefetch(buffer_size=100)
         datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)
                                 #  affinity=range(self.cpu_i, self.cpu_i+num_par))
-        datapipe = datapipe.map(
-            partial(gather_feature, filter_data)
-        )
+        datapipe = datapipe.prefetch(
+            fn=partial(gather_feature, filter_fn=filter_and_pin)
+        ).prefetch_cuda()
         self.cpu_i += num_par
 
         self.batch_size = (partition_loader.batch_size, batch_size)

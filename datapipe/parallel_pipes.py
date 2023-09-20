@@ -1,5 +1,6 @@
 from typing import Optional, Callable
 import time, math, warnings, queue, threading
+from collections import deque
 from functools import partial
 import torch
 import torch.multiprocessing as mp
@@ -67,7 +68,7 @@ class ParallelMapperDataPipe(IterDataPipe):
         if self.num_par == 0:
             for data in self.source_dp:
                 yield self.fn(data)
-                del data
+                data = None
         else:
             # assert isinstance(self.source_dp, comm.iter.QueueWrapper)
             if self.mp_ctx is None:
@@ -100,7 +101,7 @@ class ParallelMapperDataPipe(IterDataPipe):
                 else:
                     self.target_count += 1
                     yield data
-                del data
+                data = None
                 if stop_recvd and self.target_count == self.source_count:
                     break
             self._clear_queue(self.target_queue)
@@ -127,6 +128,7 @@ class ParallelMapperDataPipe(IterDataPipe):
                 return True
             result = self.fn(data)
             self.target_queue.put(result)
+            result = None
             self.target_count += 1
         except queue.Empty:
             # time.sleep(self.QUEUE_GET_TIMEOUT)
@@ -173,6 +175,88 @@ class ParallelMapperDataPipe(IterDataPipe):
         for w in workers:
             w.start()
         self.workers = workers
+
+@make_functional("prefetch")
+class PrefetcherDataPipe(IterDataPipe):
+    '''
+    Thread-based datapipe prefetcher. Good for IO concurrency.
+    For compute concurrency, consider `make_dp_worker` or `ParallelMapDataPipe`.
+    '''
+    def __init__(self, source_dp:IterDataPipe, fn:Optional[Callable]=None, buffer_size:int=2):
+        self.source_dp = source_dp
+        self.fn = fn
+        self.buffer_size = buffer_size
+        self._buffer = queue.Queue(maxsize=buffer_size)
+
+    @staticmethod
+    def _clear_queue(q: queue.Queue):
+        try:
+            while True:
+                d = q.get_nowait()
+                warnings.warn("leftover items found in queue:", d)
+        except queue.Empty:
+            pass
+
+    def _thread_prefetcher(self):
+        if self.fn is None:
+            for data in self.source_dp:
+                self._buffer.put(data)
+                data = None
+        else:
+            for data in self.source_dp:
+                self._buffer.put(self.fn(data))
+                data = None
+        self._buffer.put(StopIteration(f"{self.__class__}: prefetcher thread"))
+
+    def __iter__(self):
+        self._clear_queue(self._buffer)
+        prefetcher = threading.Thread(target=self._thread_prefetcher, daemon=True)
+        prefetcher.start()
+        while True:
+            processed = self._buffer.get()
+            if isinstance(processed, StopIteration):
+                break
+            else:
+                yield processed
+            processed = None
+
+@make_functional("prefetch_cuda")
+class CudaPrefetcherDataPipe(IterDataPipe):
+    '''
+    CUDA prefetcher that overlaps data transfer with successive CUDA operations
+    * `fn` should be non-blocking calls (like CUDA ops)
+    '''
+    def __init__(self, source_dp: IterDataPipe, fn: Optional[Callable]=None):
+        self.source_dp = source_dp
+        self.fn = fn
+        self.stream = torch.cuda.Stream()
+
+    def _preload(self):
+        try:
+            self.next_batch = next(self._source_iter)
+        except StopIteration:
+            self.next_batch = None
+            return
+
+        with torch.cuda.stream(self.stream):
+            self.next_batch = self.next_batch.cuda(non_blocking=True)
+            if self.fn is not None:
+                self.fn(self.next_batch)
+
+    def __iter__(self):
+        self._source_iter = iter(self.source_dp)
+        self._preload()
+        return self
+
+    def __next__(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        batch = self.next_batch
+        if batch is not None:
+            batch.record_stream(torch.cuda.current_stream())
+        else:
+            raise StopIteration(f"{self.__class__}: source datapipe depleted")
+        self._preload()
+        return batch
 
 @make_functional("pmapv2")
 class ParallelMapperV2DataPipe(IterDataPipe):

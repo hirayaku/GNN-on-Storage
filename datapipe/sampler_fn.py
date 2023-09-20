@@ -1,20 +1,45 @@
 from typing import Callable, Any
 import copy, warnings
 import torch
+from torch_sparse import SparseTensor
 from torch_geometric.data import Data
 from torch_geometric.typing import Tensor, OptTensor
 from torch_geometric.loader.utils import filter_data
 
 NodeSampler = Callable[[Data, OptTensor, dict], Any]
 
-def gather_feature(filter_fn, args):
-    data, input_id, node, row, col, edge, n_nodes, n_edges = args
-    data = filter_fn(data, node, row, col, edge, perm=None)
+def filter_and_pin(data, node, row, col, edge) -> Data:
+    out = Data()
+    out.num_nodes = node.numel()
+    sparse_sizes = out.size()[::-1]
+    # TODO Currently, we set `is_sorted=False`, see:
+    # https://github.com/pyg-team/pytorch_geometric/issues/4346
+    adj_t = SparseTensor(row=col, col=row, sparse_sizes=sparse_sizes,
+                         is_sorted=False, trust_data=True)
+    out.adj_t = adj_t.pin_memory()
+    x_shape = list(data.x.shape)
+    x_shape[0] = node.numel()
+    x = torch.empty(x_shape, dtype=data.x.dtype, pin_memory=True)
+    torch.index_select(data.x, dim=0, index=node, out=x)
+    out.put_tensor(x, attr_name='x', index=None)
+    y_shape = list(data.y.shape)
+    y_shape[0] = node.numel()
+    y = torch.empty(y_shape, dtype=data.y.dtype, pin_memory=True)
+    torch.index_select(data.y, dim=0, index=node, out=y)
+    out.put_tensor(y, attr_name='y', index=None)
+    return out
+
+def gather_feature(args, filter_fn=None):
+    data, input_id, node, row, col, edge, hop_nodes, hop_edges = args
+    if filter_fn is None:
+        data = filter_data(data, node, row, col, edge, perm=None)
+    else:
+        data = filter_fn(data, node, row, col, edge)
     data.batch = None
-    data.input_id = input_id
+    data.input_id = input_id.pin_memory()
     data.batch_size = input_id.size(0)
-    data.num_sampled_nodes = n_nodes
-    data.num_sampled_edges = n_edges
+    data.num_sampled_nodes = hop_nodes
+    data.num_sampled_edges = hop_edges
     return data
 
 class PygNeighborSampler:
@@ -38,7 +63,7 @@ class PygNeighborSampler:
         self.replace = replace
         self.directed = directed
         self.return_eid = return_eid
-        self.filter_data = filter_data if filter_data_fn is None else filter_data_fn
+        self.filter_data = filter_data_fn
         self.filter_per_worker = filter_per_worker
         self.unbatch = unbatch
         self.kw = overwrite_kw
@@ -51,12 +76,12 @@ class PygNeighborSampler:
 
     def __call__(self, *args, **kwargs) -> Data:
         if self.unbatch:
-            data, nodes = args[0][0]
+            data, input_id = args[0][0]
         else:
-            data, nodes = args[0]
-        sample_out = self.sample(data, nodes, **kwargs)
+            data, input_id = args[0]
+        sample_out = self.sample(data, input_id, **kwargs)
         row, col, node, edge, n_nodes, n_edges = sample_out
-        args = (data, nodes, node, row, col, edge, n_nodes, n_edges)
+        args = (data, input_id, node, row, col, edge, n_nodes, n_edges)
         if self.filter_per_worker:
             # slice node and edge attributes
             # data = self.filter_data(data, node, row, col, edge, perm=None)
@@ -66,7 +91,7 @@ class PygNeighborSampler:
             # data.num_sampled_nodes = n_nodes
             # data.num_sampled_edges = n_edges
             # return data
-            return gather_feature(self.filter_data, args)
+            return gather_feature(args, self.filter_data)
         else:
             return args
 

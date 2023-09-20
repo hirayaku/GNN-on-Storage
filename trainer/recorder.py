@@ -77,8 +77,8 @@ class Recorder(object):
         else:
             return {}
 
-    def stdmean(self):
-        return stdmean_acc(self)
+    def stdmean(self, epochs=None):
+        return stdmean_acc(self, epochs)
 
     def save(self, folder):
         os.makedirs(folder, exist_ok=True)
@@ -112,14 +112,17 @@ def stdmean(logger: Recorder, *labels, summarize=None):
         stdmean_dict[label] = [t.mean().item(), t.std().item()]
     return stdmean_dict
 
-def get_acc(val_test):
+def get_acc(val_test, epochs=None):
     val_acc = 100 * torch.tensor(val_test['val/acc'])
+    if epochs is not None:
+        val_acc = val_acc[:epochs]
     valid = val_acc.max().item()
     test = 100 * val_test['test/acc'][val_acc.argmax()]
     return {'val/acc' : valid, 'test/acc': test}
 
-def stdmean_acc(logger: Recorder):
-    return stdmean(logger, 'val/acc', 'test/acc', summarize=get_acc)
+def stdmean_acc(logger: Recorder, epochs=None):
+    summarize = lambda acc: get_acc(acc, epochs=epochs)
+    return stdmean(logger, 'val/acc', 'test/acc', summarize=summarize)
 
 if __name__ == "__main__":
     out = flatten_dict({1 : {1 : 'a', 2: 'b'}})

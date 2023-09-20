@@ -17,7 +17,7 @@ class Recorder(object):
         self.log = {} # each entry in log is list[dict]
         self.md5 = hashlib.md5(str(info).encode('utf-8')).hexdigest()
         self._run = 0
-    
+
     def set_run(self, run):
         self._run = run
         if run not in self.log:
@@ -76,6 +76,9 @@ class Recorder(object):
             return {'val/acc' : valid, 'test/acc': test}
         else:
             return None
+    
+    def stdmean(self):
+        return stdmean_acc(self)
 
     def save(self, folder):
         os.makedirs(folder, exist_ok=True)

@@ -6,7 +6,7 @@
     },
     "dataset": {
         "name": "ogbn-arxiv",
-        "root": "output/ogbn_arxiv",
+        "root": "/mnt/md0/hb_datasets/ogbn_arxiv_r",
     },
     "model": {
         "arch": "sage",
@@ -15,7 +15,7 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 5,
-        "epochs": 100,
+        "epochs": 200,
         "eval_every": 1,
     },
     "sample": {
@@ -23,7 +23,7 @@
             "sampler": "ns",
             "fanout": "15,10,5",
             "batch_size": 1000,
-            "num_workers": 0,
+            "num_workers": 12,
             "drop_last": true,
         }],
         "eval": null,

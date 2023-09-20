@@ -7,6 +7,8 @@ from dgl.nn.pytorch.utils import Identity
 from dgl.ops import edge_softmax
 from dgl.utils import expand_as_pair
 import dgl
+import time
+from dgl_convert import to_dgl_graph
 
 
 class ElementWiseLinear(nn.Module):
@@ -95,6 +97,11 @@ class GATConv(nn.Module):
         self.reset_parameters()
         self._activation = activation
 
+        # arrays of conversion times
+        self.all_times = []
+        self.train_times = []
+
+
     def reset_parameters(self):
         gain = nn.init.calculate_gain("relu")
         if hasattr(self, "fc"):
@@ -112,7 +119,17 @@ class GATConv(nn.Module):
         self._allow_zero_in_degree = set_value
 
     def forward(self, feat, edge_index, perm=None):
-        graph = dgl.graph(edge_index.coo()[:2], num_nodes=edge_index.size(0))
+        # start = time.process_time()
+
+        # notice: we convert to coo
+        graph = to_dgl_graph(edge_index.coo()[:2], num_nodes=edge_index.size(0))
+        # graph = dgl.graph(edge_index.coo()[:2], num_nodes=edge_index.size(0))
+
+        # stop = time.process_time()
+        # # print((stop - start) * 1000)
+        # self.all_times.append((stop - start) * 1000)
+        # if self.training:
+        #     self.train_times.append((stop-start) * 1000)
 
         with graph.local_scope():
             # if not self._allow_zero_in_degree:
@@ -380,20 +397,185 @@ class GATConvPyG(nn.Module):
         in_feats,
         out_feats,
         num_heads=1,
+        feat_drop=0.0,
         attn_drop=0.0,
         edge_drop=0.0,
         negative_slope=0.2,
+        use_attn_dst=True,
         residual=False,
         activation=None,
+        allow_zero_in_degree=False,
+        use_symmetric_norm=False,
+    ):
+        super(GATConvPyG, self).__init__()
+        self._num_heads = num_heads
+        self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
+        self._out_feats = out_feats
+        self._allow_zero_in_degree = allow_zero_in_degree
+        self._use_symmetric_norm = use_symmetric_norm
+        if isinstance(in_feats, tuple):
+            self.fc_src = nn.Linear(
+                self._in_src_feats, out_feats * num_heads, bias=False
+            )
+            self.fc_dst = nn.Linear(
+                self._in_dst_feats, out_feats * num_heads, bias=False
+            )
+        else:
+            self.fc = nn.Linear(self._in_src_feats, out_feats * num_heads, bias=False)
+        self.attn_l = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
+        if use_attn_dst: # usually set to False
+            self.attn_r = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
+        else:
+            self.register_buffer("attn_r", None)
+        self.feat_drop = nn.Dropout(feat_drop)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.edge_drop = edge_drop
+        self.leaky_relu = nn.LeakyReLU(negative_slope)
+        if residual:
+            self.res_fc = nn.Linear(
+                self._in_dst_feats, num_heads * out_feats, bias=False
+            )
+        else:
+            self.register_buffer("res_fc", None)
+        self.reset_parameters()
+        self._activation = activation
+
+    def reset_parameters(self):
+        gain = nn.init.calculate_gain("relu")
+        if hasattr(self, "fc"):
+            nn.init.xavier_normal_(self.fc.weight, gain=gain)
+        else:
+            nn.init.xavier_normal_(self.fc_src.weight, gain=gain)
+            nn.init.xavier_normal_(self.fc_dst.weight, gain=gain)
+        nn.init.xavier_normal_(self.attn_l, gain=gain)
+        if isinstance(self.attn_r, nn.Parameter):
+            nn.init.xavier_normal_(self.attn_r, gain=gain)
+        if isinstance(self.res_fc, nn.Linear):
+            nn.init.xavier_normal_(self.res_fc.weight, gain=gain)
+
+    def set_allow_zero_in_degree(self, set_value):
+        self._allow_zero_in_degree = set_value
+
+    def forward(self, feat, edge_index, perm=None):
+        from torch_geometric.utils import dropout_adj, degree
+        # graph = dgl.graph(edge_index.coo()[:2], num_nodes=edge_index.size(0))
+
+        # with graph.local_scope():
+        if True:
+            # if not self._allow_zero_in_degree:
+            #     if (graph.in_degrees() == 0).any():
+            #         assert False
+
+            # print(isinstance(feat, tuple)) # False
+
+            # if isinstance(feat, tuple):
+            #     h_src = self.feat_drop(feat[0])
+            #     h_dst = self.feat_drop(feat[1])
+            #     if not hasattr(self, "fc_src"):
+            #         self.fc_src, self.fc_dst = self.fc, self.fc
+            #     feat_src, feat_dst = h_src, h_dst
+            #     feat_src = self.fc_src(h_src).view(-1, self._num_heads, self._out_feats)
+            #     feat_dst = self.fc_dst(h_dst).view(-1, self._num_heads, self._out_feats)
+            # else:
+            h_src = self.feat_drop(feat)
+            feat_src = h_src
+            feat_src = self.fc(h_src).view(-1, self._num_heads, self._out_feats)
+            # if graph.is_block:
+            #     h_dst = h_src[: graph.number_of_dst_nodes()]
+            #     feat_dst = feat_src[: graph.number_of_dst_nodes()]
+            # else:
+            h_dst = h_src
+            feat_dst = feat_src
+
+            src, dst, _ = edge_index.coo()
+            if self._use_symmetric_norm:
+                degs = degree(src, edge_index.size(0)).float().clamp(min=1)
+                norm = torch.pow(degs, -0.5)
+                shp = norm.shape + (1,) * (feat.dim() - 1)
+                norm = torch.reshape(norm, shp)
+                feat = feat * norm
+
+            # NOTE: GAT paper uses "first concatenation then linear projection"
+            # to compute attention scores, while ours is "first projection then
+            # addition", the two approaches are mathematically equivalent:
+            # We decompose the weight vector a mentioned in the paper into
+            # [a_l || a_r], then
+            # a^T [Wh_i || Wh_j] = a_l Wh_i + a_r Wh_j
+            # Our implementation is much efficient because we do not need to
+            # save [Wh_i || Wh_j] on edges, which is not memory-efficient. Plus,
+            # addition could be optimized with DGL's built-in function u_add_v,
+            # which further speeds up computation and saves memory footprint.
+            el = (feat_src * self.attn_l).sum(dim=-1).unsqueeze(-1)
+            graph.srcdata.update({"ft": feat_src, "el": el})
+            # compute edge attention, el and er are a_l Wh_i and a_r Wh_j respectively.
+            if self.attn_r is not None: # this is False, so it takes the else route
+                er = (feat_dst * self.attn_r).sum(dim=-1).unsqueeze(-1)
+                graph.dstdata.update({"er": er})
+                graph.apply_edges(fn.u_add_v("el", "er", "e"))
+            else:
+                graph.apply_edges(fn.copy_u("el", "e")) # takes this route
+            e = self.leaky_relu(graph.edata.pop("e")) 
+
+            if self.training and self.edge_drop > 0:
+                perm = torch.randperm(graph.number_of_edges(), device=e.device)
+                bound = int(graph.number_of_edges() * self.edge_drop)
+                eids = perm[bound:]
+                graph.edata["a"] = torch.zeros_like(e)
+                graph.edata["a"][eids] = self.attn_drop(
+                    edge_softmax(graph, e[eids], eids=eids)
+                )
+            else:
+                graph.edata["a"] = self.attn_drop(edge_softmax(graph, e))
+
+            # message passing
+            graph.update_all(fn.u_mul_e("ft", "a", "m"), fn.sum("m", "ft"))
+            rst = graph.dstdata["ft"]
+
+            if self._use_symmetric_norm:
+                degs = graph.in_degrees().float().clamp(min=1)
+                norm = torch.pow(degs, 0.5)
+                shp = norm.shape + (1,) * (feat_dst.dim() - 1)
+                norm = torch.reshape(norm, shp)
+                rst = rst * norm
+
+            # residual
+            if self.res_fc is not None:
+                resval = self.res_fc(h_dst).view(h_dst.shape[0], -1, self._out_feats)
+                rst = rst + resval
+
+            # activation
+            if self._activation is not None:
+                rst = self._activation(rst)
+
+            return rst
+
+class _GATConvPyG(nn.Module):
+    def __init__(
+        self,
+        in_feats,
+        out_feats,
+        num_heads=1,
+        feat_drop=0.0,
+        attn_drop=0.0,
+        edge_drop=0.0,
+        negative_slope=0.2,
+        use_attn_dst=True,
+        residual=False,
+        activation=None,
+        allow_zero_in_degree=False,
         use_symmetric_norm=False,
     ):
         from torch_geometric.nn import GATConv, SAGEConv
         super(GATConvPyG, self).__init__()
         self._num_heads = num_heads
+        self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
         self._in_feats = in_feats
         self._out_feats = out_feats
+        self._allow_zero_in_degree = allow_zero_in_degree
         self._use_symmetric_norm = use_symmetric_norm
-        self.gat = GATConv(
+        self.gat = GATConv( # not in other code
             self._in_feats, self._out_feats, num_heads,
             negative_slope=negative_slope, attn_drop=attn_drop,
             bias=False
@@ -429,6 +611,107 @@ class GATConvPyG(nn.Module):
         #     num_nodes=edge_index.size(0),
         #     training=self.training
         # )
+        rst = self.gat(feat, edge_index).view(-1, self._num_heads, self._out_feats)
+
+        if self._use_symmetric_norm:
+            degs = degree(dst, edge_index.size(1)).float().clamp(min=1)
+            norm = torch.pow(degs, 0.5)
+            shp = norm.shape + (1,) * (rst.dim() - 1)
+            norm = torch.reshape(norm, shp)
+            rst = rst * norm
+
+        # residual
+        if self.res_fc is not None:
+            resval = self.res_fc(feat).view(feat.shape[0], -1, self._out_feats)
+            rst = rst + resval
+
+        # activation
+        if self._activation is not None:
+            rst = self._activation(rst)
+        return rst
+
+
+class GATConvPyGUpd(nn.Module):
+    def __init__(
+        self,
+        in_feats,
+        out_feats,
+        num_heads=1,
+        feat_drop=0.0,
+        attn_drop=0.0,
+        edge_drop=0.0,
+        negative_slope=0.2,
+        use_attn_dst=True,
+        residual=False,
+        activation=None,
+        allow_zero_in_degree=False,
+        use_symmetric_norm=False,
+    ):
+        from torch_geometric.nn import GATConv, SAGEConv
+        super(GATConvPyGUpd, self).__init__()
+        self._num_heads = num_heads
+        self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self._allow_zero_in_degree = allow_zero_in_degree
+        self._use_symmetric_norm = use_symmetric_norm
+        self.gat = GATConv( # not in other code
+            self._in_feats, self._out_feats, num_heads,
+            negative_slope=negative_slope, attn_drop=attn_drop,
+            bias=False
+        )
+        self.edge_drop = edge_drop
+        if residual:
+            self.res_fc = nn.Linear(self._in_feats, num_heads * out_feats, bias=False)
+        else:
+            self.register_buffer("res_fc", None)
+        self._activation = activation
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        gain = nn.init.calculate_gain("relu")
+        self.gat.reset_parameters()
+        if isinstance(self.res_fc, nn.Linear):
+            nn.init.xavier_normal_(self.res_fc.weight, gain=gain)
+
+    # TODO: perm should be used to help with edge_drop
+    def forward(self, feat, edge_index, perm=None):
+        from torch_geometric.utils import dropout_edge, degree, dropout_adj
+        import tensorflow.sparse as sparse
+
+        # print(type(feat), type(edge_index), feat.shape)
+
+
+        src, dst, _ = edge_index.coo()
+        if self._use_symmetric_norm:
+            degs = degree(src, edge_index.size(0)).float().clamp(min=1)
+            norm = torch.pow(degs, -0.5)
+            shp = norm.shape + (1,) * (feat.dim() - 1)
+            norm = torch.reshape(norm, shp)
+            feat = feat * norm
+
+        # create random mask for edges
+        perm = torch.randperm(src.shape[0]).to(dtype=torch.long) # TODO: DEVICE!
+        bound = int(src.shape[0] * self.edge_drop)
+        eid = perm[bound:]
+        # print(eid.shape, src.shape[0])
+        src_edge_index_drop = torch.zeros_like(src)
+        dst_edge_index_drop = torch.zeros_like(dst)
+        src_edge_index_drop[eid] = src[eid]
+        dst_edge_index_drop[eid] = dst[eid]
+        idc = torch.stack((src_edge_index_drop, dst_edge_index_drop))
+        vals = torch.ones_like(src_edge_index_drop)
+        # edge_index_drop = sparse.SparseTensor(indices=idc, values = vals, dense_shape=[src.shape[0], src.shape[0]])
+        edge_index_drop = torch.sparse_coo_tensor(idc, vals)
+
+        # edge_index_drop, _ = dropout_adj(
+        #     edge_index,
+        #     p=self.edge_drop,
+        #     num_nodes=edge_index.size(0),
+        #     training=self.training
+        # )
+        # print(edge_index)
+        # print(edge_index_drop)
         rst = self.gat(feat, edge_index).view(-1, self._num_heads, self._out_feats)
 
         if self._use_symmetric_norm:
@@ -485,13 +768,13 @@ class CustomGAT(nn.Module):
     
             if use_pyg:
                 self.convs.append(
-                    GATConvPyG(
+                    GATConvPyGUpd(
                         in_hidden,
                         out_hidden,
                         num_heads=num_heads,
                         attn_drop=attn_drop,
                         edge_drop=edge_drop,
-                        # use_attn_dst=use_attn_dst,
+                        use_attn_dst=use_attn_dst,
                         use_symmetric_norm=use_symmetric_norm,
                         residual=True,
                     )

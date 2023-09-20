@@ -131,6 +131,76 @@ def train(epoch):
 
     return total_loss / total_examples
 
+def train_custom_partitioner(epoch):
+    model.train()
+
+    pbar = tqdm(total=len(train_loader))
+    pbar.set_description(f"Training epoch: {epoch:03d}")
+
+    total_loss = total_examples = 0
+    for obj in train_loader:
+        optimizer.zero_grad()
+
+        # print(obj[0].adj_t)
+
+        # Memory-efficient aggregations:
+        data = transform(obj[0])
+        # print(data.get_device())
+        # data = obj[0]
+        train_mask = torch.zeros(obj[0].x.shape[0], dtype=torch.bool).to(device)
+        train_mask[obj[1]] = 1
+
+        # giving each an incremental id
+        data.n_id = torch.arange(train_mask.shape[0]).to(device)
+
+        # randomly create mask subset of train
+        ## NOTE: will cause problems if it's not 50%
+        rand_label_mask = (
+            torch.rand(train_mask.shape[0], device=device) < mask_rate
+        )
+        rand_label_mask_full = train_mask & rand_label_mask
+        rand_unlabelled_mask_full = train_mask & ~rand_label_mask
+
+        # add labels to the randomly created subset of train
+        new_inputs = add_labels(data.x, data.y, data.n_id[rand_label_mask_full])
+
+        # get the values which are in train but not in rand_label
+        out = model(new_inputs, data.adj_t)
+
+        # get index of unlabelled
+        unlabel_idx = data.n_id[~rand_label_mask_full]
+        for _ in range(1):
+            out = out.detach()
+            torch.cuda.empty_cache()
+            # update input of unlabelled
+            new_inputs[unlabel_idx, -n_classes:] = F.softmax(out[unlabel_idx], dim=-1)
+            out = model(new_inputs, data.adj_t)
+
+        # out = model(data.x, data.adj_t)
+        # rand_unlabelled_mask_full = data.train_mask
+
+        # calculate loss and take step
+        # loss = F.cross_entropy(out[rand_unlabelled_mask_full], data.y[rand_unlabelled_mask_full].view(-1))
+        # print(out, data.y)
+        # print(out.shape, data.y.view(-1).shape)
+        # [nodes, categories]; [nodes]
+        loss = custom_loss_function(
+            out[rand_unlabelled_mask_full], data.y[rand_unlabelled_mask_full].view(-1)
+        )
+        loss.backward()
+        optimizer.step()
+
+        total_loss += float(loss) * int(
+            train_mask[rand_unlabelled_mask_full].sum()
+        )
+        total_examples += int(train_mask[rand_unlabelled_mask_full].sum())
+        pbar.update(1)
+
+    pbar.close()
+
+    return total_loss / total_examples
+
+
 
 @torch.no_grad()
 def test(epoch):
@@ -201,12 +271,13 @@ def main():
     argparser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     argparser.add_argument("--lr", type=float, default=0.002)
     argparser.add_argument(
-        "--partition-type", choices=["random", "metis", "fennel"], default="random"
+        "--partition-type", choices=["random", "metis", "fennel", "fennel2"], default="fennel2"
     )
     argparser.add_argument("--partition-num", type=int, default=1)
     argparser.add_argument("--seed", type=int, default=0)
     argparser.add_argument("--num-epochs", type=int, default=1000)
     argparser.add_argument("--batch-size", type=int, default=1)
+    argparser.add_argument("--config", type=str, default="conf/arxiv-new.json5")
     args = argparser.parse_args()
 
     run_dir = args.tensorboard_folder
@@ -216,7 +287,8 @@ def main():
 
     # lr = 0.002
 
-    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    import torch
+    device = torch.device("cpu") # f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     transform = T.Compose([T.ToDevice(device), T.ToSparseTensor()])
     dataset = PygNodePropPredDataset(
         "ogbn-arxiv",  # root,
@@ -263,12 +335,59 @@ def main():
         )  # results is an IntTensor storing the partition id of each node
         cluster_data = cluster.ClusterData(data, cluster=results, num_parts=num_parts)
         train_loader = cluster.ClusterLoader(cluster_data)
+    elif part_type == "fennel2":
+        from trainer.dataloader import PartitionDataLoader, NodeDataLoader
+        from trainer.helpers import get_config, get_model, get_dataset
+
+        import os, time, random, sys, logging, torch
+
+        main_logger = logging.getLogger()
+        formatter = logging.Formatter(
+            "%(asctime)s.%(msecs)03d[%(levelname)s] %(module)s: %(message)s",
+            datefmt='%0y-%0m-%0d %0H:%0M:%0S')
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        main_logger.addHandler(stream_handler)
+
+        conf = get_config()
+
+        env = conf['env']
+        if env['verbose']:
+            main_logger.setLevel(logging.DEBUG)
+        else:
+            main_logger.setLevel(logging.INFO)
+        # if 'cuda' not in env:
+        #     device = torch.device('cuda:0')
+        # else:
+        #     device = torch.device('cuda:{}'.format(env['cuda']))
+        main_logger.info(f"Training with GPU:{device.index}")
+
+         
+        dataset_conf, params = conf['dataset'], conf['model']
+        dataset_upd = get_dataset(dataset_conf['root'])
+        indices = dataset_upd.get_idx_split()
+        out_feats = dataset_upd.num_classes
+        in_feats = dataset_upd[0].x.shape[1]
+        # model = get_model(in_feats, out_feats, params)
+        # model = model.to(device)
+        # optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
+        # if params.get('lr_schedule', None) == 'plateau':
+        #     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #         optimizer=optimizer, factor=params['lr_decay'],
+        #         patience=params['lr_step'],
+        #     )
+        # else:
+        #     lr_scheduler = None
+        # main_logger.info(f"LR scheduler: {lr_scheduler}")
+
+        sample_conf = conf['sample']
+        train_loader = PartitionDataLoader(dataset_conf, env, 'train', sample_conf['train'][0])
     else:
         raise Exception("Error! No valid partition type found!")
 
     # Increase the num_parts of the test loader if you cannot fit
     # the full batch graph into your GPU:
-    test_loader = RandomNodeLoader(data, num_parts=1)
+    test_loader = RandomNodeLoader(data, num_parts=1) 
 
     relu = torch.nn.ReLU()
 
@@ -299,7 +418,6 @@ def main():
         input_drop=0.25,
         edge_drop=0.3,
         use_attn_dst=False,
-        use_pyg=True, # USING PYG NOW!!
     ).to(device)
 
     threshold = config.threshold
@@ -310,7 +428,8 @@ def main():
     # epoch
     for epoch in range(1, args.num_epochs + 1):
         adjust_learning_rate(optimizer, args.lr, epoch)
-        loss = train(epoch)
+        # loss = train(epoch)
+        loss = train_custom_partitioner(epoch)
         train_acc, val_acc, test_acc, final_pred = test(epoch)
         if val_acc - best_val < threshold:
             patience_cnt = patience_cnt - 1
@@ -327,9 +446,20 @@ def main():
         writer.add_scalar("Val/acc", val_acc, epoch)
         writer.add_scalar("Test/acc", test_acc, epoch)
 
+        # # compute the time
+        # total_time = sum([sum(ele.all_times) for ele in model.convs])
+        # total_samples = sum([len(ele.all_times) for ele in model.convs])
+        # avg_time = total_time / total_samples
+
+        # total_time_train = sum([sum(ele.train_times) for ele in model.convs])
+        # total_samples_train = sum([len(ele.train_times) for ele in model.convs])
+        # avg_time_train = total_time_train / total_samples_train
+
         print(
             f"Loss: {loss:.4f}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, "
-            f"Test: {test_acc:.4f}"
+            f"Test: {test_acc:.4f}, \n"
+            # f"Avg time to convert to DGL: {avg_time:.4f}, \n"
+            # f"Avg time to convert to DGL (just when training): {avg_time_train:.4f}"
         )
 
     print(

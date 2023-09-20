@@ -2,10 +2,11 @@
     "mode": "local",
     "env": {
         "verbose": false,
+        "outdir": "./archive",
     },
     "dataset": {
         "name": "ogbn-arxiv",
-        "root": "output/ogbn_arxiv",
+        "root": "/mnt/md0/hb_datasets/ogbn_arxiv_r",
     },
     "model": {
         "arch": "sage",
@@ -14,18 +15,21 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 5,
-        "epochs": 200,
-        "log_every" : 100,
+        "epochs": 100,
         "eval_every": 1,
     },
     "sample": {
         "train": [ {
                 "sampler": "cluster",
-                // "partition": "metis-tb",
-                "partition": "fennel-lb",
-                "P": 4,
-                "batch_size": 1,
-                "pivots": true,
+                "partition": "rand",
+                "P": 24,
+                "batch_size": 3,
+            }, {
+                "sampler": "ns",
+                "fanout": "15,10,5",
+                "batch_size": 1000,
+                "num_workers": 12,
+                "drop_last": true,
             }
         ],
         "eval": null,

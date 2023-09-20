@@ -2,13 +2,14 @@
     "mode": "local",
     "env": {
         "verbose": false,
+        "outdir": "./archive",
     },
     "dataset": {
         "name": "ogbn-arxiv",
-        "root": "output/ogbn_arxiv",
+        "root": "/mnt/md0/hb_datasets/ogbn_arxiv_r",
     },
     "model": {
-        "arch": "sage",
+        "arch": "gat",
         "num_hidden": 256,
         "num_layers": 3,
         "dropout": 0.5,
@@ -23,9 +24,15 @@
                 "sampler": "cluster",
                 // "partition": "metis-tb",
                 "partition": "fennel-lb",
-                "P": 4,
-                "batch_size": 1,
+                "P": 24,
+                "batch_size": 3,
                 "pivots": true,
+            }, {
+                "sampler": "ns",
+                "fanout": "15,10,5",
+                "batch_size": 1000,
+                "num_workers": 12,
+                "drop_last": true,
             }
         ],
         "eval": null,

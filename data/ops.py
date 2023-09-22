@@ -1,6 +1,7 @@
 import torch
 from typing import Optional, Tuple, Union
 from data.io import TensorMeta, Dtype, MmapTensor
+import utils
 
 def scatter(
         index: torch.Tensor,
@@ -56,7 +57,8 @@ def ranges_gather(
         out_shape[0] = out_size
         out = torch.empty(out_shape, dtype=src.dtype, device=src.device)
     assert out.size(0) >= out_size, "Tensor `out` can't fit"
-    return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
+    with utils.parallelism(4):
+        return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
 
 def ranges_add(
         targets: torch.Tensor,

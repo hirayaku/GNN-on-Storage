@@ -192,11 +192,15 @@ Tensor partition_stratified_weighted(
     // per-label cap for #nodes in each partition
     auto label_tensor = labels.value();
     int NL = label_tensor.max().item().to<int>() + 1;
-    const std::vector<float> label2cap = tensor_to_vector<float>(
-        label_tensor.bincount({}, NL).to(torch::kFloat) / k * label_slack
+    const std::vector<long> label2cap = tensor_to_vector<int64_t>(
+        label_tensor.bincount({}, NL).to(torch::kFloat)
+                    .div_(k).multiply_(label_slack).to(torch::kInt64)
     );
-    float train_cap = std::accumulate(label2cap.begin(), label2cap.end() - 1, 0);
-    std::cout << "Cap for training nodes per partition: " << train_cap << "\n";
+    std::cout << "Cap per label: " << label2cap << "\n";
+    long train_cap = std::accumulate(label2cap.begin(), label2cap.end() - 1, 0);
+    // std::cout << label_tensor.bincount({}, NL) << "\n";
+    std::cout << "Cap for training nodes per partition ("
+        << k << ", "<< label_slack << "): " << train_cap << "\n";
     // map: node -> label
     const std::vector<int> node2label = tensor_to_vector<int>(
         label_tensor.to(torch::kInt32)
@@ -294,6 +298,7 @@ Tensor partition_stratified_weighted(
             ptn_weights[ptn] += wgt;
         }
 
+        TORCH_CHECK(label >= 0, "node ", v, " has label < 0");
         if (label < 0) {
             // for nodes no need to balance, select the closest partition
             float current_max = 0;
@@ -313,7 +318,7 @@ Tensor partition_stratified_weighted(
             rev_scoreset &ord_scores = label2ord_scores[label];
             // alpha for the current label
             float alpha = label2alpha[label];
-            float label_cap = label2cap[label];
+            int64_t label_cap = label2cap[label];
             // remove v from its original partition
             // O(log(k))
             int old_ptn = node2ptn[v];
@@ -389,6 +394,10 @@ Tensor partition_stratified_weighted(
             for (auto p : ptn_to_check) ptn_weights[p] = 0;
         }
         ptn_to_check.clear();
+    }
+
+    for (int label = 0; label < label2sizes.size(); label++) {
+        std::cout << label << ") " <<  label2sizes[label] << '\n';
     }
 
     return vector_to_tensor(node2ptn);

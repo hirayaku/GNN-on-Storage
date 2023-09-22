@@ -22,7 +22,7 @@ class NodeDataLoader(object):
 
         ds = NodePropPredDataset(dataset['root'], mmap={'graph': False, 'feat': True},
                                  random=True, formats='csc')
-        ds[0].share_memory_()
+        #  ds[0].share_memory_()
         datapipe = LiteIterableWrapper(ds)
         index = ds.get_idx_split(split)
         index_dp = LiteIterableWrapper([index])
@@ -58,7 +58,7 @@ class NodeTorchDataLoader(object):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
-        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True}, 
+        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True},
                                  random=True, formats='csc')
         datapipe = LiteIterableWrapper(ds)
         index_dp = LiteIterableWrapper([ds.get_idx_split(split)])
@@ -145,9 +145,10 @@ class HierarchicalDataLoader(object):
         fanout = list(map(int, conf_l2['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
         num_par = conf_l2.get('num_workers',  0)
+        pf_steps = conf_l2.get('prefetch_steps', max(100-num_par*2, 0))
         datapipe = datapipe.map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
-        ) # .prefetch(buffer_size=100)
+        ).prefetch(buffer_size=pf_steps)
         datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)
                                 #  affinity=range(self.cpu_i, self.cpu_i+num_par))
         datapipe = datapipe.prefetch(

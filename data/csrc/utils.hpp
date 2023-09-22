@@ -1,4 +1,5 @@
 #pragma once
+#include <iostream>
 #include <vector>
 #include <torch/torch.h>
 
@@ -52,6 +53,17 @@ inline std::vector<scalar_t> tensor_to_vector(torch::Tensor tensor) {
     return Slice<scalar_t>::from_tensor(tensor).to_vec();
 }
 
+namespace std {
+template <typename T>
+ostream &operator<<(ostream &os, const vector<T> &vec) {
+    os << '[';
+    for (const auto v : vec) {
+        os << ' ' << v; 
+    }
+    os << ']';
+    return os;
+}
+}
 
 /**
  * Parallel utilities

@@ -94,6 +94,9 @@ class IterDataPipe(IterableDataset[T_co]):
         # for auto-completion in a REPL (e.g. Jupyter notebook)
         return list(super().__dir__()) + list(self.functions.keys())
 
+    def __iter__(self):
+        raise NotImplementedError
+
     def reset(self) -> None:
         r"""
         Reset the `IterDataPipe` to the initial state. By default, no-op. For subclasses of `IterDataPipe`,

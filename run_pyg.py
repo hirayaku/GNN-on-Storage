@@ -31,7 +31,7 @@ def train_with(conf: dict):
     main_logger.info(f"Training with GPU:{device.index}")
 
     dataset_conf, params = conf['dataset'], conf['model']
-    dataset = get_dataset(dataset_conf['root'], mmap=(False, True))
+    dataset = get_dataset(dataset_conf['root'], mmap=False)
     indices = dataset.get_idx_split()
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]
@@ -73,7 +73,7 @@ def train_with(conf: dict):
         num_neighbors=eval_sizes,
         batch_size=eval_conf['batch_size'],
         num_workers = eval_conf['num_workers'],
-        persistent_workers = True,
+        persistent_workers = eval_conf['num_workers'] > 0,
     )
 
     recorder = Recorder(conf)

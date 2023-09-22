@@ -1,2 +1,0 @@
-#python preprocess.py --dataset ogbn-papers100M --rootdir=/jet/home/xhchen/datasets/dgl-data/ --graph-output-dir /jet/home/xhchen/datasets/dgl-data/ogbn_papers100M/ --feat-output-dir /jet/home/xhchen/datasets/dgl-data/ogbn_papers100M/ --to-bidirected
-python preprocess-mag240m.py --graph-output-dir /jet/home/xhchen/datasets/dgl-data/mag240m/ --feat-output-dir /jet/home/xhchen/datasets/dgl-data/mag240m/ --to-bidirected

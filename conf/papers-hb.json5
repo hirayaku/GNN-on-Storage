@@ -1,0 +1,45 @@
+{
+    "mode": "local",
+    "env": {
+        "verbose": true,
+        "outdir": "./logdir/acc",
+    },
+    "dataset": {
+        "name": "ogbn-papers100M",
+        "root": "/mnt/md0/hb_datasets/ogbn_papers100M",
+    },
+    "model": {
+        "arch": "sage",
+        "num_hidden": 256,
+        "num_layers": 3,
+        "dropout": 0.5,
+        "lr": 1e-3,
+        "runs": 5,
+        "epochs": 100,
+        "log_every" : 100,
+        "eval_every": 1,
+    },
+    "sample": {
+        "train": [ {
+                "sampler": "cluster",
+                "partition": "fennel",
+                "P": 64,
+                "batch_size": 8,
+                "pivots": true,
+                "num_repeats": 1,
+                "num_workers": 0,
+            }, {
+                "sampler": "ns",
+                "fanout": "15,10,5",
+                "batch_size": 1000,
+                "num_workers": 12,
+            }
+        ],
+        "eval": {
+            "sampler": "ns",
+            "fanout": "20,20,20",
+            "batch_size": 300,
+            "num_workers": 8,
+        },
+    }
+}

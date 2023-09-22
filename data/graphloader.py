@@ -87,8 +87,8 @@ class NodePropPredDataset(object):
         ttype, random = mode
         meta.random = random
         tensor = load_tensor(meta, ttype)
-        if ttype == TensorType.MmapTensor:
-            self._mmaps.add((tensor, mode))
+        #  if ttype == TensorType.MmapTensor:
+        #      self._mmaps.add((tensor, mode))
         return tensor
 
     def fill_mmaps(self):
@@ -255,6 +255,8 @@ class ChunkedNodePropPredDataset(NodePropPredDataset):
                 self.data[label] = (src, dst, off)
 
     def _load_node_feat(self):
+        if self.data_dict.get('node_feat', None) is None:
+            return
         node_feat = self.tensor_from_meta(self.data_dict['node_feat'], mode=self.feat_mode)
         self.data.put_tensor(node_feat, attr_name='x', index=None)
         if self.feat_mode == 'mmap':

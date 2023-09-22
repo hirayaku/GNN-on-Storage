@@ -9,7 +9,7 @@ import datapipe.communication as comm
 import utils
 
 def worker_init_fn(dp: IterDataPipe, num_par: Optional[int],
-                   affinity: Optional[list], init_fn: Optional[Callable],
+                   affinity: Optional[list[int]], init_fn: Optional[Callable],
                    **kwargs):
     if num_par is not None:
         torch.set_num_threads(num_par)
@@ -48,7 +48,7 @@ class ParallelMapperDataPipe(IterDataPipe):
         self.mp_ctx = mp_ctx
         self._worker_initialized = False
         self._worker_affinity = affinity
-    
+
     @staticmethod
     def _clear_queue(q: queue.Queue):
         try:
@@ -118,7 +118,7 @@ class ParallelMapperDataPipe(IterDataPipe):
     def _create_thread_worker(self):
         thread = threading.Thread(target=self._thread_worker, daemon=True)
         thread.start()
-    
+
     def _process_loop_fn(self) -> bool:
         try:
             data = self.source_queue.get(block=True, timeout=self.QUEUE_GET_TIMEOUT)
@@ -209,16 +209,19 @@ class PrefetcherDataPipe(IterDataPipe):
         self._buffer.put(StopIteration(f"{self.__class__}: prefetcher thread"))
 
     def __iter__(self):
-        self._clear_queue(self._buffer)
-        prefetcher = threading.Thread(target=self._thread_prefetcher, daemon=True)
-        prefetcher.start()
-        while True:
-            processed = self._buffer.get()
-            if isinstance(processed, StopIteration):
-                break
-            else:
-                yield processed
-            processed = None
+        if self.buffer_size == 0:
+            yield from self.source_dp
+        else:
+            self._clear_queue(self._buffer)
+            prefetcher = threading.Thread(target=self._thread_prefetcher, daemon=True)
+            prefetcher.start()
+            while True:
+                processed = self._buffer.get()
+                if isinstance(processed, StopIteration):
+                    break
+                else:
+                    yield processed
+                processed = None
 
 @make_functional("prefetch_cuda")
 class CudaPrefetcherDataPipe(IterDataPipe):

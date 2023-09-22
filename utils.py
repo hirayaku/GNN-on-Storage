@@ -53,7 +53,7 @@ import psutil
 def get_affinity():
     p = psutil.Process()
     return p.cpu_affinity()
-def set_affinity(cpus: list[int]):
+def set_affinity(cpus):
     p = psutil.Process()
     p.cpu_affinity(cpus)
 def mem_usage():

@@ -132,6 +132,9 @@ def train(epoch):
     return total_loss / total_examples
 
 def train_custom_partitioner(epoch):
+    """
+    Training new partitioner
+    """
     model.train()
 
     pbar = tqdm(total=len(train_loader))
@@ -230,8 +233,10 @@ def test(epoch):
 
         for split in ["train", "valid", "test"]:
             mask = data[f"{split}_mask"]
-            y_true[split].append(data.y[mask].cpu())
-            y_pred[split].append(out_eval[mask].cpu())
+            # y_true[split].append(data.y[mask].cpu())
+            # y_pred[split].append(out_eval[mask].cpu())
+            y_true[split].append(data.y[mask])
+            y_pred[split].append(out_eval[mask])
 
         pbar.update(1)
 
@@ -288,7 +293,7 @@ def main():
     # lr = 0.002
 
     import torch
-    device = torch.device("cpu") # f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     transform = T.Compose([T.ToDevice(device), T.ToSparseTensor()])
     dataset = PygNodePropPredDataset(
         "ogbn-arxiv",  # root,
@@ -428,8 +433,10 @@ def main():
     # epoch
     for epoch in range(1, args.num_epochs + 1):
         adjust_learning_rate(optimizer, args.lr, epoch)
-        # loss = train(epoch)
-        loss = train_custom_partitioner(epoch)
+        if part_type == "fennel2":
+            loss = train_custom_partitioner(epoch)
+        else:
+            loss = train(epoch)
         train_acc, val_acc, test_acc, final_pred = test(epoch)
         if val_acc - best_val < threshold:
             patience_cnt = patience_cnt - 1

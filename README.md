@@ -8,9 +8,8 @@ Set the environment variable `SCRATCH` to fast external storage to work with ten
 ## Commands to limit memory resources
 
 ```
-sudo bash scripts/set_memory_limit.sh <xxxG> <username> # create a group named "memory:gnnxxxG"
-
-cgexec -g memory:gnnxxxG <your-executable> # run executable within the memory budget
+sudo bash scripts/create_cgroup.sh <xxxG> <username> # create a group named "memory:gnn" with memory budget xxxGB
+cgexec -g memory:gnn <your-executable> # run executable within the memory budget
 ```
 
 ## Performance notes

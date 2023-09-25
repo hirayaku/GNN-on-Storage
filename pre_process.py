@@ -26,7 +26,6 @@ class FennelDegOrderPartitioner(P.FennelPartitioner):
         # overwrite node_order
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
-        #  self.node_order = torch.arange(self.n)
 
 class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
     def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
@@ -34,7 +33,6 @@ class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
         # overwrite node_order
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
-        #  self.node_order = torch.arange(self.n)
 
 def get_partitioner(dataset: NodePropPredDataset, args):
     data = dataset[0]
@@ -70,7 +68,7 @@ def get_partitioner(dataset: NodePropPredDataset, args):
                 data, args.pn, slack=1.1, runs=3,
                 base=FennelStrataDegOrderPartitioner,
                 #  base=P.FennelStrataPartitioner,
-                labels=train_mask.int(),
+                labels=(~train_mask).int(),
             )
         elif args.part == 'fennel-lb':
             # fennel-lb balances all labels in the training set and non-training nodes
@@ -84,7 +82,8 @@ def get_partitioner(dataset: NodePropPredDataset, args):
             e_w = edge_importance(data, train_nid, k=args.k)
             return P.ReFennelPartitioner(
                 data, args.pn, weights=e_w, slack=1.1, runs=3,
-                base=FennelDegOrderPartitioner,
+                base=FennelStrataDegOrderPartitioner,
+                labels=(~train_mask).int(),
             )
         elif args.part == 'fennel-wlb':
             e_w = edge_importance(data, train_nid, k=args.k)

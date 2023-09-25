@@ -100,10 +100,10 @@ if __name__ == '__main__':
         mask -= assigns[v]
         mask = (mask != 0)
         if weights is None:
-            return mask.sum()
+            return mask.int().sum()
         else:
             return weights[mask].sum()
-    node_impt = node_importance(data, trains, k=2)
+    #  node_impt = node_importance(data, trains, k=2)
     edge_impt = edge_importance(data, trains, k=3)
     print(edge_impt.sum())
 

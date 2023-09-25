@@ -20,6 +20,17 @@ def get_model(in_feats: int, out_feats:int, model_conf: dict) -> torch.nn.Module
         setattr(args, k, model_conf[k])
     return gen_model(in_feats, out_feats, args)
 
+def get_optimizer(model, params: dict):
+    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
+    if params.get('lr_schedule', None) == 'plateau':
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=optimizer, factor=params['lr_decay'],
+            patience=params['lr_step'],
+        )
+    else:
+        lr_scheduler = None
+    return optimizer, lr_scheduler
+
 def get_dataset(root: str, mmap=True, random=False):
     return NodePropPredDataset(root, mmap=mmap, random=random, formats=('csc',))
 

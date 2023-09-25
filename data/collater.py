@@ -87,7 +87,10 @@ class Collator:
                     ranges_gather(self.idx_mask, node_intervals[0], node_part_sizes))
                 logger.debug(f"Edge-index constructed: {batch_nodes.size(0)} nodes, {row.size(0)} edges, {targets.size(0)} train")
 
-                batch_x = ranges_gather(self.data.x, node_intervals[0], node_part_sizes)
+                batch_x_shape = list(self.data.x)
+                batch_x_shape[0] = num_nodes
+                batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
+                batch_x = ranges_gather(self.data.x, node_intervals[0], node_part_sizes, out=batch_x)
                 batch_y = ranges_gather(self.data.y, node_intervals[0], node_part_sizes)
                 logger.debug(f"Features gathering done")
                 subgraph = Data(

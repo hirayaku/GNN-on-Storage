@@ -12,7 +12,7 @@ import torch
 from torch_geometric import seed_everything
 from torch_geometric.loader import NeighborLoader
 from data.graphloader import NodePropPredDataset
-from trainer.helpers import get_model, get_dataset
+from trainer.helpers import get_model, get_optimizer, get_dataset
 from trainer.helpers import train, eval_batch, eval_full
 from trainer.dataloader import NodeDataLoader, PartitionDataLoader, HierarchicalDataLoader
 from trainer.recorder import Recorder
@@ -37,15 +37,6 @@ def train_with(conf: dict, keep_eval=True):
     dataset.drop_mmaps()
     model = get_model(in_feats, out_feats, params)
     model = model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
-    if params.get('lr_schedule', None) == 'plateau':
-        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer=optimizer, factor=params['lr_decay'],
-            patience=params['lr_step'],
-        )
-    else:
-        lr_scheduler = None
-    main_logger.info(f"LR scheduler: {lr_scheduler}")
 
     sample_conf = conf['sample']
     train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
@@ -72,6 +63,11 @@ def train_with(conf: dict, keep_eval=True):
         recorder.set_run(run)
         seed_everything(run + seed)
         model.reset_parameters()
+        optimizer, lr_scheduler = get_optimizer(model, params)
+        main_logger.info(f"LR scheduler: {lr_scheduler}")
+        gc.collect()
+        torch.cuda.empty_cache()
+
         for e in range(params['epochs']):
             train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
             mean_edges, epoch_time = train_info[2], train_info[-1]
@@ -130,6 +126,8 @@ def train_with(conf: dict, keep_eval=True):
                     f"Current Val: {val_acc*100:.2f} | Current Test: {test_acc*100:.2f} | "
                     f"Best Val: {best_acc['val/acc']:.2f} | Test {best_acc['test/acc']:.2f}"
                 )
+                if lr_scheduler is not None:
+                    lr_scheduler.step(val_loss)
 
     main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")
     main_logger.info(f"Results: {recorder.stdmean()}")

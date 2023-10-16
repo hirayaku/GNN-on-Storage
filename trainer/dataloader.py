@@ -16,7 +16,7 @@ def make_shared(data):
     return data
 
 class NodeDataLoader(object):
-    def __init__(self, dataset: dict, split: str, conf: dict):
+    def __init__(self, dataset: dict, split: str, conf: dict, prefetch_cuda=True):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
@@ -39,7 +39,9 @@ class NodeDataLoader(object):
         datapipe = datapipe.pmap(fn=sample_fn, mp_ctx=self.ctx, num_par=num_par)
         datapipe = datapipe.prefetch(
             fn=partial(gather_feature, filter_fn=filter_and_pin)
-        ).prefetch_cuda()
+        )
+        if prefetch_cuda:
+            datapipe = datapipe.prefetch_cuda()
         self.cpu_i += num_par
         self.datapipe = datapipe
 

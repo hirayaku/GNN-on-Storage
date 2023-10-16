@@ -11,12 +11,16 @@ NodeSampler = Callable[[Data, OptTensor, dict], Any]
 def filter_and_pin(data, node, row, col, edge) -> Data:
     out = Data()
     out.num_nodes = node.numel()
-    sparse_sizes = out.size()[::-1]
-    # TODO Currently, we set `is_sorted=False`, see:
-    # https://github.com/pyg-team/pytorch_geometric/issues/4346
-    adj_t = SparseTensor(row=col, col=row, sparse_sizes=sparse_sizes,
-                         is_sorted=False, trust_data=True)
-    out.adj_t = adj_t.pin_memory()
+    # sparse_sizes = out.size()[::-1]
+    # # TODO Currently, we set `is_sorted=False`, see:
+    # # https://github.com/pyg-team/pytorch_geometric/issues/4346
+    # adj_t = SparseTensor(row=col, col=row, sparse_sizes=sparse_sizes,
+    #                      is_sorted=False, trust_data=True)
+    # out.adj_t = adj_t.pin_memory()
+    edge_index = torch.empty([2, col.numel()], dtype=col.dtype, pin_memory=True)
+    edge_index[0] = row
+    edge_index[1] = col
+    out.edge_index = edge_index
     x_shape = list(data.x.shape)
     x_shape[0] = node.numel()
     x = torch.empty(x_shape, dtype=data.x.dtype, pin_memory=True)

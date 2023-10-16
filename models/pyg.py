@@ -1,7 +1,8 @@
-from typing import Callable, List
+from typing import Callable, List, Optional
 import torch
 import torch.nn.functional as F
 from torch.nn import Linear, Sequential, BatchNorm1d, ReLU
+from torch_sparse import SparseTensor
 from torch_geometric.nn import SAGEConv, GATConv, GINConv
 from torch_geometric.nn import JumpingKnowledge, GCNConv
 
@@ -49,7 +50,7 @@ class SAGE(torch.nn.Module):
 
     def forward_adjs(self, x, adjs: List):
         x = x.to(torch.float)
-        end_size = adjs[-1][-1][1]
+        # end_size = adjs[-1][-1][1]
         for i, (edge_index, _, size) in enumerate(adjs):
             x_target = x[:size[1]]
             x = self.convs[i]((x, x_target), edge_index)
@@ -58,21 +59,29 @@ class SAGE(torch.nn.Module):
                 x = F.dropout(x, p=0.5, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
-    def forward_graph(self, x, edge_index):
+    def forward(
+            self, x, edge_index,
+            nodes_per_hop:Optional[List[int]]=None,
+            edges_per_hop:Optional[List[int]]=None,
+        ):
         x = x.to(torch.float)
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
-            if i != self.num_layers - 1:
-                x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
-        return torch.log_softmax(x, dim=-1)
-
-    def forward(self, x, mfg):
-        if isinstance(mfg, list):
-            return self.forward_adjs(x, mfg)
+        if nodes_per_hop is not None and edges_per_hop is not None:
+            for i, conv in enumerate(self.convs):
+                target_size = x.size(0) - nodes_per_hop[-(i+1)]
+                x_target = x[:target_size]
+                x = conv((x, x_target), edge_index)
+                if i != self.num_layers - 1:
+                    x = F.relu(x)
+                    x = F.dropout(x, p=0.5, training=self.training)
+                    target_size = edge_index.size(1) - edges_per_hop[-(i+1)]
+                    edge_index = edge_index[:,:target_size]
         else:
-            return self.forward_graph(x, mfg)
-
+            for i, conv in enumerate(self.convs):
+                x = conv(x, edge_index)
+                if i != self.num_layers - 1:
+                    x = F.relu(x)
+                    x = F.dropout(x, p=0.5, training=self.training)
+        return torch.log_softmax(x, dim=-1)
 
 # Needed by SAGEResInception
 class MLP(torch.nn.Module):
@@ -149,7 +158,7 @@ class SAGEResInception(torch.nn.Module):
             x.reset_parameters()
         self.mlp.reset_parameters()
 
-    def forward(self, _x, adjs):
+    def forward_adjs(self, _x, adjs):
         _x = _x.to(torch.float)
         collect = []
         end_size = adjs[-1][-1][1]
@@ -207,26 +216,29 @@ class GAT(torch.nn.Module):
                 x = F.dropout(x, p=0.5, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
-    def forward_graph(self, x, edge_index):
+    def forward(
+            self, x, edge_index,
+            nodes_per_hop:Optional[List[int]]=None,
+            edges_per_hop:Optional[List[int]]=None,
+        ):
         x = x.to(torch.float)
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
-            if i != self.num_layers - 1:
-                x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
-        return torch.log_softmax(x, dim=-1)
-
-    def forward(self, x, mfg):
-        if isinstance(mfg, list):
-            return self.forward_adjs(x, mfg)
+        if nodes_per_hop is not None and edges_per_hop is not None:
+            for i, conv in enumerate(self.convs):
+                target_size = x.size(0) - nodes_per_hop[-(i+1)]
+                x_target = x[:target_size]
+                x = conv((x, x_target), edge_index)
+                if i != self.num_layers - 1:
+                    x = F.relu(x)
+                    x = F.dropout(x, p=0.5, training=self.training)
+                    target_size = edge_index.size(1) - edges_per_hop[-(i+1)]
+                    edge_index = edge_index[:,:target_size]
         else:
-            return self.forward_graph(x, mfg)
-
-    # @torch.no_grad()
-    # def inference(self, x_all: torch.Tensor, device: torch.cuda.device,
-    #               make_subgraph_iter: Callable[[torch.tensor],
-    #                                            DeviceIterator]):
-    #     return layerwise_inference(self, x_all, device, make_subgraph_iter)
+            for i, conv in enumerate(self.convs):
+                x = conv(x, edge_index)
+                if i != self.num_layers - 1:
+                    x = F.relu(x)
+                    x = F.dropout(x, p=0.5, training=self.training)
+        return torch.log_softmax(x, dim=-1)
 
 
 class GIN(torch.nn.Module):
@@ -262,7 +274,7 @@ class GIN(torch.nn.Module):
         self.lin1.reset_parameters()
         self.lin2.reset_parameters()
 
-    def forward(self, x, adjs):
+    def forward_adjs(self, x, adjs):
         x = x.to(torch.float)
         end_size = adjs[-1][-1][1]
         for i, (edge_index, _, size) in enumerate(adjs):
@@ -273,17 +285,32 @@ class GIN(torch.nn.Module):
         x = self.lin2(x)
         return torch.log_softmax(x, dim=-1)
 
-    # Not implemented yet
-    # @torch.no_grad()
-    # def inference(self, x_all: torch.Tensor, device: torch.cuda.device,
-    #               make_subgraph_iter: Callable[[torch.tensor],
-    #                                            DeviceIterator]):
-    #     return layerwise_inference(self, x_all, device, make_subgraph_iter)
+    def forward(
+            self, x, edge_index,
+            nodes_per_hop:Optional[List[int]]=None,
+            edges_per_hop:Optional[List[int]]=None,
+        ):
+        x = x.to(torch.float)
+        if nodes_per_hop is not None and edges_per_hop is not None:
+            for i, conv in enumerate(self.convs):
+                target_size = x.size(0) - nodes_per_hop[-(i+1)]
+                x_target = x[:target_size]
+                x = conv((x, x_target), edge_index)
+                if i != self.num_layers - 1:
+                    target_size = edge_index.size(1) - edges_per_hop[-(i+1)]
+                    edge_index = edge_index[:,:target_size]
+        else:
+            for i, conv in enumerate(self.convs):
+                x = conv(x, edge_index)
+        x = self.lin1(x).relu()
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.lin2(x)
+        return torch.log_softmax(x, dim=-1)
 
 
 class JKNet(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels,
-                 num_layers, dropout=0.5, mode='max'):  # mode='cat'):
+                 num_layers, dropout=0.5, mode='cat'):
         conv_layer = SAGEConv
         kwargs = dict(bias=False)
         super().__init__()

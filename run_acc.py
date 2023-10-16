@@ -13,12 +13,12 @@ from torch_geometric import seed_everything
 from torch_geometric.loader import NeighborLoader
 from data.graphloader import NodePropPredDataset
 from trainer.helpers import get_model, get_optimizer, get_dataset
-from trainer.helpers import train, eval_batch, eval_full
+from trainer.helpers import train, train_profile, eval_batch, eval_full
 from trainer.dataloader import NodeDataLoader, PartitionDataLoader, HierarchicalDataLoader
 from trainer.recorder import Recorder
 import utils
 
-def train_with(conf: dict, keep_eval=True):
+def train_with(conf: dict, keep_eval=True, profile=False):
     env = conf['env']
     seed = env.get('seed', random.randint(0, 1024**3))
     env['seed'] = seed
@@ -69,7 +69,10 @@ def train_with(conf: dict, keep_eval=True):
         torch.cuda.empty_cache()
 
         for e in range(params['epochs']):
-            train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+            if profile:
+                train_loss, train_acc, *train_info = train_profile(model, optimizer, train_loader, device=device)
+            else:
+                train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
             mean_edges, epoch_time = train_info[2], train_info[-1]
             recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc, 'time': epoch_time}})
             main_logger.info(
@@ -136,9 +139,10 @@ def train_with(conf: dict, keep_eval=True):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", type=str, required=True)
+    parser.add_argument("-c", "--config", type=str, default='conf/products-ns.json5')
     parser.add_argument("--keep-eval", action="store_true",
                         help="keep evaluation dataloaders in memory")
+    parser.add_argument("-p", "--profile", action="store_true")
     args, _ = parser.parse_known_args()
     with open(args.config) as fp:
         conf = json5.load(fp)
@@ -146,7 +150,7 @@ if __name__ == '__main__':
 
     import torch.multiprocessing as mp
     mp.set_sharing_strategy('file_system')
-    recorder = train_with(conf, keep_eval=args.keep_eval)
+    recorder = train_with(conf, keep_eval=args.keep_eval, profile=args.profile)
     env = conf.get('env', dict())
     if 'outdir' in env:
         recorder.save(env['outdir'])
@@ -161,23 +165,3 @@ if __name__ == '__main__':
     # #Labels     {g.ndata['label'].shape}
     # #Features   {g.ndata['feat'].shape}"""
     # )
-
-    # log_path = f"log/{args.dataset}/HB-{model}-{partition}-c{args.popular_ratio}" \
-    #         + f"-r{args.recycle}*{args.rho}-p{args.psize}-b{args.bsize}-{time_stamp}"
-    # tb_writer = SummaryWriter(log_path, flush_secs=5)
-    # try:
-    #     accu = train(args, data, partitioner, tb_writer)
-    # except:
-    #     shutil.rmtree(log_path)
-    #     print("** removed tensorboard log dir **")
-    #     raise
-    # tb_writer.add_hparams({
-    #     'seed': seed,'model': model,'num_hidden': args.num_hidden, 'fanout': str(args.fanout),
-    #     'use_incep': args.use_incep, 'mlp': args.mlp, 'lr': args.lr, 'lr-decay': args.lr_decay,
-    #     'dropout': args.dropout, 'weight-decay': args.wt_decay,
-    #     'partition': args.part, 'psize': args.psize, 'bsize': args.bsize, 'bsize2': args.bsize2,
-    #     'rho': args.rho, 'recycle': args.recycle, 'popular_ratio': args.popular_ratio,
-    #     },
-    #     {'hparam/val_acc': accu[0].item(), 'hparam/test_acc': accu[1].item() }
-    #     )
-    # tb_writer.close()

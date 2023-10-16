@@ -131,9 +131,18 @@ class NodePropPredDataset(object):
             if edge_format in formats_to_load:
                 if edge_format == 'coo':
                     coo_sorted = graph.get('sorted', None)
-                    src = self.tensor_from_meta(graph['edge_index'][0], self.graph_mode)
-                    dst = self.tensor_from_meta(graph['edge_index'][1], self.graph_mode)
-                    self.data.edge_index = (src, dst)
+                    graph_mode = self.graph_mode
+                    if self.graph_mode[0] == TensorType.PlainTensor:
+                        graph_mode = (TensorType.MmapTensor, *graph_mode[1:])
+                    src = self.tensor_from_meta(graph['edge_index'][0], graph_mode)
+                    dst = self.tensor_from_meta(graph['edge_index'][1], graph_mode)
+                    if self.graph_mode[0] == TensorType.PlainTensor:
+                        edge_index = torch.empty([2, src.numel()], dtype=src.dtype)
+                        edge_index[0] = src
+                        edge_index[1] = dst
+                        self.data.edge_index = edge_index
+                    else:
+                        self.data.edge_index = (src, dst)
                     self.formats[edge_format] = True
                 elif edge_format == 'csc':
                     ptr = self.tensor_from_meta(graph['adj_t'][0])

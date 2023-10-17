@@ -424,11 +424,8 @@ def load_tensor(
         assert tinfo.path and os.path.exists(tinfo.path), \
             f"Invalid file path {tinfo.path}"
         return MmapTensor(tinfo)
-    # elif ttype is TensorType.ShmemTensor:
-    #     mmapped = load_tensor(tinfo, TensorType.MmapTensor)
-    #     tensor = ShmemTensor(tinfo, backend)
-    #     tensor.copy_(mmapped)
-    #     return tensor
+    elif ttype is TensorType.ShmemTensor:
+        return ShmTensor(tinfo)
     else:
         raise NotImplementedError(f"TensorType {ttype.name} not supported yet")
 

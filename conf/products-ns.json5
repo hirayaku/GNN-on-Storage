@@ -5,8 +5,8 @@
         "outdir": "./logdir/acc",
     },
     "dataset": {
-        "name": "ogbn-papers100M",
-        "root": "/mnt/md0/hb_datasets/ogbn_papers100M",
+        "name": "ogbn-products",
+        "root": "/mnt/md0/hb_datasets/ogbn_products",
     },
     "model": {
         "arch": "sage",
@@ -15,23 +15,22 @@
         "dropout": 0.5,
         "lr": 1e-3,
         "runs": 1,
-        "epochs": 30,
-        "eval_every": 2,
+        "epochs": 5,
+        "eval_every": 1,
     },
     "sample": {
         "train": [{
             "sampler": "ns",
             "fanout": "15,10,5",
             "batch_size": 1000,
-            "num_workers": 12,
-            "drop_last": true,
+            "num_workers": 8,
         }],
         "eval": {
             "sampler": "ns",
-            "fanout": "20,20,20",
+            // "fanout": "20,20,20",
+            "fanout": "15,10,5",
             "batch_size": 500,
             "num_workers": 12,
-            "drop_last": true,
             "persist": false,
         },
     }

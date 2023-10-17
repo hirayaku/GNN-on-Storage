@@ -22,7 +22,7 @@ class NodeDataLoader(object):
 
         ds = NodePropPredDataset(dataset['root'], mmap={'graph': False, 'feat': True},
                                  random=True, formats='csc')
-        #  ds[0].share_memory_()
+        ds[0].share_memory_()
         datapipe = LiteIterableWrapper(ds)
         index = ds.get_idx_split(split)
         index_dp = LiteIterableWrapper([index])

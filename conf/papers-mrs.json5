@@ -14,18 +14,19 @@
         "num_layers": 3,
         "dropout": 0.5,
         "lr": 1e-3,
-        "runs": 3,
-        "epochs": 30,
+        "runs": 1,
+        "epochs": 25,
         "log_every" : 100,
-        "eval_every": 2,
+        "eval_after": 0,
+        "eval_every": 1,
     },
     "sample": {
         "train": [ {
                 "sampler": "cluster",
-                "partition": "fennel-wlb",
+                "partition": "rand",
                 "P": 64,
                 "batch_size": 8,
-                "pivots": true,
+                "pivots": false,
                 "num_repeats": 1,
                 "num_workers": 0,
             }, {
@@ -33,7 +34,7 @@
                 "fanout": "15,10,5",
                 "batch_size": 1000,
                 "num_workers": 12,
-                "prefetch_steps": 200,
+                "prefetch_steps": 100,
             }
         ],
         "eval": {

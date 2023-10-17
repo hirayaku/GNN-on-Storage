@@ -93,9 +93,12 @@ def train_profile(model, optimizer, dataloader, device, description='train'):
             batch = batch.to(device, *dev_attrs, non_blocking=True)
             optimizer.zero_grad()
             y = batch.y[:bsize].long().view(-1)
-            y_hat = model(batch.x, batch.edge_index,
-                        batch.num_sampled_nodes,
-                        batch.num_sampled_edges)[:bsize]
+            if batch.edge_index is not None:
+                y_hat = model(batch.x, batch.edge_index,
+                              batch.num_sampled_nodes,
+                              batch.num_sampled_edges)[:bsize]
+            else:
+                y_hat = model(batch.x, batch.adj_t)[:bsize]
             loss = F.nll_loss(y_hat, y)
             loss.backward()
             optimizer.step()
@@ -133,10 +136,12 @@ def eval_batch(model, dataloader, device, description='eval'):
         dev_attrs = [key for key in batch.keys if not key.endswith('_mask')]
         batch = batch.to(device, *dev_attrs, non_blocking=True)
         y = batch.y[:bsize].long().view(-1)
-        # y_hat = model(batch.x, batch.adj_t)[:bsize]
-        y_hat = model(batch.x, batch.edge_index,
-                      batch.num_sampled_nodes,
-                      batch.num_sampled_edges)[:bsize]
+        if batch.edge_index is not None:
+            y_hat = model(batch.x, batch.edge_index,
+                          batch.num_sampled_nodes,
+                          batch.num_sampled_edges)[:bsize]
+        else:
+            y_hat = model(batch.x, batch.adj_t)[:bsize]
         loss = F.nll_loss(y_hat, y)
         # collect stats
         total_loss += float(loss) * bsize

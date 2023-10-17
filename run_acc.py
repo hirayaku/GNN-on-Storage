@@ -34,7 +34,7 @@ def train_with(conf: dict, keep_eval=True, profile=False):
     dataset = get_dataset(dataset_conf['root'])
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]
-    dataset.drop_mmaps()
+    del dataset
     model = get_model(in_feats, out_feats, params)
     model = model.to(device)
 
@@ -65,10 +65,10 @@ def train_with(conf: dict, keep_eval=True, profile=False):
         model.reset_parameters()
         optimizer, lr_scheduler = get_optimizer(model, params)
         main_logger.info(f"LR scheduler: {lr_scheduler}")
-        gc.collect()
-        torch.cuda.empty_cache()
+        gc.collect(); torch.cuda.empty_cache()
 
         for e in range(params['epochs']):
+            gc.collect() # make sure the dataloader memory gets reclaimed
             if profile:
                 train_loss, train_acc, *train_info = train_profile(model, optimizer, train_loader, device=device)
             else:
@@ -79,13 +79,15 @@ def train_with(conf: dict, keep_eval=True, profile=False):
                 f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
             )
 
-            if (e + 1) % params['eval_every'] == 0:
+            if e >= params.get('eval_after', 0) and (e + 1) % params['eval_every'] == 0:
                 if eval_full_batch:
+                    dataset = get_dataset(dataset_conf['root'])
                     indices = dataset.get_idx_split()
                     results = eval_full(model, dataset[0], device=device,
                                         masks=(indices['valid'], indices['test']))
                     val_loss, val_acc = results[0]
                     test_loss, test_acc = results[1]
+                    del dataset
                 elif keep_eval:
                     val_loss, val_acc, *_ = eval_batch(
                         model, val_loader, device=device, description='validation'
@@ -94,31 +96,31 @@ def train_with(conf: dict, keep_eval=True, profile=False):
                         model, test_loader, device=device, description='test'
                     )
                 else:
+                    dataset = NodePropPredDataset(
+                        dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
+                    )
+                    eval_sizes = list(map(int, eval_conf['fanout'].split(',')))
+                    eval_loader = NeighborLoader(
+                        dataset[0], input_nodes=dataset.get_idx_split('valid'),
+                        num_neighbors=eval_sizes,
+                        batch_size=eval_conf['batch_size'],
+                        num_workers=eval_conf['num_workers'],
+                    )
                     with utils.parallelism(factor=4): # overcommit threads
-                        dataset = NodePropPredDataset(
-                            dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
-                        )
-                        eval_sizes = list(map(int, eval_conf['fanout'].split(',')))
-                        eval_loader = NeighborLoader(
-                            dataset[0], input_nodes=dataset.get_idx_split('valid'),
-                            num_neighbors=eval_sizes,
-                            batch_size=eval_conf['batch_size'],
-                            num_workers=eval_conf['num_workers'],
-                        )
                         val_loss, val_acc, *_ = eval_batch(
                             model, eval_loader, device=device, description='validation'
                         )
-                        eval_loader = NeighborLoader(
-                            dataset[0], input_nodes=dataset.get_idx_split('test'),
-                            num_neighbors=eval_sizes,
-                            batch_size=eval_conf['batch_size'],
-                            num_workers=eval_conf['num_workers'],
-                        )
+                    eval_loader = NeighborLoader(
+                        dataset[0], input_nodes=dataset.get_idx_split('test'),
+                        num_neighbors=eval_sizes,
+                        batch_size=eval_conf['batch_size'],
+                        num_workers=eval_conf['num_workers'],
+                    )
+                    with utils.parallelism(factor=4): # overcommit threads
                         test_loss, test_acc, *_ = eval_batch(
                             model, eval_loader, device=device, description='test'
                         )
-                        del eval_loader, dataset
-                        gc.collect() # make sure the dataloader memory gets reclaimed
+                    del eval_loader, dataset
 
                 recorder.add(iters=e, data={
                     'val':    { 'loss': val_loss, 'acc': val_acc, },
@@ -142,13 +144,17 @@ if __name__ == '__main__':
     parser.add_argument("-c", "--config", type=str, default='conf/products-ns.json5')
     parser.add_argument("--keep-eval", action="store_true",
                         help="keep evaluation dataloaders in memory")
-    parser.add_argument("-p", "--profile", action="store_true")
+    parser.add_argument("--profile", action="store_true", help="enable profiling")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display debugging messages")
     args, _ = parser.parse_known_args()
+    if args.verbose:
+        main_logger.setLevel(logging.DEBUG)
     with open(args.config) as fp:
         conf = json5.load(fp)
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
 
     import torch.multiprocessing as mp
+    # NOTE: don't change sharing strategy for baseline mmap
     mp.set_sharing_strategy('file_system')
     recorder = train_with(conf, keep_eval=args.keep_eval, profile=args.profile)
     env = conf.get('env', dict())

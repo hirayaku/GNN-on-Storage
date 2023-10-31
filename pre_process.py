@@ -1,6 +1,6 @@
 import sys, os, time, torch
 from torch_geometric.data import Data
-from torch_geometric.utils import index_to_mask, degree
+from torch_geometric.utils import index_to_mask, degree, mask_to_index
 from torch_sparse import SparseTensor
 from data.datasets import serialize
 from data.graphloader import NodePropPredDataset, ChunkedNodePropPredDataset
@@ -27,12 +27,20 @@ class FennelDegOrderPartitioner(P.FennelPartitioner):
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
 
-class FennelStrataDegOrderPartitioner(P.FennelStrataPartitioner):
-    def __init__(self, g, psize, name='Fennel-strata-deg', **kwargs):
+class FennelWLBPartitioner(P.FennelStrataPartitioner):
+    def __init__(self, g, psize, train_mask, name='Fennel-strata-deg', **kwargs):
         super().__init__(g, psize, name=name, **kwargs)
-        # overwrite node_order
+        # overwrite node_order: training nodes first, high-degree first
         degrees = self.rowptr[1:] - self.rowptr[:-1]
         self.node_order = torch.sort(degrees, descending=True).indices
+        # degrees = self.rowptr[1:] - self.rowptr[:-1]
+        # train_nids = mask_to_index(train_mask)
+        # train_deg = degrees[train_mask]
+        # train_order = train_nids[torch.sort(train_deg, descending=True).indices]
+        # nontrain_nids = mask_to_index(~train_mask)
+        # nontrain_deg = degrees[~train_mask]
+        # nontrain_order = nontrain_nids[torch.sort(nontrain_deg, descending=True).indices]
+        # self.node_order = torch.cat([train_order, nontrain_order])
 
 def get_partitioner(dataset: NodePropPredDataset, args):
     data = dataset[0]
@@ -52,45 +60,39 @@ def get_partitioner(dataset: NodePropPredDataset, args):
         e_w = edge_importance(data, train_nid, k=args.k)
         return P.MetisWeightedPartitioner(data, args.pn, node_weights=train_nid, edge_weights=e_w)
     else:
-        train_labels = data.y.flatten().clone()
-        train_labels = train_labels.int()
-        num_labels = train_labels.max().item() + 1
-        train_labels[~train_mask] = num_labels
-        if args.part == 'fennel-vnl':
+        pred_labels = data.y.flatten().clone().int()
+        num_labels = pred_labels.max().item() + 1
+        pred_labels[~train_mask] = num_labels
+        if args.part == 'fennel':
             # vanilla version of fennel
             return P.ReFennelPartitioner(
                 data, args.pn, slack=1.1, runs=3,
                 base=FennelDegOrderPartitioner,
             )
-        elif args.part == 'fennel':
-            # unlike metis-tb, fennel balances both training nodes and non-training nodes
+        elif args.part == 'fennel-w':
+            # weighted version of fennel
+            e_w = edge_importance(data, train_nid, k=args.k)
             return P.ReFennelPartitioner(
-                data, args.pn, slack=1.1, runs=3,
-                base=FennelStrataDegOrderPartitioner,
-                #  base=P.FennelStrataPartitioner,
-                labels=(~train_mask).int(),
+                data, args.pn, weights=e_w, slack=1.1, runs=3,
+                base=FennelDegOrderPartitioner,
             )
         elif args.part == 'fennel-lb':
             # fennel-lb balances all labels in the training set and non-training nodes
             return P.ReFennelPartitioner(
                 data, args.pn, slack=1.1, runs=3,
-                base=FennelStrataDegOrderPartitioner,
-                #  base=P.FennelStrataPartitioner,
-                labels=train_labels,
-            )
-        elif args.part == 'fennel-w':
-            e_w = edge_importance(data, train_nid, k=args.k)
-            return P.ReFennelPartitioner(
-                data, args.pn, weights=e_w, slack=1.1, runs=3,
-                base=FennelStrataDegOrderPartitioner,
-                labels=(~train_mask).int(),
+                base=FennelWLBPartitioner,
+                train_mask=train_mask,
+                stratify_labels=pred_labels,
+                balance_labels=train_mask.int(),
             )
         elif args.part == 'fennel-wlb':
             e_w = edge_importance(data, train_nid, k=args.k)
             return P.ReFennelPartitioner(
                 data, args.pn, weights=e_w, slack=1.1, runs=3,
-                base=FennelStrataDegOrderPartitioner,
-                labels=train_labels,
+                base=FennelWLBPartitioner,
+                train_mask=train_mask,
+                stratify_labels=pred_labels,
+                balance_labels=train_mask.int(),
             )
         else:
             raise ValueError(args.part)

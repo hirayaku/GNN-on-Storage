@@ -92,9 +92,13 @@ Tensor partition_weighted(
     torch::optional<double> scan_thres = torch::nullopt
 );
 
-Tensor partition_stratified_weighted(
-    Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor labels, OptTensor node_order,
-    double gamma, Tensor alphas, double slack, double label_slack,
+/*
+ * Fennel with weighted edges and label balancing objectives 
+ */
+Tensor partition_stratified_balanced_weighted(
+    Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor node_order,
+    double gamma, Tensor alphas, double balance_slack,
+    Tensor stratify_labels, Tensor balance_labels,
     OptTensor init_partition = torch::nullopt,
     torch::optional<double> scan_thres = torch::nullopt
 );

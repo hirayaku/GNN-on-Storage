@@ -421,11 +421,15 @@ def load_tensor(
         array = np.fromfile(tinfo.path, dtype=tinfo.dtype.to_str(), count=size)
         return torch.from_numpy(array).reshape(tinfo.shape)
     elif ttype is TensorType.MmapTensor:
+        tinfo = tinfo.clone()
+        tinfo.temporary = False # ignore the flag for temporary tensor
         assert tinfo.path and os.path.exists(tinfo.path), \
             f"Invalid file path {tinfo.path}"
         return MmapTensor(tinfo)
     elif ttype is TensorType.ShmemTensor:
-        return ShmTensor(tinfo)
+        tensor = ShmTensor(tinfo)
+        tensor[:] = load_tensor(tinfo, TensorType.MmapTensor)[:]
+        return tensor
     else:
         raise NotImplementedError(f"TensorType {ttype.name} not supported yet")
 

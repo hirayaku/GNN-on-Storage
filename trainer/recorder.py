@@ -38,7 +38,7 @@ class Recorder(object):
         for label, dp in flattened.items():
             run_log[label].append((iters, dp))
 
-    def get_series(self, run, *labels):
+    def get_series(self, run, *labels, as_tuple=False):
         '''
         get the data series of the given label:
         { label: [ (iters, datapoints) ], ... }
@@ -49,7 +49,10 @@ class Recorder(object):
         out = {}
         for k in labels:
             series = self.log[run][k]
-            out[k] = sorted(series, key=lambda xy: xy[0])
+            series = sorted(series, key=lambda xy: xy[0])
+            if as_tuple:
+                series = tuple(zip(*series))
+            out[k] = series
         return out
 
     def get_data(self, run, *labels):
@@ -57,9 +60,9 @@ class Recorder(object):
         get the data lists of the given labels:
         { label: [datapoints], ... }
         '''
-        out = self.get_series(run, *labels)
+        out = self.get_series(run, *labels, as_tuple=True)
         for k in out:
-            out[k] = list(zip(*out[k]))[1]
+            out[k] = out[k][1]
         return out
 
     def current_acc(self):
@@ -68,14 +71,20 @@ class Recorder(object):
         if they exist in the current run
         '''
         run_log = self.log[self._run]
-        if 'val/acc' in run_log and 'test/acc' in run_log:
-            val_test = self.get_data(self._run, 'val/acc', 'test/acc')
-            val_acc = 100 * torch.tensor(val_test['val/acc'])
-            valid = val_acc.max().item()
-            test = 100 * val_test['test/acc'][val_acc.argmax()]
-            return {'val/acc' : valid, 'test/acc': test}
-        else:
-            return {}
+        result = {'val/acc': 0}
+        if 'val/acc' in run_log:
+            val_data = self.get_series(self._run, 'val/acc', as_tuple=True)['val/acc']
+            val_acc = 100 * torch.tensor(val_data[1])
+            val_best = val_acc.max().item()
+            val_idx = val_acc.argmax().item()
+            epoch = val_data[0][val_idx]
+            result['val/acc'] = val_best
+            result['epoch'] = epoch
+        if 'test/acc' in run_log:
+            test_data = self.get_series(self._run, 'test/acc', as_tuple=True)['test/acc']
+            idx =  test_data[0].index(result['epoch'])
+            result['test/acc'] = 100 * test_data[1][idx]
+        return result
 
     def stdmean(self, epochs=None):
         return stdmean_acc(self, epochs)
@@ -100,7 +109,7 @@ def stdmean(logger: Recorder, *labels, summarize=None):
         summarize = lambda x: x
     series_dict = {}
     for run in logger:
-        run_dict = logger.get_data(run, *labels)
+        run_dict = logger.get_series(run, *labels, as_tuple=True)
         summary_dict = summarize(run_dict)
         for new_label in summary_dict:
             if new_label not in series_dict:
@@ -113,11 +122,13 @@ def stdmean(logger: Recorder, *labels, summarize=None):
     return stdmean_dict
 
 def get_acc(val_test, epochs=None):
-    val_acc = 100 * torch.tensor(val_test['val/acc'])
-    if epochs is not None:
-        val_acc = val_acc[:epochs]
+    val_epoch = torch.tensor(val_test['val/acc'][0])
+    val_acc = 100 * torch.tensor(val_test['val/acc'][1])
+    val_acc = val_acc[val_epoch <= epochs]
     valid = val_acc.max().item()
-    test = 100 * val_test['test/acc'][val_acc.argmax()]
+    epoch = val_epoch[val_acc.argmax()].item()
+    idx = val_test['test/acc'][0].index(epoch)
+    test = 100 * val_test['test/acc'][1][idx]
     return {'val/acc' : valid, 'test/acc': test}
 
 def stdmean_acc(logger: Recorder, epochs=None):

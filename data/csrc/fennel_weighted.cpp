@@ -162,65 +162,57 @@ Tensor partition_weighted(
     return vector_to_tensor(node2ptn);
 }
 
-Tensor partition_stratified_weighted(
-    Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor labels, OptTensor node_order,
-    double gamma, Tensor alphas, double slack, double label_slack,
+Tensor partition_stratified_balanced_weighted(
+    Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor node_order,
+    double gamma, Tensor alphas, double balance_slack,
+    Tensor stratify_labels, Tensor balance_labels,
     OptTensor init_partition, torch::optional<double> scan_thres
 ) {
-    if (labels == torch::nullopt) {
-        float alpha = alphas.index({0}).item().to<float>();
-        return partition_weighted(
-            ptr, idx, weights, k, node_order, gamma, alpha, slack, init_partition, scan_thres
-        );
-    }
-
     int64_t n = ptr.size(0) - 1;
     int64_t m = idx.size(0);
-    if (weights == torch::nullopt) {
-        weights = torch::make_optional(torch::ones(m, torch::kFloat));
-        // return partition_stratified_opt(
-        //     ptr, idx, k, labels, node_order, gamma, alphas, slack, label_slack,
-        //     init_partition, scan_thres
-        // );
-    }
-
     auto ptr_data = ptr.data_ptr<int64_t>();
     auto idx_data = idx.data_ptr<int64_t>();
-    auto wgt_data = weights.value().data_ptr<float>();
+    float *wgt_data = nullptr;
+    const bool has_weights = weights.has_value();
+    if (has_weights) {
+        wgt_data = weights.value().data_ptr<float>();
+    }
+
+    // number of stratify labels
+    TORCH_CHECK(stratify_labels.min().item().to<int>() >= 0, "Node labels can't be negative");
+    TORCH_CHECK(stratify_labels.scalar_type() == torch::kInt);
+    int SL = stratify_labels.max().item().to<int>() + 1;
+    // number of balance labels
+    TORCH_CHECK(balance_labels.min().item().to<int>() >= 0, "Node labels can't be negative");
+    TORCH_CHECK(balance_labels.scalar_type() == torch::kInt);
+    int BL = balance_labels.max().item().to<int>() + 1;
 
     // hard cap for #nodes in each partition
-    int64_t cap = (int64_t)((float)n / k * slack);
+    int64_t cap = (int64_t)((float)n / k * balance_slack);
     // per-label cap for #nodes in each partition
-    auto label_tensor = labels.value();
-    int NL = label_tensor.max().item().to<int>() + 1;
-    const std::vector<long> label2cap = tensor_to_vector<int64_t>(
-        label_tensor.bincount({}, NL).to(torch::kFloat)
-                    .div_(k).multiply_(label_slack)
-                    .ceil_().to(torch::kInt64)
+    const std::vector<int> blabel2cap = tensor_to_vector<int>(
+        balance_labels.bincount({}, BL).to(torch::kFloat)
+                      .div_(k).multiply_(balance_slack)
+                      .ceil_().to(torch::kInt)
     );
-    // std::cout << "Cap per label: " << label2cap << "\n";
-    // long train_cap = std::accumulate(label2cap.begin(), label2cap.end() - 1, 0);
-    // std::cout << "Cap for training nodes per partition ("
-    //     << k << ", "<< label_slack << "): " << train_cap << "\n";
 
     // map: node -> label
-    const std::vector<int> node2label = tensor_to_vector<int>(
-        label_tensor.to(torch::kInt32)
-    );
+    const auto slabels = Slice<int>::from_tensor(stratify_labels);
+    const auto blabels = Slice<int>::from_tensor(balance_labels);
 
     // node streaming order
-    Tensor tensor_node_order = node_order.value_or(torch::randperm(n, torch::kInt64));
+    // Tensor tensor_node_order = node_order.value_or(torch::randperm(n, torch::kInt64));
+    Tensor tensor_node_order = node_order.value_or(torch::arange(n, torch::kInt64));
     auto node_stream = Slice<int64_t>::from_tensor(tensor_node_order);
     TORCH_CHECK(tensor_node_order.size(0) == n,
                 "The provided node ordering should cover all nodes exactly once");
-    
+
     // partition from scratch or from an initial partition
     if (init_partition.has_value())
         TORCH_CHECK(init_partition.value().size(0) == n,
                     "init_partition tensor should cover all nodes exactly once"
         );
     Tensor init_ptn_tensor = init_partition.value_or(torch::ones(n, torch::kInt32)*k);
-    // auto ptn_sizes_tensor = init_ptn_tensor.to(torch::kDouble).histc(k+1, 0, k+1).to(torch::kInt64);
     auto ptn_sizes_tensor = init_ptn_tensor.bincount({}, k+1);
     int64_t num_assigned = ptn_sizes_tensor.sum().item().to<int64_t>();
     TORCH_CHECK(num_assigned == n, num_assigned, " != ", n);
@@ -231,25 +223,30 @@ Tensor partition_stratified_weighted(
     auto node2ptn = tensor_to_vector<int>(init_ptn_tensor);
     TORCH_CHECK(node2ptn.size() == n);
 
-    // map: label -> alpha
-    std::vector<float> label2alpha = tensor_to_vector<float>(alphas);
-    // map: label -> (map: ptn -> size)
-    std::vector<std::vector<int64_t>> label2sizes(NL, std::vector<int64_t>(k+1, 0));
+    // map: stratify label -> (map: ptn -> size), we need them to compute label balance scores
+    std::vector<std::vector<int64_t>> slabel2sizes(SL, std::vector<int64_t>(k+1, 0));
     for (int64_t i = 0; i < n; ++i) {
-        int label = node2label[i];
-        if (label >= 0) {
-            int ptn = node2ptn[i];
-            label2sizes[label][ptn]++;
-        }
+        int label = slabels[i];
+        int ptn = node2ptn[i];
+        slabel2sizes[label][ptn]++;
+    }
+    // map: balance label -> (map: ptn -> sizes), we need them to enforce the hard caps
+    std::vector<std::vector<int64_t>> blabel2sizes(BL, std::vector<int64_t>(k+1, 0));
+    for (int64_t i = 0; i < n; ++i) {
+        int label = blabels[i];
+        int ptn = node2ptn[i];
+        blabel2sizes[label][ptn]++;
     }
 
+    // map: stratify label -> alpha
+    std::vector<float> slabel2alpha = tensor_to_vector<float>(alphas);
     // map: label -> (map: ptn -> score)
     // compute initial balance scores
-    std::vector<std::vector<float>> label2scores(NL, std::vector<float>(k, 0));
-    for (int label = 0; label < NL; ++label) {
-        float alpha = label2alpha[label];
+    std::vector<std::vector<float>> slabel2scores(SL, std::vector<float>(k, 0));
+    for (int label = 0; label < SL; ++label) {
+        float alpha = slabel2alpha[label];
         std::transform(
-            label2sizes[label].begin(), label2sizes[label].begin()+k, label2scores[label].begin(),
+            slabel2sizes[label].begin(), slabel2sizes[label].begin()+k, slabel2scores[label].begin(),
             [=](int64_t ptn_size) {
                 return balance_score(ptn_size, gamma, alpha);
             }
@@ -261,15 +258,16 @@ Tensor partition_stratified_weighted(
         return lhs.first > rhs.first || (lhs.first == rhs.first && lhs.second > rhs.second);
     };
     using rev_scoreset = std::set<std::pair<float, int>, decltype(cmp_score)>;
-    std::vector<rev_scoreset> label2ord_scores(NL, rev_scoreset(cmp_score));
-    for (int label = 0; label < NL; ++label) {
-        auto &scores = label2scores[label];
-        auto &ord_scores = label2ord_scores[label];
+    std::vector<rev_scoreset> slabel2heap(SL, rev_scoreset(cmp_score));
+    for (int label = 0; label < SL; ++label) {
+        auto &scores = slabel2scores[label];
+        auto &heap = slabel2heap[label];
         for (int i = 0; i < k; ++i) {
-            ord_scores.insert({scores[i], i});
+            heap.insert({scores[i], i});
         }
     }
 
+    int64_t moved_nodes = 0;
     // balance_score(n, gamma, alphas.max().item().to<float>());
     const float min_score = std::numeric_limits<float>::lowest();
     std::vector<int> ptn_idx(k);
@@ -277,108 +275,91 @@ Tensor partition_stratified_weighted(
     // scratchpad vectors
     std::vector<float> ptn_weights(k + 1, 0);
     std::vector<int> ptn_to_check; ptn_to_check.reserve(k);
-
-    int64_t processed = 0;
-    for (auto v : node_stream)
-    {
-        processed++;
-        if (processed % 10000000 == 0) {
-            std::clog << processed / 1000000 << "M nodes assigned\n";
-        }
+    for (auto v : node_stream) {
         // random assign a partition if no partition is found
         int v_ptn = rand() % k;
         auto v_adj = adj(ptr_data, idx_data, v);
         auto w_adj = adj(ptr_data, wgt_data, v);
-        int label = node2label[v];
+        int slabel = slabels[v];
+        int blabel = blabels[v];
         // probe neighbors: O(deg(v))
         for (int i = 0; i < v_adj.size(); ++i) {
             auto ngh = v_adj[i];
-            auto wgt = w_adj[i];
+            auto wgt = has_weights ? w_adj[i] : 1;
             int ptn = node2ptn[ngh];
             if (ptn != k && ptn_weights[ptn] == 0 && wgt != 0) ptn_to_check.push_back(ptn);
             ptn_weights[ptn] += wgt;
         }
         const bool scan_ptns = (ptn_to_check.size() >= k * scan_thres.value_or(1.0));
 
-        TORCH_CHECK(label >= 0, "node ", v, " has label < 0");
-        if (label < 0) {
-            // for nodes no need to balance, select the closest partition
-            float current_max = 0;
-            for (auto p : ptn_to_check) {
-                if (ptn_weights[p] > current_max) {
-                    current_max = ptn_weights[p];
-                    v_ptn = p;
-                }
-            }
-            node2ptn[v] = v_ptn;
-        } else {
-            // balance score per partition for current label
-            std::vector<float> &ptn_balance_scores = label2scores[label];
-            // size per partition for current label
-            std::vector<int64_t> &ptn_label_sizes = label2sizes[label];
-            // ordered score per partition for current label
-            rev_scoreset &ord_scores = label2ord_scores[label];
-            // alpha for the current label
-            float alpha = label2alpha[label];
-            int64_t label_cap = label2cap[label];
-            // remove v from its original partition
-            // O(log(k))
-            int old_ptn = node2ptn[v];
+        // balance score per partition for current label
+        std::vector<float> &ptn_balance_scores = slabel2scores[slabel];
+        // size per partition for current stratify label
+        std::vector<int64_t> &ptn_slabel_sizes = slabel2sizes[slabel];
+        // ordered score per partition for current label
+        rev_scoreset &ord_scores = slabel2heap[slabel];
+        // alpha for the current label
+        float alpha = slabel2alpha[slabel];
+        // size per partition for current balance label
+        std::vector<int64_t> &ptn_blabel_sizes = blabel2sizes[blabel];
+        int64_t label_cap = blabel2cap[blabel];
+        // remove v from its original partition
+        // O(log(k))
+        int old_ptn = node2ptn[v];
 
-            if (old_ptn != k) {
-                float old_ptn_score = ptn_balance_scores[old_ptn];
-                float updated_score = balance_score(ptn_label_sizes[old_ptn]-1, gamma, alpha);
-                // replace {old_score, ptn} with {new_score, ptn}
-                size_t erased = ord_scores.erase({old_ptn_score, old_ptn});
-                TORCH_CHECK(
-                    erased == 1,
-                    "remove v: should erase exactly 1 element but see ", erased
-                );
-                ord_scores.insert({updated_score, old_ptn});
-                ptn_balance_scores[old_ptn] = updated_score;
-                --ptn_label_sizes[old_ptn];
-                --ptn_sizes[old_ptn];
-            }
-
-            // get the partition having the maximum score
-            // O(deg(v)+log(k))
-            float current_max = min_score;
-            auto &candidates = ptn_to_check;
-            if (scan_ptns) candidates = ptn_idx;
-            for (auto p : candidates) {
-                if (ptn_sizes[p] >= cap) continue;
-                if (ptn_label_sizes[p] >= label_cap) continue;
-                float ptn_score = ptn_weights[p] + ptn_balance_scores[p];
-                if (ptn_score > current_max) {
-                    current_max = ptn_score;
-                    v_ptn = p;
-                }
-            }
-            // an untouched partition has larger score than current_max
-            auto score_pair = *ord_scores.begin();
-            // if (v_ptn != score_pair.second && score_pair.first > current_max)
-            if (score_pair.first > current_max) {
-                v_ptn = score_pair.second;
-            }
-
-            // add v to partition v_ptn
-            node2ptn[v] = v_ptn;
-            TORCH_CHECK(v_ptn != k);
-
-            float old_ptn_score = ptn_balance_scores[v_ptn];
-            float updated_score = balance_score(ptn_label_sizes[v_ptn]+1, gamma, alpha);
-            ptn_balance_scores[v_ptn] = updated_score;
-            size_t erased = ord_scores.erase({old_ptn_score, v_ptn});
-            TORCH_CHECK(
-                erased == 1,
-                "add v from ", old_ptn, "->", v_ptn,
-                ": should erase exactly 1 element but see ", erased
+        if (old_ptn != k) {
+            float old_ptn_score = ptn_balance_scores[old_ptn];
+            float updated_score = balance_score(ptn_slabel_sizes[old_ptn]-1, gamma, alpha);
+            // replace {old_score, ptn} with {new_score, ptn}
+            size_t erased = ord_scores.erase({old_ptn_score, old_ptn});
+            TORCH_CHECK(erased == 1,
+                "remove v: should erase exactly 1 element but see ", erased
             );
-            ord_scores.insert({updated_score, v_ptn});
-            ++ptn_label_sizes[v_ptn];
-            ++ptn_sizes[v_ptn];
+            ord_scores.insert({updated_score, old_ptn});
+            ptn_balance_scores[old_ptn] = updated_score;
+            --ptn_slabel_sizes[old_ptn];
+            --ptn_blabel_sizes[old_ptn];
+            --ptn_sizes[old_ptn];
+        }
 
-        } // labeled case ends
+        // get the partition having the maximum score
+        // O(deg(v)+log(k))
+        float current_max = min_score;
+        auto &candidates = ptn_to_check;
+        if (scan_ptns) candidates = ptn_idx;
+        for (auto p : candidates) {
+            if (ptn_sizes[p] >= cap) continue;
+            if (ptn_blabel_sizes[p] >= label_cap) continue;
+            float ptn_score = ptn_weights[p] + ptn_balance_scores[p];
+            if (ptn_score > current_max) {
+                current_max = ptn_score;
+                v_ptn = p;
+            }
+        }
+        // an untouched partition has larger score than current_max
+        auto score_pair = *ord_scores.begin();
+        // if (v_ptn != score_pair.second && score_pair.first > current_max)
+        if (score_pair.first > current_max) {
+            v_ptn = score_pair.second;
+        }
+
+        // add v to partition v_ptn
+        node2ptn[v] = v_ptn;
+        TORCH_CHECK(v_ptn != k);
+        moved_nodes += (v_ptn != old_ptn);
+
+        float old_ptn_score = ptn_balance_scores[v_ptn];
+        float updated_score = balance_score(ptn_slabel_sizes[v_ptn]+1, gamma, alpha);
+        ptn_balance_scores[v_ptn] = updated_score;
+        size_t erased = ord_scores.erase({old_ptn_score, v_ptn});
+        TORCH_CHECK(erased == 1,
+            "add v from ", old_ptn, "->", v_ptn,
+            ": should erase exactly 1 element but see ", erased
+        );
+        ord_scores.insert({updated_score, v_ptn});
+        ++ptn_slabel_sizes[v_ptn];
+        ++ptn_blabel_sizes[v_ptn];
+        ++ptn_sizes[v_ptn];
 
         // cleaning up
         // O(deg(v))
@@ -390,10 +371,7 @@ Tensor partition_stratified_weighted(
         ptn_to_check.clear();
     }
 
-    // for (int label = 0; label < label2sizes.size(); label++) {
-    //     std::cout << label << ") " <<  label2sizes[label] << '\n';
-    // }
-
+    std::cout << "Total of " << moved_nodes << " nodes get re-assigned\n";
     return vector_to_tensor(node2ptn);
 }
 

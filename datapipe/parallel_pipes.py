@@ -46,6 +46,7 @@ class ParallelMapperDataPipe(IterDataPipe):
         # threads allocated for torch operations within each worker
         self.num_intra_par = num_intra_par
         self.mp_ctx = mp_ctx
+        self.workers = []
         self._worker_initialized = False
         self._worker_affinity = affinity
 
@@ -176,6 +177,14 @@ class ParallelMapperDataPipe(IterDataPipe):
             w.start()
         self.workers = workers
 
+    def reset(self):
+        self.source_dp.reset()
+        for w in self.workers:
+            w.terminate()
+        if len(self.workers) > 0:
+            self._clear_queue(self.source_queue)
+            self._clear_queue(self.target_queue)
+
 @make_functional("prefetch")
 class PrefetcherDataPipe(IterDataPipe):
     '''
@@ -187,6 +196,7 @@ class PrefetcherDataPipe(IterDataPipe):
         self.fn = fn
         self.buffer_size = buffer_size
         self._buffer = queue.Queue(maxsize=buffer_size)
+        self.prefetcher = None
 
     @staticmethod
     def _clear_queue(q: queue.Queue):
@@ -213,8 +223,8 @@ class PrefetcherDataPipe(IterDataPipe):
             yield from self.source_dp
         else:
             self._clear_queue(self._buffer)
-            prefetcher = threading.Thread(target=self._thread_prefetcher, daemon=True)
-            prefetcher.start()
+            self.prefetcher = threading.Thread(target=self._thread_prefetcher, daemon=True)
+            self.prefetcher.start()
             while True:
                 processed = self._buffer.get()
                 if isinstance(processed, StopIteration):
@@ -222,6 +232,11 @@ class PrefetcherDataPipe(IterDataPipe):
                 else:
                     yield processed
                 processed = None
+
+    def reset(self):
+        self.source_dp.reset()
+        self.prefetcher.join()
+        self._clear_queue(self._buffer)
 
 @make_functional("prefetch_cuda")
 class CudaPrefetcherDataPipe(IterDataPipe):
@@ -260,6 +275,9 @@ class CudaPrefetcherDataPipe(IterDataPipe):
             raise StopIteration(f"{self.__class__}: source datapipe depleted")
         self._preload()
         return batch
+
+    def reset(self):
+        self.source_dp.reset()
 
 @make_functional("pmapv2")
 class ParallelMapperV2DataPipe(IterDataPipe):

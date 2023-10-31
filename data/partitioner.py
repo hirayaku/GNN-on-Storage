@@ -146,8 +146,10 @@ class MetisWeightedPartitioner(MetisNodePartitioner):
 
 class FennelPartitioner(NodePartitioner):
     def __init__(
-        self, g, psize, weights: OptTensor = None, order: OptTensor =None,
-        gamma=1.5, slack=1.1, alpha_ratio=None,
+        self, g, psize,
+        weights: OptTensor = None,
+        order: OptTensor =None,
+        gamma=1.5, slack=1.1, alpha_ratio=1,
         name='Fennel', use_opt=True
     ):
         try:
@@ -184,7 +186,7 @@ class FennelPartitioner(NodePartitioner):
             self.weights.div_(weights_sum).mul_(self.m)
         # default alpha = k**(gamma-1) * m / n**gamma
         self.alpha = self.psize**(self.gamma-1) * self.m / self.n**self.gamma
-        self.scale_alpha = alpha_ratio if alpha_ratio is not None else 1
+        self.scale_alpha = alpha_ratio
         self.use_opt = use_opt
 
     def partition(self, init_partition=None) -> torch.IntTensor:
@@ -192,33 +194,6 @@ class FennelPartitioner(NodePartitioner):
             self.rowptr, self.col, self.weights, self.psize, self.node_order,
             self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
             1/8,
-        )
-        # if self.use_opt:
-        #     self.assigns = torch.ops.Fennel.partition_opt(
-        #        self.rowptr, self.col, self.psize, self.node_order,
-        #        self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
-        #        thres,
-        #     )
-        # else:
-        #     self.assigns = torch.ops.Fennel.partition(
-        #         self.rowptr, self.col, self.psize, self.node_order,
-        #         self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
-        #     )
-        return self.assigns
-
-class FennelPartitionerPar(FennelPartitioner):
-    def __init__(self, g, psize, name='Fennel-par', **kwargs):
-        base_kw = {
-            k: kwargs[k] for k in ('gamma', 'slack', 'alpha_ratio', 'use_opt', 'labels')
-            if k in kwargs
-        }
-        super().__init__(g, psize, name=name, **base_kw)
-
-    def partition(self, init_partition=None) -> torch.IntTensor:
-        self.assigns = torch.ops.Fennel.partition_parallel(
-            self.rowptr, self.col, self.psize, self.node_order,
-            self.gamma, self.alpha*self.scale_alpha, self.slack,
-            init_partition, 1/100,
         )
         return self.assigns
 
@@ -245,13 +220,9 @@ class ReFennelPartitioner(NodePartitioner):
             logger.error("Fail to load Fennel. Did you build it?")
             raise
 
-        super().__init__(g, psize, name)
         base_kw = {
-            k: kwargs[k] for k in (
-                'weights', 'labels', 'gamma', 'slack', 'label_slack',
-                'alpha_ratio', 'use_opt', 'node_order'
-            ) if k in kwargs
-        }
+            k: kwargs[k] for k in kwargs if k not in ('g', 'psize', 'name', 'beta', 'base')}
+        super().__init__(g, psize, name)
         self.runs = runs
         self.beta = beta
         base_fennel_cls = kwargs.get('base', FennelPartitioner)
@@ -267,33 +238,30 @@ class ReFennelPartitioner(NodePartitioner):
 
 class FennelStrataPartitioner(FennelPartitioner):
     def __init__(
-            self, g, psize, weights:OptTensor=None, labels:OptTensor=None,
+            self, g, psize, weights:OptTensor=None,
+            stratify_labels:OptTensor=None,
+            balance_labels:OptTensor=None,
             name='fennel-strata', **kwargs
         ):
         '''
         if `labels` is None, FennelStratified falls backs to vanilla Fennel
         if a node's label < 0, FennelStatified doesn't balance it.
-        alphas[L] = m_L * pow(k, gamma-1) / pow(n_L, gamma), where n_L is #nodes with label L,
-        and m_L is #edges starting from nodes labeled L
+        alphas[L] = m / |L| * pow(k, gamma-1) / pow(n_L, gamma), where n_L is #nodes with label L,
         TODO: handle multi-label cases
         '''
         super().__init__(g, psize, weights=weights, name=name, **kwargs)
         old_alpha = self.alpha
-        if labels is not None:
-            # assumption: single-label data
-            self.labels = labels.flatten()
-            num_labels = int(labels.max()) + 1
-            label_hist = self.labels.bincount(minlength=num_labels)
-            degree = self.rowptr[1:]-self.rowptr[:-1]
-            # vanilla fennel
-            # self.alpha = self.m * self.psize**(self.gamma-1) / label_hist**self.gamma
-            # labeled fennel
-            m_label = torch.zeros((num_labels,), dtype=torch.long)
-            m_label.scatter_add_(0, index=labels.long(), src=degree)
-            self.alpha = m_label * self.psize**(self.gamma-1) / label_hist**self.gamma
-        else:
-            self.labels = labels
-            self.alpha = torch.tensor([self.alpha])
+        self.labels = stratify_labels
+        self.balance_labels = balance_labels
+        # assumption: single-label data
+        NL = int(self.labels.max()) + 1
+        label_hist = self.labels.bincount(minlength=NL)
+        # labeled fennel
+        # degree = self.rowptr[1:]-self.rowptr[:-1]
+        # m_label = torch.zeros((NL,), dtype=torch.long)
+        # m_label.scatter_add_(0, index=stratify_labels.long(), src=degree)
+        # self.alpha = m_label * self.psize**(self.gamma-1) / label_hist**self.gamma
+        self.alpha = self.m / NL * self.psize**(self.gamma-1) / label_hist**self.gamma
         # reset outlier alpha values
         self.alpha[self.alpha.isnan()] = 0
         self.alpha[self.alpha.isinf()] = 0
@@ -301,27 +269,9 @@ class FennelStrataPartitioner(FennelPartitioner):
         logger.debug(self.scale_alpha, old_alpha, self.alpha)
 
     def partition(self, init_partition=None) -> torch.IntTensor:
-        self.assigns = torch.ops.Fennel.partition_strata_weighted(
-            self.rowptr, self.col, self.weights, self.psize, self.labels, self.node_order,
-            self.gamma, self.alpha*self.scale_alpha, self.slack, 2*self.slack, init_partition,
-            1/8,
+        self.assigns = torch.ops.Fennel.partition_combined(
+            self.rowptr, self.col, self.weights, self.psize, self.node_order,
+            self.gamma, self.alpha*self.scale_alpha, self.slack,
+            self.labels, self.balance_labels, init_partition, 1/4,
         )
-        # self.assigns = torch.ops.Fennel.partition_strata_opt(
-        #     self.rowptr, self.col, self.psize, self.labels, self.node_order,
-        #     self.gamma, self.alpha*self.scale_alpha, self.slack, 0, init_partition,
-        #     1/8,
-        # )
         return self.assigns
-
-# class FennelStrataPartitionerPar(FennelStrataPartitioner):
-#     def __init__(self, g, psize, labels=None, name='fennel-strata-par', **kwargs):
-#         super().__init__(g, psize, labels, name=name, **kwargs)
-
-#     def partition(self, init_partition=None) -> torch.IntTensor:
-#         thres = min(max(self.psize-64, 0)/15/1024, 1/16)
-#         self.assigns = torch.ops.Fennel.partition_strata_par(
-#             self.rowptr, self.col, self.psize, self.labels, self.node_order,
-#             self.gamma, self.alpha*self.scale_alpha, self.slack, init_partition,
-#             thres,
-#         )
-#         return self.assigns

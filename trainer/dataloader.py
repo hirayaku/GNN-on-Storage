@@ -1,6 +1,5 @@
 from functools import partial
 import psutil, torch
-from torch_geometric.loader.utils import filter_data
 from data.graphloader import (
     NodePropPredDataset, ChunkedNodePropPredDataset,
     partition_dir, pivots_dir
@@ -16,15 +15,12 @@ def make_shared(data):
     return data
 
 class NodeDataLoader(object):
-    def __init__(self, dataset: dict, split: str, conf: dict, prefetch_cuda=True):
+    def __init__(self, dataset: NodePropPredDataset, split: str, conf: dict, prefetch_cuda=True):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
-        ds = NodePropPredDataset(dataset['root'], mmap={'graph': False, 'feat': True},
-                                 random=True, formats='csc')
-        ds[0].share_memory_()
-        datapipe = LiteIterableWrapper(ds)
-        index = ds.get_idx_split(split)
+        datapipe = LiteIterableWrapper(dataset)
+        index = dataset.get_idx_split()[split]
         index_dp = LiteIterableWrapper([index])
         if split == 'train':
             index_dp = index_dp.tensor_shuffle()
@@ -48,6 +44,9 @@ class NodeDataLoader(object):
     def __iter__(self):
         return iter(self.datapipe)
 
+    def shutdown(self):
+        self.datapipe.reset()
+
 from torch.utils.data import DataLoader
 
 import queue
@@ -56,14 +55,12 @@ def relay(data, buf: queue.Queue):
     return buf.get()
 
 class NodeTorchDataLoader(object):
-    def __init__(self, dataset: dict, split: str, conf: dict):
+    def __init__(self, dataset: NodePropPredDataset, split: str, conf: dict):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
-        ds = NodePropPredDataset(dataset['root'], mmap={'graph': True, 'feat': True},
-                                 random=True, formats='csc')
-        datapipe = LiteIterableWrapper(ds)
-        index_dp = LiteIterableWrapper([ds.get_idx_split(split)])
+        datapipe = LiteIterableWrapper(dataset)
+        index_dp = LiteIterableWrapper([dataset.get_idx_split()[split]])
         if split == 'train':
             index_dp = index_dp.tensor_shuffle()
         index_dp = index_dp.map(make_shared)
@@ -93,11 +90,11 @@ def collate(collator: Collator, batch):
     return list(collator.collate(batch))
 
 class PartitionDataLoader(object):
-    def __init__(self, dataset: dict, split: str, conf: dict):
+    def __init__(self, dataset_conf: dict, split: str, conf: dict):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
-        root = dataset['root']
+        root = dataset_conf['root']
         method, P, batch_size = conf['partition'], conf['P'], conf['batch_size']
         datapipe = ObjectAsPipe(ChunkedNodePropPredDataset, partition_dir(root, method, P))
         if conf.get('pivots', False):
@@ -133,12 +130,12 @@ class PartitionDataLoader(object):
         return (self.P + self.batch_size - 1) // self.batch_size
 
 class HierarchicalDataLoader(object):
-    def __init__(self, dataset: dict, split: str, conf: list[dict]):
+    def __init__(self, dataset_conf: dict, split: str, conf: list[dict]):
         self.ctx = mp.get_context('fork')
         self.cpu_i = 0
 
         # Level-1 loader, partition-based
-        partition_loader = PartitionDataLoader(dataset, split, conf[0])
+        partition_loader = PartitionDataLoader(dataset_conf, split, conf[0])
         datapipe = partition_loader.datapipe
         self.cpu_i += partition_loader.cpu_i
         # Level-2 loader, neighbor sampler

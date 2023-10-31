@@ -64,7 +64,7 @@ class NodePropPredDataset(object):
     @property
     def graph_mode(self):
         return (
-            TensorType.MmapTensor if self.mmap['graph'] else TensorType.PlainTensor,
+            TensorType.MmapTensor if self.mmap['graph'] else TensorType.ShmemTensor,
             self.random['graph']
         )
     @property
@@ -132,11 +132,11 @@ class NodePropPredDataset(object):
                 if edge_format == 'coo':
                     coo_sorted = graph.get('sorted', None)
                     graph_mode = self.graph_mode
-                    if self.graph_mode[0] == TensorType.PlainTensor:
+                    if self.graph_mode[0] != TensorType.MmapTensor:
                         graph_mode = (TensorType.MmapTensor, *graph_mode[1:])
                     src = self.tensor_from_meta(graph['edge_index'][0], graph_mode)
                     dst = self.tensor_from_meta(graph['edge_index'][1], graph_mode)
-                    if self.graph_mode[0] == TensorType.PlainTensor:
+                    if self.graph_mode[0] != TensorType.MmapTensor:
                         edge_index = torch.empty([2, src.numel()], dtype=src.dtype)
                         edge_index[0] = src
                         edge_index[1] = dst
@@ -147,12 +147,12 @@ class NodePropPredDataset(object):
                 elif edge_format == 'csc':
                     ptr = self.tensor_from_meta(graph['adj_t'][0])
                     ids = self.tensor_from_meta(graph['adj_t'][1], self.graph_mode)
-                    self.data.adj_t = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
+                    self.data.adj_t = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True, trust_data=True)
                     self.formats[edge_format] = True
                 elif edge_format == 'csr':
                     ptr = self.tensor_from_meta(graph['adj'][0])
                     ids = self.tensor_from_meta(graph['adj'][1], self.graph_mode)
-                    self.data.adj = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True)
+                    self.data.adj = SparseTensor(rowptr=ptr, col=ids, sparse_sizes=(num_nodes, num_nodes), is_sorted=True, trust_data=True)
                     self.formats[edge_format] = True
             else:
                 logger.info(f"Skipping graph data of format \"{edge_format}\"")

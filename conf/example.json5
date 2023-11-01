@@ -1,0 +1,33 @@
+{
+    "mode": "local",
+    "env": {
+        "verbose": true,
+        "outdir": "./logdir/acc",
+    },
+    "dataset": {
+        "name": "ogbn-arxiv",
+        "root": "/mnt/md0/hb_datasets/ogbn_arxiv",
+    },
+    "model": {
+        "arch": "sage",
+        "num_hidden": 256,
+        "num_layers": 3,
+        "dropout": 0.5,
+        "lr": 1e-3,
+        "runs": 3,
+        "epochs": 10,
+        "eval_every": 1,
+        "eval_after": 5,
+        "eval_test" : false,
+        "ckpt": "NS",
+    },
+    "sample": {
+        "train": [{
+            "sampler": "ns",
+            "fanout": "15,10,5",
+            "batch_size": 1000,
+            "num_workers": 4,
+        }],
+        "eval": null,
+    }
+}

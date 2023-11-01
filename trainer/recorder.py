@@ -124,7 +124,8 @@ def stdmean(logger: Recorder, *labels, summarize=None):
 def get_acc(val_test, epochs=None):
     val_epoch = torch.tensor(val_test['val/acc'][0])
     val_acc = 100 * torch.tensor(val_test['val/acc'][1])
-    val_acc = val_acc[val_epoch <= epochs]
+    if epochs is not None:
+        val_acc = val_acc[val_epoch <= epochs]
     valid = val_acc.max().item()
     epoch = val_epoch[val_acc.argmax()].item()
     idx = val_test['test/acc'][0].index(epoch)

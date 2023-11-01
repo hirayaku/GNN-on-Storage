@@ -18,6 +18,11 @@ from trainer.dataloader import NodeDataLoader, PartitionDataLoader, Hierarchical
 from trainer.recorder import Recorder
 import utils
 
+def round_acc(acc: dict, decimal=2):
+    return {
+        k: round(acc[k], decimal) for k in acc
+    }
+
 def train_with(conf: dict, keep_eval=True):
     env = conf['env']
     seed = env.get('seed', random.randint(0, 1024**3))
@@ -136,8 +141,7 @@ def train_with(conf: dict, keep_eval=True):
                 recorder.add(iters=e, data={'val': { 'loss': val_loss, 'acc': val_acc, }})
                 if eval_test:
                     recorder.add(iters=e, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
-                curr_best = recorder.current_acc()
-                curr_best = {k: round(curr_best[k], 2) for k in curr_best}
+                curr_best = round_acc(recorder.current_acc())
                 if eval_test:
                     main_logger.info(
                         f"Current Val: {val_acc*100:.2f} | Test: {test_acc*100:.2f} | {curr_best}"
@@ -162,7 +166,7 @@ def train_with(conf: dict, keep_eval=True):
             else:
                 test_loss, test_acc = eval_batch_on_split('test', keep_eval)
             recorder.add(iters=ckpt['epoch'], data={'test': { 'loss': test_loss, 'acc': test_acc, }})
-        main_logger.info(f"{recorder.current_acc()}")
+        main_logger.info(f"{round_acc(recorder.current_acc())}")
 
     main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")
     main_logger.info(f"Results: {recorder.stdmean()}")

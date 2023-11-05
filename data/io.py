@@ -5,6 +5,7 @@ from typing import List, Union, Optional
 from dataclasses import dataclass, asdict, fields
 import numpy as np
 import torch
+import utils
 from utils import SCRATCH_DIR
 
 logger = logging.getLogger()
@@ -235,10 +236,11 @@ def ShmTensor(tinfo: TensorMeta, **kwargs) -> torch.Tensor:
     for f in fields(tinfo):
         if f in kwargs:
             setattr(tinfo, f, kwargs[f])
-    shared_tensor = torch.tensor([1], dtype=tinfo.dtype.to_torch())
-    new_storage = shared_tensor.untyped_storage()._new_shared(tinfo.nbytes())
-    new_tensor = shared_tensor.new(new_storage).view(tinfo.shape)
-    return new_tensor
+    with utils.cwd(SCRATCH_DIR):
+        shared_tensor = torch.tensor([1], dtype=tinfo.dtype.to_torch())
+        new_storage = shared_tensor.untyped_storage()._new_shared(tinfo.nbytes())
+        new_tensor = shared_tensor.new(new_storage).view(tinfo.shape)
+        return new_tensor
 
 '''
 class MmapTensor(torch.Tensor):

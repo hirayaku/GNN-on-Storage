@@ -223,6 +223,7 @@ std::tuple<Tensor, Tensor> coo_list_merge(
     // auto *dst_out = dst.data_ptr<long>();
 
     // scatter edges to their dst bins
+    int num_par = omp_thread_count();
     dynamic_parallel_for(0, undirected.size(),
         [&](int i) {
             const auto &src_part = std::get<0>(undirected[i]);
@@ -251,7 +252,7 @@ std::tuple<Tensor, Tensor> coo_list_merge(
             atomic_add(off_ptr[prev_nid], nid_count, prev_off);
             std::copy(src_ptr + ei - nid_count, src_ptr + ei, src_out + prev_off);
             // std::copy(dst_ptr + ei - nid_count, dst_ptr + ei, dst_out + prev_off);
-        }, 1 // block_size = 1
+        }, std::max((int)undirected.size()/(2*num_par), 1)  // block_size = 1
     );
 
     return {rowptr, src};

@@ -4,11 +4,47 @@ import torch
 from torch_geometric.data import Data
 from torch_sparse import SparseTensor
 from utils import sort, mem_usage
-from data.datasets import serialize
-from data.io import TensorMeta, TensorType, DtypeDecoder, MmapTensor
-from data.io import load_tensor, madvise, MADV_OPTIONS
+from data.io import TensorMeta, TensorType, DtypeEncoder, DtypeDecoder, MmapTensor
+from data.io import load_tensor, store_tensor, is_tensor, madvise, MADV_OPTIONS
 import logging
 logger = logging.getLogger()
+
+def serialize_data(data: object, dir: str, prefix: str = '', memo={}):
+    '''
+    serialize an object consists of dictionaries/lists/tuples
+    tensor data is written to disk as tensor_store
+    data of other types are kept unchanged
+    '''
+    if isinstance(data, dict):
+        metadata = {}
+        for k in data:
+            metadata[k] = serialize_data(
+                data[k], dir, f"{prefix}_{k}" if len(prefix) != 0 else f"{k}", memo
+            )
+        return metadata
+    elif isinstance(data, list) or isinstance(data, tuple):
+        return [serialize_data(elem, dir, f"{prefix}_{i}", memo)
+            for i, elem in enumerate(data)]
+    elif is_tensor(data):
+        # using a memo to avoid serialize the same tensor data twice
+        data_id = id(data)
+        if data_id in memo:
+            return memo[data_id]
+        else:
+            meta = store_tensor(data, osp.join(dir, prefix))
+            memo[data_id] = meta
+            return meta
+    else:
+        return data
+
+def serialize(dataset_dict: dict, dir: str) -> dict:
+    os.makedirs(dir, exist_ok=True)
+    metadata = serialize_data(dataset_dict, dir, memo={})
+    with open(osp.join(dir, 'metadata.json'), 'w') as f_meta:
+        f_meta.write(
+            DtypeEncoder(root=dir, indent=4).encode(metadata)
+        )
+    return metadata
 
 def partition_dir(root, method, parts):
     return os.path.join(root, f"{method}-P{parts}")

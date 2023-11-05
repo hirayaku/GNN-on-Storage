@@ -7,8 +7,7 @@ import torch_geometric.transforms as T
 from torch_geometric.utils import mask_to_index
 from ogb.nodeproppred import PygNodePropPredDataset
 from utils import report_mem
-from data.io import MmapTensor, TensorMeta, Dtype, DtypeEncoder
-from data.io import is_tensor, store_tensor
+from data.io import MmapTensor, TensorMeta
 
 # load_* returns:
 # meta_info: metadata required by graphloader.NodePropPredDataset
@@ -249,6 +248,7 @@ def load_mag240m_c(rootdir):
             'format': 'coo',
             'edge_index': [usrc, udst], # edge_index,
         } ],
+        # TODO: replace it with mmap tensor of npy file
         'node_feat': dataset.paper_feat,
         'edge_feat': None,
         'num_nodes': dataset.num_papers,
@@ -298,7 +298,7 @@ def load_mag240m_f(rootdir):
         'is_directed': False,
     }
     feats_info = TensorMeta(
-        shape=(num_nodes, dataset.num_paper_features), dtype=Dtype.float16,
+        shape=(num_nodes, dataset.num_paper_features), dtype=torch.float16,
         path=osp.join(dataset.dir, 'full.npy')
     ).temp_(False)
     feats = MmapTensor(feats_info)
@@ -327,7 +327,46 @@ def load_mag240m_f(rootdir):
     report_mem("mag240m dataset loaded")
     return meta_info, data_dict, idx
 
-def load_igb(rootdir):
+def load_igb_large(rootdir):
+    from igb.dataloader import IGB260M
+    dataset = IGB260M(osp.join(rootdir, "igb"), size="large", classes=19, in_memory=False, synthetic=False)
+    meta_info = {
+        'dir_name': 'igb_large',
+        'num_nodes': dataset.num_nodes(),
+        'num_tasks': 1,
+        'task_type': 'multiclass classification',
+        'num_classes': dataset.num_classes,
+        'is_directed': True,
+        'is_hetero': False,
+    }
+    edges = dataset.paper_edge
+    feats_path = osp.join(rootdir, 'igb', 'large', 'processed/paper/node_feat.npy')
+    feats_info = TensorMeta(
+        shape=(dataset.num_nodes(), 1024), dtype=torch.float32, path=feats_path
+    )
+    feats_tensor = MmapTensor(feats_info)
+    data_dict = {
+        'graph': [ {
+            'format': 'coo',
+            'edge_index': [edges[:,0], edges[:,1]], # edge_index,
+        } ],
+        'node_feat': feats_tensor,
+        'edge_feat': None,
+        'num_nodes': dataset.num_nodes(),
+        'labels': dataset.paper_label,
+    }
+    n_labeled_idx = dataset.num_nodes()
+    n_train = int(n_labeled_idx * 0.6)
+    n_val   = int(n_labeled_idx * 0.2)
+
+    idx = {
+        'train': torch.arange(n_train),
+        'valid': torch.range(n_train, n_train + n_val),
+        'test': torch.arange(n_train + n_val, n_labeled_idx),
+    }
+    return meta_info, data_dict, idx
+
+def load_igb260m(rootdir):
     from igb.dataloader import IGB260M
     dataset = IGB260M(osp.join(rootdir, "IGB"), size="full", classes=19, in_memory=False, synthetic=False)
     meta_info = {
@@ -340,12 +379,17 @@ def load_igb(rootdir):
         'is_hetero': False,
     }
     edges = dataset.paper_edge
+    feats_path = osp.join(rootdir, 'igb', 'full', 'processed/paper/node_feat.npy')
+    feats_info = TensorMeta(
+        shape=(dataset.num_nodes(), 1024), dtype=torch.float32, path=feats_path
+    )
+    feats_tensor = MmapTensor(feats_info)
     data_dict = {
         'graph': [ {
             'format': 'coo',
             'edge_index': [edges[:,0], edges[:,1]], # edge_index,
         } ],
-        'node_feat': dataset.paper_feat,
+        'node_feat': feats_tensor,
         'edge_feat': None,
         'num_nodes': dataset.num_nodes(),
         'labels': dataset.paper_label,
@@ -373,57 +417,8 @@ def load(name, root):
         'mag240m-c': load_mag240m_c,
         'mag240m-f': load_mag240m_f,
         'mag240m': load_mag240m_f,
-        'igb260m': load_igb,
+        'igb-large': load_igb_large,
+        'igb260m': load_igb260m,
     }
     return load_methods[name](root)
 
-def serialize_data(data: object, dir: str, prefix: str = '', memo={}):
-    '''
-    serialize an object consists of dictionaries/lists/tuples
-    tensor data is written to disk as tensor_store
-    data of other types are kept unchanged
-    '''
-    if isinstance(data, dict):
-        metadata = {}
-        for k in data:
-            metadata[k] = serialize_data(
-                data[k], dir, f"{prefix}_{k}" if len(prefix) != 0 else f"{k}", memo
-            )
-        return metadata
-    elif isinstance(data, list) or isinstance(data, tuple):
-        return [serialize_data(elem, dir, f"{prefix}_{i}", memo)
-            for i, elem in enumerate(data)]
-    elif is_tensor(data):
-        # using a memo to avoid serialize the same tensor data twice
-        data_id = id(data)
-        if data_id in memo:
-            return memo[data_id]
-        else:
-            meta = store_tensor(data, osp.join(dir, prefix))
-            memo[data_id] = meta
-            return meta
-    else:
-        return data
-
-def serialize(dataset_dict: dict, dir: str) -> dict:
-    os.makedirs(dir, exist_ok=True)
-    metadata = serialize_data(dataset_dict, dir, memo={})
-    with open(osp.join(dir, 'metadata.json'), 'w') as f_meta:
-        f_meta.write(
-            DtypeEncoder(root=dir, indent=4).encode(metadata)
-        )
-    return metadata
-
-def transform(name: str, indir: str, outdir: str) -> dict:
-    '''
-    serialize the dataset into flat binary files
-    return a dictionary describing the transformed dataset
-    '''
-    attr, data, idx = load(name, indir)
-    dataset_dict = {
-        'attr': attr,
-        'data': data,
-        'idx': idx,
-    }
-    serialize_dir = osp.join(outdir, attr['dir_name'])
-    return serialize_dir, serialize(dataset_dict, serialize_dir)

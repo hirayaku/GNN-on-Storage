@@ -85,6 +85,9 @@ class NodeTorchDataLoader(object):
     def __iter__(self):
         return iter(self.datapipe)
 
+    def shutdown(self):
+        pass
+
 
 def collate(collator: Collator, batch):
     return list(collator.collate(batch))
@@ -129,6 +132,9 @@ class PartitionDataLoader(object):
     def __len__(self):
         return (self.P + self.batch_size - 1) // self.batch_size
 
+    def shutdown(self):
+        self.datapipe.reset()
+
 class HierarchicalDataLoader(object):
     def __init__(self, dataset_conf: dict, split: str, conf: list[dict]):
         self.ctx = mp.get_context('fork')
@@ -151,7 +157,7 @@ class HierarchicalDataLoader(object):
         datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)
                                 #  affinity=range(self.cpu_i, self.cpu_i+num_par))
         datapipe = datapipe.prefetch(
-            fn=partial(gather_feature, filter_fn=filter_and_pin)
+            fn=partial(gather_feature, filter_fn=filter_and_pin),
         ).prefetch_cuda()
         self.cpu_i += num_par
 
@@ -160,3 +166,6 @@ class HierarchicalDataLoader(object):
 
     def __iter__(self):
         return iter(self.datapipe)
+
+    def shutdown(self):
+        self.datapipe.reset()

@@ -1,6 +1,21 @@
-import os
-from data.datasets import transform
-from data.graphloader import NodePropPredDataset
+import os, os.path as osp
+from data.datasets import load
+from data.graphloader import serialize, NodePropPredDataset
+
+def transform(name: str, indir: str, outdir: str) -> dict:
+    '''
+    serialize the dataset into flat binary files
+    return a dictionary describing the transformed dataset
+    '''
+    attr, data, idx = load(name, indir)
+    dataset_dict = {
+        'attr': attr,
+        'data': data,
+        'idx': idx,
+    }
+    serialize_dir = osp.join(outdir, attr['dir_name'])
+    return serialize_dir, serialize(dataset_dict, serialize_dir)
+
 
 if __name__ == "__main__":
     import argparse

@@ -92,7 +92,7 @@ def train_with(conf: dict, keep_eval=True):
             val_loader = NodeDataLoader(eval_dataset, 'valid', eval_conf)
             test_loader = NodeDataLoader(eval_dataset, 'test', eval_conf)
             for eval_epoch in sorted(model_ckpts.keys()):
-                if (eval_epoch + 1) % params.get('eval_every', 0) != 0:
+                if (eval_epoch + 1) % params.get('eval_every', 1) != 0:
                     continue
                 eval_model = model_ckpts[eval_epoch]
                 with utils.parallelism(factor=8): # overcommit threads

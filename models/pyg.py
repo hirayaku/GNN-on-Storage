@@ -8,11 +8,11 @@ from torch_geometric.nn import JumpingKnowledge, GCNConv
 
 def gen_model(in_feats, out_feats, args) -> torch.nn.Module:
     if args.arch == 'gat':
-        model = GAT(in_feats, args.num_hidden, out_feats, args.num_layers)
+        model = GAT(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
     elif args.arch == 'gin':
-        model = GIN(in_feats, args.num_hidden, out_feats, args.num_layers)
+        model = GIN(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
     elif args.arch == 'sage':
-        model = SAGE(in_feats, args.num_hidden, out_feats, args.num_layers)
+        model = SAGE(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
         # if args.use_incep:
         #     model = SAGEResInception(in_feats, args.num_hidden, out_feats, args.num_layers)
     else:
@@ -27,13 +27,14 @@ def init_weights(m):
             m.bias.data.fill_(0.01)
 
 class SAGE(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         kwargs = dict(bias=False)
         conv_layer = SAGEConv
         super().__init__()
         self.num_layers = num_layers
         self.convs = torch.nn.ModuleList()
         self.hidden_channels = hidden_channels
+        self.p = dropout
 
         self.convs.append(conv_layer(in_channels, hidden_channels, **kwargs))
         for _ in range(num_layers - 2):
@@ -56,7 +57,7 @@ class SAGE(torch.nn.Module):
             x = self.convs[i]((x, x_target), edge_index)
             if i != self.num_layers - 1:
                 x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
+                x = F.dropout(x, p=self.p, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
     def forward(
@@ -72,7 +73,7 @@ class SAGE(torch.nn.Module):
                 x = conv((x, x_target), edge_index)
                 if i != self.num_layers - 1:
                     x = F.relu(x)
-                    x = F.dropout(x, p=0.5, training=self.training)
+                    x = F.dropout(x, p=self.p, training=self.training)
                     target_size = edge_index.size(1) - edges_per_hop[-(i+1)]
                     edge_index = edge_index[:,:target_size]
         else:
@@ -80,7 +81,7 @@ class SAGE(torch.nn.Module):
                 x = conv(x, edge_index)
                 if i != self.num_layers - 1:
                     x = F.relu(x)
-                    x = F.dropout(x, p=0.5, training=self.training)
+                    x = F.dropout(x, p=self.p, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
 # Needed by SAGEResInception
@@ -185,13 +186,14 @@ class SAGEResInception(torch.nn.Module):
 
 
 class GAT(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         kwargs = dict(bias=False, heads=1)
         conv_layer = GATConv
         super().__init__()
         self.num_layers = num_layers
         self.convs = torch.nn.ModuleList()
         self.hidden_channels = hidden_channels
+        self.p = dropout
 
         self.convs.append(conv_layer(in_channels, hidden_channels, **kwargs))
         for _ in range(num_layers - 2):
@@ -213,7 +215,7 @@ class GAT(torch.nn.Module):
             x = self.convs[i]((x, x_target), edge_index)
             if i != self.num_layers - 1:
                 x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
+                x = F.dropout(x, p=self.p, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
     def forward(
@@ -237,18 +239,19 @@ class GAT(torch.nn.Module):
                 x = conv(x, edge_index)
                 if i != self.num_layers - 1:
                     x = F.relu(x)
-                    x = F.dropout(x, p=0.5, training=self.training)
+                    x = F.dropout(x, p=self.p, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
 
 class GIN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         kwargs = dict()
         conv_layer = GINConv
         super().__init__()
         self.num_layers = num_layers
         self.convs = torch.nn.ModuleList()
         self.hidden_channels = hidden_channels
+        self.p = dropout
 
         self.convs.append(GINConv(Sequential(
             Linear(in_channels, hidden_channels),
@@ -281,7 +284,7 @@ class GIN(torch.nn.Module):
             x_target = x[:size[1]]
             x = self.convs[i]((x, x_target), edge_index)
         x = self.lin1(x).relu()
-        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.dropout(x, p=self.p, training=self.training)
         x = self.lin2(x)
         return torch.log_softmax(x, dim=-1)
 
@@ -303,7 +306,7 @@ class GIN(torch.nn.Module):
             for i, conv in enumerate(self.convs):
                 x = conv(x, edge_index)
         x = self.lin1(x).relu()
-        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.dropout(x, p=self.p, training=self.training)
         x = self.lin2(x)
         return torch.log_softmax(x, dim=-1)
 
@@ -366,14 +369,14 @@ class JKNet(torch.nn.Module):
 
 
 class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         kwargs = dict(normalize=False, bias=False, improved=False)
-
         conv_layer = GCNConv
         super().__init__()
         self.num_layers = num_layers
         self.convs = torch.nn.ModuleList()
         self.hidden_channels = hidden_channels
+        self.p = dropout
 
         self.bns = torch.nn.ModuleList()
 
@@ -402,7 +405,7 @@ class GCN(torch.nn.Module):
             if i != self.num_layers - 1:
                 x = self.bns[i](x)
                 x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
+                x = F.dropout(x, p=self.p, training=self.training)
         return torch.log_softmax(x, dim=-1)
 
     # Not implemented yet

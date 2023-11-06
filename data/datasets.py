@@ -210,7 +210,7 @@ def load_papers100m(rootdir):
         'task_type': 'multiclass classification',
         'num_classes': dataset.num_classes,
         'is_hetero': dataset.is_hetero,
-        'is_directed': True,
+        'is_directed': False,
     }
     data_dict = {
         'graph': [ {
@@ -336,7 +336,7 @@ def load_igb_large(rootdir):
         'num_tasks': 1,
         'task_type': 'multiclass classification',
         'num_classes': dataset.num_classes,
-        'is_directed': True,
+        'is_directed': False,
         'is_hetero': False,
     }
     edges = dataset.paper_edge
@@ -361,7 +361,7 @@ def load_igb_large(rootdir):
 
     idx = {
         'train': torch.arange(n_train),
-        'valid': torch.range(n_train, n_train + n_val),
+        'valid': torch.arange(n_train, n_train + n_val),
         'test': torch.arange(n_train + n_val, n_labeled_idx),
     }
     return meta_info, data_dict, idx
@@ -400,7 +400,7 @@ def load_igb260m(rootdir):
 
     idx = {
         'train': torch.arange(n_train),
-        'valid': torch.range(n_train, n_train + n_val),
+        'valid': torch.arange(n_train, n_train + n_val),
         'test': torch.arange(n_train + n_val, n_labeled_idx),
     }
     return meta_info, data_dict, idx

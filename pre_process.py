@@ -2,8 +2,7 @@ import sys, os, time, torch
 from torch_geometric.data import Data
 from torch_geometric.utils import index_to_mask, degree, mask_to_index
 from torch_sparse import SparseTensor
-from data.datasets import serialize
-from data.graphloader import NodePropPredDataset, ChunkedNodePropPredDataset
+from data.graphloader import serialize, NodePropPredDataset, ChunkedNodePropPredDataset
 import data.partitioner as P
 from data.io import TensorMeta, MmapTensor
 from data.ops import scatter, scatter_append, index_select, edge_cuts
@@ -182,16 +181,16 @@ def partition_dataset(data, n_assigns, args, dataset_dir):
 def get_pivots(dataset: NodePropPredDataset, args):
     targets = dataset.get_idx_split()['train']
     data = dataset[0]
-    # edge_index is sorted by dst
-    # src, dst = data.edge_index
-    # NOTE: we should really use adj not adj_t, but since the graph is symmetric...
-    # adj_t = SparseTensor(row=dst, col=src, is_sorted=True, sparse_sizes=data.size())
     adj_t = data.adj_t
-    init_score = torch.zeros(data.size(0))
-    init_score[targets] = 1.0
-    score = lazy_rw(adj_t, init_score, k=args.k, alpha=0.5)
-    pivots = score.topk(int(data.size(0) * args.topk)).indices
-    # pivot nids are relabeled to 0, 1, ..., n_pivots-1
+    if args.pivot == 'topk':
+        # NOTE: we should really use adj not adj_t, but since the graph is symmetric...
+        # adj_t = SparseTensor(row=dst, col=src, is_sorted=True, sparse_sizes=data.size())
+        init_score = torch.zeros(data.size(0))
+        init_score[targets] = 1.0
+        score = lazy_rw(adj_t, init_score, k=args.k, alpha=0.5)
+        pivots = score.topk(int(data.size(0) * args.topk)).indices
+    else:
+        pivots = targets
     inter_adj = adj_t[pivots]
     intra_adj = inter_adj[:,pivots]
     logger.info("pivots(nodes/inter/intra): {}, {}, {}".format(
@@ -269,6 +268,8 @@ if __name__ == "__main__":
     parser.add_argument('--pivot-only', action='store_true')
     parser.add_argument('--k', type=int, default=3,
                         help="lazy rw steps")
+    parser.add_argument('--pivot', type=str, default='topk',
+                        help="topk or train")
     parser.add_argument('--topk', type=float, default=0.01,
                         help="ratio of pivotal nodes")
     parser.add_argument('--check', action="store_true",
@@ -304,15 +305,17 @@ if __name__ == "__main__":
         logger.info(f"Dataset partitioning done, takes {toc-tic:.2f}s")
 
     if not args.check:
-        # select pivotal nodes, edges, and partition them
-        partition_dir = get_partition_dir(dataset_dir, args)
-        logger.info("Select pivots...")
-        tic = time.time()
-        pivot_data = get_pivots(dataset, args)
-        chunked = ChunkedNodePropPredDataset(partition_dir)
-        pivots_dir, _ = partition_pivots(chunked, pivot_data, args, dataset_dir)
-        toc = time.time()
-        logger.info(f"Selection done, takes {toc-tic:.2f}s")
+        if args.pivot == 'topk' and args.topk == 0: pass
+        else:
+            # select pivotal nodes, edges, and partition them
+            partition_dir = get_partition_dir(dataset_dir, args)
+            logger.info("Select pivots...")
+            tic = time.time()
+            pivot_data = get_pivots(dataset, args)
+            chunked = ChunkedNodePropPredDataset(partition_dir)
+            pivots_dir, _ = partition_pivots(chunked, pivot_data, args, dataset_dir)
+            toc = time.time()
+            logger.info(f"Selection done, takes {toc-tic:.2f}s")
 
     if args.check:
         def check_ndata(ndata_orig: torch.Tensor, ndata_shfl: torch.Tensor, parts):
@@ -347,7 +350,6 @@ if __name__ == "__main__":
                 return self.data[start:end]
 
         partition_dir = get_partition_dir(dataset_dir, args)
-        pivots_dir = get_pivots_dir(dataset_dir, args)
         chunked = ChunkedNodePropPredDataset(partition_dir)
         chunked_data = chunked[0]
         n_assigns = chunked.node_assign[chunked.node_map]
@@ -376,6 +378,7 @@ if __name__ == "__main__":
             assert (n_assigns[part] == (i % args.pn)).all()
         logger.info("Passed")
 
+        pivots_dir = get_pivots_dir(dataset_dir, args)
         pivot = ChunkedNodePropPredDataset(pivots_dir)
         pivot_data = pivot[0]
         pivot_partitions = PartitionSequence(

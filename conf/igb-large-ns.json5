@@ -1,0 +1,37 @@
+{
+    "mode": "local",
+    "env": {
+        "verbose": true,
+        "outdir": "./logdir/acc",
+    },
+    "dataset": {
+        "name": "igb-large",
+        "root": "/mnt/md0/hb_datasets/igb_large",
+    },
+    "model": {
+        "arch": "sage",
+        "num_hidden": 256,
+        "num_layers": 2,
+        "dropout": 0.2,
+        "lr": 1e-3,
+        "runs": 1,
+        "epochs": 6,
+        "eval_every": 1,
+    },
+    "sample": {
+        "train": [{
+            "sampler": "ns",
+            "fanout": "15,10",
+            "batch_size": 10000,
+            "num_workers": 12,
+            "drop_last": true,
+        }],
+        "eval": {
+            "sampler": "ns",
+            "fanout": "20,20",
+            "batch_size": 3000,
+            "num_workers": 12,
+            "drop_last": true,
+        },
+    }
+}

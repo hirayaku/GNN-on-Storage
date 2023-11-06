@@ -45,13 +45,13 @@ conf_path = os.path.join(dataset_path, 'conf.json')
 split_idx_path = os.path.join(dataset_path, 'split_idx.pth')
 
 print('Saving indptr...')
-indptr_mmap = np.memmap(indptr_path, mode='w+', shape=indptr.shape, indptr.dtype)
+indptr_mmap = np.memmap(indptr_path, mode='w+', shape=indptr.shape, dtype=indptr.dtype)
 indptr_mmap[:] = indptr[:]
 indptr_mmap.flush()
 print('Done!')
 
 print('Saving indices...')
-indices_mmap = np.memmap(indices_path, mode='w+', shape=indices.shape, indices.dtype)
+indices_mmap = np.memmap(indices_path, mode='w+', shape=indices.shape, dtype=indices.dtype)
 indices_mmap[:] = indices[:]
 indices_mmap.flush()
 print('Done!')
@@ -64,7 +64,7 @@ features_mmap = dataset[0].x.numpy()
 #  print('Done!')
 
 print('Saving labels...')
-labels = labels.type(torch.float32)
+labels = labels.astype(np.float32)
 labels_mmap = np.memmap(labels_path, mode='w+', shape=dataset[0].y.shape, dtype=np.float32)
 labels_mmap[:] = labels[:]
 labels_mmap.flush()

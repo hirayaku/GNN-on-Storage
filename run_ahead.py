@@ -45,15 +45,12 @@ def train_with(conf: dict, keep_eval=True):
     if not keep_eval:
         dataset = None
     runahead = params.get('train_runahead', 1)
-    eval_test = params.get('eval_test', False)
     ckpt_label = params.get('ckpt', None)
     model = get_model(in_feats, out_feats, params)
     model = model.to(device)
 
     sample_conf = conf['sample']
     train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
-    main_logger.info("Using the hierarchical DataLoader")
-    train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
     assert eval_conf is not None
 
     recorder = Recorder(conf)
@@ -70,6 +67,7 @@ def train_with(conf: dict, keep_eval=True):
         for e in range(params['epochs']):
             gc.collect() # make sure the dataloader memory gets reclaimed
             mp.set_sharing_strategy('file_system')
+            train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
             if profile:
                 train_loss, train_acc, *train_info = train_profile(model, optimizer, train_loader, device=device)
             else:
@@ -79,13 +77,13 @@ def train_with(conf: dict, keep_eval=True):
             main_logger.info(
                 f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
             )
+            train_loader.shutdown()
 
             if e < params.get('eval_after', 0): continue
             model_ckpts[e] = copy.deepcopy(model)
             if (e + 1) % runahead != 0: continue
-            # switch sharing strategy to allow sharing of large tensors
-            mp.set_sharing_strategy('file_descriptor')
             # evaluate on the saved model_ckpts
+            mp.set_sharing_strategy('file_descriptor')
             eval_dataset = NodePropPredDataset(
                 dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
             )
@@ -122,19 +120,6 @@ def train_with(conf: dict, keep_eval=True):
             eval_dataset = None
             model_ckpts = {}
 
-        if not eval_test:
-            ckpt = torch.load(f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{ckpt_label}.{run}.pt')
-            model.load_state_dict(ckpt['model'])
-            dataset = NodePropPredDataset(
-                dataset_conf['root'], mmap=(False, True), formats='csc'
-            )
-            dataset[0].x[:,0].clone() # scan x
-            dataloader = NodeDataLoader(dataset, 'test', eval_conf)
-            with utils.parallelism(factor=8): # overcommit threads
-                test_loss, test_acc, *_ = eval_batch(
-                    model, dataloader, device=device, description='test'
-                )
-            recorder.add(iters=ckpt['epoch'], data={'test': { 'loss': test_loss, 'acc': test_acc, }})
         main_logger.info(f"{round_acc(recorder.current_acc())}")
 
     main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")

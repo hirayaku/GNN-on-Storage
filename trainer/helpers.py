@@ -8,14 +8,16 @@ def get_model(in_feats: int, out_feats:int, model_conf: dict) -> torch.nn.Module
     args = argparse.Namespace()
     for k in model_conf:
         setattr(args, k, model_conf[k])
+    setattr(args, 'bias', model_conf.get('bias', False))
     return gen_model(in_feats, out_feats, args)
 
 def get_optimizer(model, params: dict):
-    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'])
+    wd = params.get('weight_decay', 0)
+    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'], weight_decay=wd)
     if params.get('lr_schedule', None) == 'plateau':
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer=optimizer, factor=params['lr_decay'],
-            patience=params['lr_step'],
+            patience=params['lr_step'], verbose=True,
         )
     else:
         lr_scheduler = None
@@ -24,7 +26,7 @@ def get_optimizer(model, params: dict):
 def get_dataset(root: str, mmap=True, random=False):
     return NodePropPredDataset(root, mmap=mmap, random=random, formats=('csc','coo'))
 
-def train(model, optimizer, dataloader, device, description='train'):
+def train(model, optimizer, lr_scheduler, dataloader, device, description='train'):
     model.train()
     minibatches = tqdm.tqdm(dataloader)
     minibatches.set_description_str(description)
@@ -44,6 +46,7 @@ def train(model, optimizer, dataloader, device, description='train'):
         loss = F.nll_loss(y_hat, y)
         loss.backward()
         optimizer.step()
+        if lr_scheduler is not None: lr_scheduler.step(loss)
         # collect stats
         num_iters += 1
         total_loss += float(loss) * bsize
@@ -69,7 +72,7 @@ def train(model, optimizer, dataloader, device, description='train'):
 import torch.profiler as profiler
 from torch.profiler import ProfilerActivity
 
-def train_profile(model, optimizer, dataloader, device, description='train'):
+def train_profile(model, optimizer, lr_scheduler, dataloader, device, description='train'):
     def trace_handler(prof: profiler.profile):
         print(prof.key_averages().table(
             sort_by="self_cuda_time_total", row_limit=-1))
@@ -102,6 +105,7 @@ def train_profile(model, optimizer, dataloader, device, description='train'):
             loss = F.nll_loss(y_hat, y)
             loss.backward()
             optimizer.step()
+            if lr_scheduler is not None: lr_scheduler.step(loss)
             p.step()
             # collect stats
             num_iters += 1

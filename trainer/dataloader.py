@@ -90,7 +90,7 @@ class NodeTorchDataLoader(object):
 
 
 def collate(collator: Collator, batch):
-    return list(collator.collate(batch))
+    return collator.collate(batch)
 
 class PartitionDataLoader(object):
     def __init__(self, dataset_conf: dict, split: str, conf: dict):
@@ -111,9 +111,8 @@ class PartitionDataLoader(object):
         datapipe = datapipe.zip(index_dp).map(list).flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1)
         num_repeats = conf.get('num_repeats', 1)
-        datapipe = datapipe.map(collate, args=(0, 1)).repeats(num_repeats)
-        if split == 'train':
-            datapipe = datapipe.map(fn=shuffle_tensor, args=1, inplace=True)
+        datapipe = datapipe.map(collate, args=(0, 1)).repeats(num_repeats).map(list).map(
+            fn=shuffle_tensor, args=1, inplace=True)
         num_par = conf.get('num_workers', 0)
         if num_par > 0:
             datapipe = make_dp_worker(
@@ -151,7 +150,7 @@ class HierarchicalDataLoader(object):
         sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
         num_par = conf_l2.get('num_workers',  0)
         pf_steps = conf_l2.get('prefetch_steps', max(100-num_par*2, 0))
-        datapipe = datapipe.map(list).flatmap(
+        datapipe = datapipe.flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
         ).prefetch(buffer_size=pf_steps)
         datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)

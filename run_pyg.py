@@ -32,7 +32,7 @@ def train_with(conf: dict):
     main_logger.info(f"Training with GPU:{device.index}")
 
     dataset_conf, params = conf['dataset'], conf['model']
-    dataset = get_dataset(dataset_conf['root'], mmap=False)
+    dataset = NodePropPredDataset(root, mmap=(False, True), random=True, formats=('csc',))
     indices = dataset.get_idx_split()
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]
@@ -126,6 +126,6 @@ if __name__ == '__main__':
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
 
     import torch.multiprocessing
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    #  torch.multiprocessing.set_sharing_strategy('file_system')
     train_with(conf)
 

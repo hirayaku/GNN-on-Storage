@@ -298,6 +298,8 @@ class ChunkedNodePropPredDataset(NodePropPredDataset):
                 off = self.tensor_from_meta(graph['edge_index'][2])
                 label = graph.get('label', 'edge_index')
                 self.data[label] = (src, dst, off)
+                madvise(src.data_ptr(), src.numel() * src.element_size(), MADV_OPTIONS.MADV_SEQUENTIAL)
+                madvise(dst.data_ptr(), dst.numel() * dst.element_size(), MADV_OPTIONS.MADV_SEQUENTIAL)
 
     def _load_node_feat(self):
         if self.data_dict.get('node_feat', None) is None:

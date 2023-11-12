@@ -23,7 +23,7 @@ def round_acc(acc: dict, decimal=2):
         k: round(acc[k], decimal) for k in acc
     }
 
-def train_with(conf: dict, keep_eval=True):
+def train_with(conf: dict, keep_eval=True, train_par:int=1):
     env = conf['env']
     seed = env.get('seed', random.randint(0, 1024**3))
     profile = env.get('profile', False)
@@ -48,6 +48,8 @@ def train_with(conf: dict, keep_eval=True):
 
     sample_conf = conf['sample']
     train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
+    eval_full_batch = eval_conf is None
+    val_loader = test_loader = None
     if len(train_conf) > 1:
         main_logger.info("Using the hierarchical DataLoader")
         train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
@@ -58,12 +60,16 @@ def train_with(conf: dict, keep_eval=True):
             train_loader = PartitionDataLoader(dataset_conf, 'train', train_conf)
         else:
             main_logger.info("Using the conventional DataLoader")
-            dataset = get_dataset(dataset_conf['root'], mmap=False)
+            mp.set_sharing_strategy('file_descriptor')
+            dataset = NodePropPredDataset(
+                dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
+            )
             dataset[0].share_memory_()
             train_loader = NodeDataLoader(dataset, 'train', train_conf)
+            val_loader = NodeDataLoader(dataset, 'valid', eval_conf)
+            test_loader = NodeDataLoader(dataset, 'test', eval_conf)
+            #  dataset = None
 
-    eval_full_batch = eval_conf is None
-    val_loader = test_loader = None
 
     def eval_batch_on_split(split: str, keep_eval: bool):
         nonlocal dataset
@@ -91,7 +97,7 @@ def train_with(conf: dict, keep_eval=True):
                 test_loader = dataloader
         else:
             raise RuntimeError(f"Unknown split: {split}")
-        with utils.parallelism(factor=4): # overcommit threads
+        with utils.parallelism(factor=8): # overcommit threads
             loss, acc, *_ = eval_batch(
                 model, dataloader, device=device, description=split
             )
@@ -113,17 +119,18 @@ def train_with(conf: dict, keep_eval=True):
 
         for e in range(params['epochs']):
             gc.collect() # make sure the dataloader memory gets reclaimed
-            if profile:
-                train_loss, train_acc, *train_info = train_profile(model, optimizer, train_loader, device=device)
-            else:
-                train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+            with utils.parallelism(factor=train_par): # overcommit threads
+                if profile:
+                    train_loss, train_acc, *train_info = train_profile(model, optimizer, lr_scheduler, train_loader, device=device)
+                else:
+                    train_loss, train_acc, *train_info = train(model, optimizer, lr_scheduler, train_loader, device=device)
             mean_edges, epoch_time = train_info[2], train_info[-1]
             recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc, 'time': epoch_time}})
             main_logger.info(
-                f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
+                f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f} | Time {epoch_time:.2f}s"
             )
 
-            if e >= params.get('eval_after', 0) and (e + 1) % params['eval_every'] == 0:
+            if e >= params.get('eval_after', 0) and (e + 1) % params.get('eval_every', 1) == 0:
                 if eval_full_batch:
                     if dataset is None:
                         dataset = get_dataset(dataset_conf['root'], mmap=False)
@@ -154,8 +161,6 @@ def train_with(conf: dict, keep_eval=True):
                         {'run': run, 'epoch': e, 'model': model.state_dict()},
                         f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{model_ckpt}.{run}.pt'
                     )
-                if lr_scheduler is not None:
-                    lr_scheduler.step(val_loss)
 
         if not eval_test:
             ckpt = torch.load(f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{model_ckpt}.{run}.pt')
@@ -170,6 +175,7 @@ def train_with(conf: dict, keep_eval=True):
 
     main_logger.info(f"All runs finished with the config below: {json5.dumps(conf, indent=2)}")
     main_logger.info(f"Results: {recorder.stdmean()}")
+    train_loader.shutdown()
     return recorder
 
 if __name__ == '__main__':
@@ -178,6 +184,7 @@ if __name__ == '__main__':
     parser.add_argument("-c", "--config", type=str, default='conf/papers-hb.json5')
     parser.add_argument("--keep-eval", action="store_true",
                         help="keep evaluation dataloaders in memory")
+    parser.add_argument("--train-par", type=int, default=1)
     args, _ = parser.parse_known_args()
     with open(args.config) as fp:
         conf = json5.load(fp)
@@ -186,7 +193,7 @@ if __name__ == '__main__':
     import torch.multiprocessing as mp
     # NOTE: don't change sharing strategy for baseline mmap
     mp.set_sharing_strategy('file_system')
-    recorder = train_with(conf, keep_eval=args.keep_eval)
+    recorder = train_with(conf, keep_eval=args.keep_eval, train_par=args.train_par)
     env = conf.get('env', dict())
     if 'outdir' in env:
         recorder.save(env['outdir'])

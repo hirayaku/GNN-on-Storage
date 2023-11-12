@@ -69,9 +69,9 @@ def train_with(conf: dict, keep_eval=True):
             mp.set_sharing_strategy('file_system')
             train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
             if profile:
-                train_loss, train_acc, *train_info = train_profile(model, optimizer, train_loader, device=device)
+                train_loss, train_acc, *train_info = train_profile(model, optimizer, lr_scheduler, train_loader, device=device)
             else:
-                train_loss, train_acc, *train_info = train(model, optimizer, train_loader, device=device)
+                train_loss, train_acc, *train_info = train(model, optimizer, lr_scheduler, train_loader, device=device)
             mean_edges, epoch_time = train_info[2], train_info[-1]
             recorder.add(e, {'train': {'loss': train_loss, 'acc': train_acc, 'time': epoch_time}})
             main_logger.info(

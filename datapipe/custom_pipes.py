@@ -389,7 +389,7 @@ class MapperIterDataPipe(IterDataPipe[T_co]):
         self.fn = fn  # type: ignore[assignment]
         if isinstance(args, list):
             args = tuple(args)
-        self.args = args 
+        self.args = args
         self.inplace = inplace
 
     def __iter__(self) -> Iterator[T_co]:

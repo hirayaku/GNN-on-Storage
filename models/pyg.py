@@ -8,13 +8,17 @@ from torch_geometric.nn import JumpingKnowledge, GCNConv
 
 def gen_model(in_feats, out_feats, args) -> torch.nn.Module:
     if args.arch == 'gat':
-        model = GAT(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
+        model = GAT(in_feats, args.num_hidden, out_feats, args.num_layers,
+                    bias=args.bias, dropout=args.dropout)
     elif args.arch == 'gin':
-        model = GIN(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
+        model = GIN(in_feats, args.num_hidden, out_feats, args.num_layers,
+                    bias=args.bias, dropout=args.dropout)
     elif args.arch == 'sage':
-        model = SAGE(in_feats, args.num_hidden, out_feats, args.num_layers, dropout=args.dropout)
-        # if args.use_incep:
-        #     model = SAGEResInception(in_feats, args.num_hidden, out_feats, args.num_layers)
+        model = SAGE(in_feats, args.num_hidden, out_feats, args.num_layers,
+                     bias=args.bias, dropout=args.dropout)
+    elif args.arch == 'sage-ri':
+       model = SAGEResInception(in_feats, args.num_hidden, out_feats, args.num_layers,
+                                dropout=args.dropout)
     else:
         raise NotImplementedError(args.arch)
     return model
@@ -27,8 +31,8 @@ def init_weights(m):
             m.bias.data.fill_(0.01)
 
 class SAGE(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
-        kwargs = dict(bias=False)
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, bias=False, dropout=0.5):
+        kwargs = dict(bias=bias)
         conv_layer = SAGEConv
         super().__init__()
         self.num_layers = num_layers
@@ -67,6 +71,7 @@ class SAGE(torch.nn.Module):
         ):
         x = x.to(torch.float)
         if nodes_per_hop is not None and edges_per_hop is not None:
+            #  print(nodes_per_hop, edges_per_hop)
             for i, conv in enumerate(self.convs):
                 target_size = x.size(0) - nodes_per_hop[-(i+1)]
                 x_target = x[:target_size]
@@ -119,7 +124,7 @@ class MLP(torch.nn.Module):
 
 
 class SAGEResInception(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
         conv_layer = SAGEConv
         kwargs = dict(bias=False)
         super().__init__()
@@ -128,6 +133,7 @@ class SAGEResInception(torch.nn.Module):
         self.bns = torch.nn.ModuleList()
         self.res_linears = torch.nn.ModuleList()
         self.hidden_channels = hidden_channels
+        self.p = dropout
 
         self.convs.append(conv_layer(in_channels, hidden_channels, **kwargs))
         self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
@@ -163,18 +169,50 @@ class SAGEResInception(torch.nn.Module):
         _x = _x.to(torch.float)
         collect = []
         end_size = adjs[-1][-1][1]
-        x = F.dropout(_x, p=0.1, training=self.training)
+        x = F.dropout(_x, p=self.p, training=self.training)
         collect.append(x[:end_size])
         for i, (edge_index, _, size) in enumerate(adjs):
             x_target = x[:size[1]]
-            x = self.convs[i]((F.dropout(x, p=0.1, training=self.training),
-                               F.dropout(x_target, p=0.1,
-                                         training=self.training)), edge_index)
+            x = self.convs[i]((x, x_target), edge_index)
             x = self.bns[i](x)
             x = F.leaky_relu(x)
-            x = F.dropout(x, p=0.1, training=self.training)
+            x = F.dropout(x, p=self.p, training=self.training)
             collect.append(x[:end_size])
             x += self.res_linears[i](x_target)
+        return torch.log_softmax(self.mlp(torch.cat(collect, -1)), dim=-1)
+
+    def forward(
+            self, x, edge_index,
+            nodes_per_hop:Optional[List[int]]=None,
+            edges_per_hop:Optional[List[int]]=None,
+        ):
+        x = x.to(torch.float)
+        collect = []
+        if nodes_per_hop is not None and edges_per_hop is not None:
+            end_size = nodes_per_hop[0]
+            x = F.dropout(x, p=self.p, training=self.training)
+            collect.append(x[:end_size])
+            for i, conv in enumerate(self.convs):
+                n_target_size = x.size(0) - nodes_per_hop[-(i+1)]
+                e_target_size = edge_index.size(1) - edges_per_hop[-(i+1)]
+                x_target = x[:n_target_size]
+                x = conv((x, x_target), edge_index)
+                x = self.bns[i](x)
+                x = F.leaky_relu(x)
+                x = F.dropout(x, p=self.p, training=self.training)
+                collect.append(x[:end_size])
+                x += self.res_linears[i](x_target)
+                edge_index = edge_index[:,:e_target_size]
+        else:
+            x = F.dropout(x, p=self.p, training=self.training)
+            collect.append(x)
+            for i, conv in enumerate(self.convs):
+                x = conv(x, edge_index)
+                x = self.bns[i](x)
+                x = F.leaky_relu(x)
+                x = F.dropout(x, p=self.p, training=self.training)
+                collect.append(x)
+                x += self.res_linears[i](x)
         return torch.log_softmax(self.mlp(torch.cat(collect, -1)), dim=-1)
 
     # Not implemented yet
@@ -186,8 +224,8 @@ class SAGEResInception(torch.nn.Module):
 
 
 class GAT(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
-        kwargs = dict(bias=False, heads=1)
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, bias=False, dropout=0.5):
+        kwargs = dict(bias=bias, heads=1)
         conv_layer = GATConv
         super().__init__()
         self.num_layers = num_layers
@@ -244,8 +282,8 @@ class GAT(torch.nn.Module):
 
 
 class GIN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout=0.5):
-        kwargs = dict()
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, bias=False, dropout=0.5):
+        kwargs = dict(bias=bias)
         conv_layer = GINConv
         super().__init__()
         self.num_layers = num_layers

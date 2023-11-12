@@ -2,7 +2,7 @@ import os
 import os.path as osp
 import numpy as np
 import torch
-from torch_geometric.datasets import Reddit, Flickr
+from torch_geometric.datasets import Reddit, Reddit2, Flickr
 import torch_geometric.transforms as T
 from torch_geometric.utils import mask_to_index
 from ogb.nodeproppred import PygNodePropPredDataset
@@ -16,7 +16,7 @@ from data.io import MmapTensor, TensorMeta
 
 def load_flickr(rootdir):
     dataset_dir = osp.join(rootdir, 'flickr')
-    dataset = Reddit(root=dataset_dir, pre_transform=T.ToUndirected())
+    dataset = Flickr(root=dataset_dir, pre_transform=T.ToUndirected())
     data = dataset[0]
     num_nodes = data.x.shape[0]
     meta_info = {
@@ -407,7 +407,6 @@ def load_igb260m(rootdir):
 
 def load(name, root):
     load_methods = {
-        'reddit': load_reddit,
         'ogbn-arxiv': load_arxiv,
         'ogbn-arxiv-r': load_arxiv_r,
         'reddit': load_reddit,

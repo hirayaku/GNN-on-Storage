@@ -43,8 +43,6 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
     dataset = None
     eval_test = params.get('eval_test', False)
     model_ckpt = params.get('ckpt', None)
-    model = get_model(in_feats, out_feats, params)
-    model = model.to(device)
 
     sample_conf = conf['sample']
     train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
@@ -112,7 +110,8 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
         main_logger.info(f"Starting Run No.{run}")
         recorder.set_run(run)
         seed_everything(run + seed)
-        model.reset_parameters()
+        model = get_model(in_feats, out_feats, params)
+        model = model.to(device)
         optimizer, lr_scheduler = get_optimizer(model, params)
         main_logger.info(f"LR scheduler: {lr_scheduler}")
         gc.collect(); torch.cuda.empty_cache()
@@ -146,17 +145,14 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
 
                 prev_best = recorder.current_acc()['val/acc']
                 recorder.add(iters=e, data={'val': { 'loss': val_loss, 'acc': val_acc, }})
-                if eval_test:
-                    recorder.add(iters=e, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
+                if eval_test: recorder.add(iters=e, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
                 curr_best = round_acc(recorder.current_acc())
-                if eval_test:
-                    main_logger.info(
+                if eval_test: main_logger.info(
                         f"Current Val: {val_acc*100:.2f} | Test: {test_acc*100:.2f} | {curr_best}"
                     )
-                else:
-                    main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
+                else: main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
                 # checkpoint the best model so far
-                if val_acc*100 > prev_best:
+                if curr_best['epoch'] == e:
                     torch.save(
                         {'run': run, 'epoch': e, 'model': model.state_dict()},
                         f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{model_ckpt}.{run}.pt'

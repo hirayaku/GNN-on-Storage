@@ -50,6 +50,8 @@ def parallelism(factor):
         torch.set_num_threads(old_num)
 
 import psutil
+def get_num_cpus():
+    return psutil.cpu_count()
 def get_affinity():
     p = psutil.Process()
     return p.cpu_affinity()

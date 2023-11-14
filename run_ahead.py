@@ -46,8 +46,7 @@ def train_with(conf: dict, keep_eval=True):
         dataset = None
     runahead = params.get('train_runahead', 1)
     ckpt_label = params.get('ckpt', None)
-    model = get_model(in_feats, out_feats, params)
-    model = model.to(device)
+    eval_test = params.get('eval_test', False)
 
     sample_conf = conf['sample']
     train_conf, eval_conf = sample_conf['train'], sample_conf['eval']
@@ -58,16 +57,18 @@ def train_with(conf: dict, keep_eval=True):
         main_logger.info(f"Starting Run No.{run}")
         recorder.set_run(run)
         seed_everything(run + seed)
-        model.reset_parameters()
+        model = get_model(in_feats, out_feats, params)
+        model = model.to(device)
         optimizer, lr_scheduler = get_optimizer(model, params)
         main_logger.info(f"LR scheduler: {lr_scheduler}")
         gc.collect(); torch.cuda.empty_cache()
 
+        mp.set_sharing_strategy('file_system')
+        train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
+
         model_ckpts = {}
         for e in range(params['epochs']):
             gc.collect() # make sure the dataloader memory gets reclaimed
-            mp.set_sharing_strategy('file_system')
-            train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
             if profile:
                 train_loss, train_acc, *train_info = train_profile(model, optimizer, lr_scheduler, train_loader, device=device)
             else:
@@ -77,48 +78,68 @@ def train_with(conf: dict, keep_eval=True):
             main_logger.info(
                 f"Epoch {e:3d} | Train {train_acc*100:.2f} | Loss {train_loss:.2f} | MFG {mean_edges:.2f}"
             )
-            train_loader.shutdown()
-
-            if e < params.get('eval_after', 0): continue
             model_ckpts[e] = copy.deepcopy(model)
-            if (e + 1) % runahead != 0: continue
-            # evaluate on the saved model_ckpts
+            if (e + 1) % runahead != 0:
+                continue
+            else:
+                train_loader.shutdown()
+
+                # evaluate on the saved model_ckpts
+                mp.set_sharing_strategy('file_descriptor')
+                eval_dataset = NodePropPredDataset(
+                    dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
+                )
+                val_loader = NodeDataLoader(eval_dataset, 'valid', eval_conf)
+                if eval_test: test_loader = NodeDataLoader(eval_dataset, 'test', eval_conf)
+                for eval_epoch in sorted(model_ckpts.keys()):
+                    if (eval_epoch + 1) % params.get('eval_every', 1) != 0:
+                        continue
+                    eval_model = model_ckpts[eval_epoch]
+                    prev_best = recorder.current_acc()['val/acc']
+                    with utils.parallelism(factor=8): # overcommit threads
+                        val_loss, val_acc, *_ = eval_batch(
+                            eval_model, val_loader, device=device, description='valid'
+                        )
+                        recorder.add(iters=eval_epoch, data={'val': { 'loss': val_loss, 'acc': val_acc, }})
+                        if eval_test:
+                            test_loss, test_acc, *_ = eval_batch(
+                                eval_model, test_loader, device=device, description='test'
+                            )
+                            recorder.add(iters=eval_epoch, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
+                    curr_best = round_acc(recorder.current_acc())
+                    if eval_test: main_logger.info(
+                            f"Current Val: {val_acc*100:.2f} | Test: {test_acc*100:.2f} | {curr_best}"
+                        )
+                    else: main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
+                    # checkpoint the best model so far
+                    if curr_best['epoch'] == e:
+                        torch.save(
+                            {'run': run, 'epoch': eval_epoch, 'model': eval_model.state_dict()},
+                            f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{ckpt_label}.{run}.pt'
+                        )
+                    if lr_scheduler is not None:
+                        lr_scheduler.step(val_loss)
+                val_loader.shutdown(); val_loader = None
+                if eval_test: test_loader.shutdown(); test_loader = None
+                eval_dataset = None
+                model_ckpts = {}
+
+            mp.set_sharing_strategy('file_system')
+            train_loader = HierarchicalDataLoader(dataset_conf, 'train', train_conf)
+
+        train_loader.shutdown()
+        if not eval_test:
             mp.set_sharing_strategy('file_descriptor')
+            ckpt = torch.load(f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{ckpt_label}.{run}.pt')
+            model.load_state_dict(ckpt['model'])
             eval_dataset = NodePropPredDataset(
                 dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
             )
-            val_loader = NodeDataLoader(eval_dataset, 'valid', eval_conf)
             test_loader = NodeDataLoader(eval_dataset, 'test', eval_conf)
-            for eval_epoch in sorted(model_ckpts.keys()):
-                if (eval_epoch + 1) % params.get('eval_every', 1) != 0:
-                    continue
-                eval_model = model_ckpts[eval_epoch]
-                with utils.parallelism(factor=8): # overcommit threads
-                    val_loss, val_acc, *_ = eval_batch(
-                        eval_model, val_loader, device=device, description='valid'
-                    )
-                    test_loss, test_acc, *_ = eval_batch(
-                        eval_model, test_loader, device=device, description='test'
-                    )
-                prev_best = recorder.current_acc()['val/acc']
-                recorder.add(iters=eval_epoch, data={'val': { 'loss': val_loss, 'acc': val_acc, }})
-                recorder.add(iters=eval_epoch, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
-                curr_best = round_acc(recorder.current_acc())
-                main_logger.info(
-                    f"Current Val: {val_acc*100:.2f} | Test: {test_acc*100:.2f} | {curr_best}"
-                )
-                # checkpoint the best model so far
-                if val_acc*100 > prev_best:
-                    torch.save(
-                        {'run': run, 'epoch': eval_epoch, 'model': eval_model.state_dict()},
-                        f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{ckpt_label}.{run}.pt'
-                    )
-                if lr_scheduler is not None:
-                    lr_scheduler.step(val_loss)
-            val_loader.shutdown(); val_loader = None
-            test_loader.shutdown(); test_loader = None
-            eval_dataset = None
-            model_ckpts = {}
+            test_loss, test_acc, *_ = eval_batch(
+                model, test_loader, device=device, description='test'
+            )
+            recorder.add(iters=ckpt['epoch'], data={'test': { 'loss': test_loss, 'acc': test_acc, }})
 
         main_logger.info(f"{round_acc(recorder.current_acc())}")
 

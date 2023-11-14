@@ -1,5 +1,6 @@
 from functools import partial
-import psutil, torch
+import utils
+import torch
 from data.graphloader import (
     NodePropPredDataset, ChunkedNodePropPredDataset,
     partition_dir, pivots_dir
@@ -94,7 +95,7 @@ def collate(collator: Collator, batch):
 
 class PartitionDataLoader(object):
     def __init__(self, dataset_conf: dict, split: str, conf: dict):
-        self.ctx = mp.get_context('fork')
+        self.ctx = mp.get_context('spawn')
         self.cpu_i = 0
 
         root = dataset_conf['root']
@@ -116,8 +117,8 @@ class PartitionDataLoader(object):
         num_par = conf.get('num_workers', 0)
         if num_par > 0:
             datapipe = make_dp_worker(
-                datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,
-                affinity=range(self.cpu_i, self.cpu_i+num_par))
+                datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,)
+                #  affinity=range(self.cpu_i, self.cpu_i+num_par))
         self.cpu_i += num_par
 
         self.method = method
@@ -153,8 +154,7 @@ class HierarchicalDataLoader(object):
         datapipe = datapipe.flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
         ).prefetch(buffer_size=pf_steps)
-        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx)
-                                #  affinity=range(self.cpu_i, self.cpu_i+num_par))
+        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,)
         datapipe = datapipe.prefetch(
             fn=partial(gather_feature, filter_fn=filter_and_pin),
         ).prefetch_cuda()

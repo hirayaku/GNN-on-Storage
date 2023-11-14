@@ -58,9 +58,9 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
             train_loader = PartitionDataLoader(dataset_conf, 'train', train_conf)
         else:
             main_logger.info("Using the conventional DataLoader")
-            mp.set_sharing_strategy('file_descriptor')
+            #  mp.set_sharing_strategy('file_descriptor')
             dataset = NodePropPredDataset(
-                dataset_conf['root'], mmap=(False, True), random=True, formats='csc'
+                dataset_conf['root'], mmap=(False,True), random=True, formats='csc'
             )
             dataset[0].share_memory_()
             train_loader = NodeDataLoader(dataset, 'train', train_conf)
@@ -143,14 +143,16 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
                     if eval_test:
                         test_loss, test_acc = eval_batch_on_split('test', keep_eval)
 
-                prev_best = recorder.current_acc()['val/acc']
                 recorder.add(iters=e, data={'val': { 'loss': val_loss, 'acc': val_acc, }})
-                if eval_test: recorder.add(iters=e, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
+                if eval_test:
+                    recorder.add(iters=e, data={'test': { 'loss': test_loss, 'acc': test_acc, }})
                 curr_best = round_acc(recorder.current_acc())
-                if eval_test: main_logger.info(
+                if eval_test:
+                    main_logger.info(
                         f"Current Val: {val_acc*100:.2f} | Test: {test_acc*100:.2f} | {curr_best}"
                     )
-                else: main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
+                else:
+                    main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
                 # checkpoint the best model so far
                 if curr_best['epoch'] == e:
                     torch.save(
@@ -181,6 +183,7 @@ if __name__ == '__main__':
     parser.add_argument("--keep-eval", action="store_true",
                         help="keep evaluation dataloaders in memory")
     parser.add_argument("--train-par", type=int, default=1)
+    parser.add_argument("--share-fd", action="store_true", help="Only use fd to share tensor")
     args, _ = parser.parse_known_args()
     with open(args.config) as fp:
         conf = json5.load(fp)
@@ -188,7 +191,8 @@ if __name__ == '__main__':
 
     import torch.multiprocessing as mp
     # NOTE: don't change sharing strategy for baseline mmap
-    mp.set_sharing_strategy('file_system')
+    if not args.share_fd:
+        mp.set_sharing_strategy('file_system')
     recorder = train_with(conf, keep_eval=args.keep_eval, train_par=args.train_par)
     env = conf.get('env', dict())
     if 'outdir' in env:

@@ -82,8 +82,12 @@ class Recorder(object):
             result['epoch'] = epoch
         if 'test/acc' in run_log:
             test_data = self.get_series(self._run, 'test/acc', as_tuple=True)['test/acc']
-            idx =  test_data[0].index(result['epoch'])
-            result['test/acc'] = 100 * test_data[1][idx]
+            try:
+                idx =  test_data[0].index(result['epoch'])
+                result['test/acc'] = 100 * test_data[1][idx]
+            except ValueError:
+                warnings.warn(f"No test results for Epoch {result['epoch']}")
+                result['test/acc'] = list(zip(*test_data))
         return result
 
     def stdmean(self, epochs=None):

@@ -95,7 +95,6 @@ def train_with(conf: dict, keep_eval=True):
                     if (eval_epoch + 1) % params.get('eval_every', 1) != 0:
                         continue
                     eval_model = model_ckpts[eval_epoch]
-                    prev_best = recorder.current_acc()['val/acc']
                     with utils.parallelism(factor=8): # overcommit threads
                         val_loss, val_acc, *_ = eval_batch(
                             eval_model, val_loader, device=device, description='valid'
@@ -112,7 +111,7 @@ def train_with(conf: dict, keep_eval=True):
                         )
                     else: main_logger.info(f"Current Val: {val_acc*100:.2f} | {curr_best}")
                     # checkpoint the best model so far
-                    if curr_best['epoch'] == e:
+                    if curr_best['epoch'] == eval_epoch:
                         torch.save(
                             {'run': run, 'epoch': eval_epoch, 'model': eval_model.state_dict()},
                             f'models/ckpt/{dataset_conf["name"]}-{params["arch"]}.{ckpt_label}.{run}.pt'

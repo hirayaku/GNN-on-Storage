@@ -11,6 +11,7 @@ import utils
 def worker_init_fn(dp: IterDataPipe, num_par: Optional[int],
                    affinity: Optional[list[int]], init_fn: Optional[Callable],
                    **kwargs):
+    torch.init_num_threads()
     if num_par is not None:
         torch.set_num_threads(num_par)
     utils.set_affinity(affinity)
@@ -36,13 +37,14 @@ class ParallelMapperDataPipe(IterDataPipe):
     process the data, and put the results on the shared output queue to be iterated.
     '''
     QUEUE_GET_TIMEOUT = 0.001
-    def __init__(self, source_dp: IterDataPipe,
-                 fn: Callable, num_par:int=0, num_intra_par:int=1,
+    def __init__(self, source_dp: IterDataPipe, fn: Callable,
+                 num_par:int=0, num_intra_par:int=1, num_prefetch:int=0,
                  mp_ctx=None, affinity: Optional[list[int]]=None):
         self.source_dp = source_dp
         self.fn = fn
         # number of workers
         self.num_par = num_par
+        self.num_prefetch = num_par if num_prefetch == 0 else num_prefetch
         # threads allocated for torch operations within each worker
         self.num_intra_par = num_intra_par
         self.mp_ctx = mp_ctx
@@ -79,7 +81,7 @@ class ParallelMapperDataPipe(IterDataPipe):
                 self._worker_restart = self.mp_ctx.Event()
                 self._barrier = self.mp_ctx.Barrier(parties=self.num_par)
                 self._worker_initialized = True
-                self.source_queue = self.mp_ctx.Queue(maxsize=self.num_par)
+                self.source_queue = self.mp_ctx.Queue(maxsize=self.num_prefetch)
                 self.target_queue = self.mp_ctx.Queue(maxsize=self.num_par)
                 self._create_process_group()
             else:

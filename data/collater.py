@@ -175,14 +175,19 @@ class CollatorPivots(Collator):
         logger.debug(f"Collate {B} parts: {batch}")
 
         # construct macro-batch edge index
-        batch_nodes = self.batch_nodes(batch)
-        num_main_nodes = batch_nodes.size(0)
+        # NOTE: this is also time consuming
+        #  batch_nodes = self.batch_nodes(batch)
+        #  num_main_nodes = batch_nodes.size(0)
+        n_intervals = self.node_offsets[:, batch]
+        n_part_sizes = n_intervals[1] - n_intervals[0]
+        num_main_nodes = n_part_sizes.sum().item()
+
         num_pvt_nodes = self.data_pvt.num_nodes
         num_nodes = num_main_nodes + num_pvt_nodes
         # the main edge_index
         src, dst = self.data.edge_index[:2]
-        n_intervals = self.node_offsets[:, batch]
-        n_part_sizes = n_intervals[1] - n_intervals[0]
+        #  n_intervals = self.node_offsets[:, batch]
+        #  n_part_sizes = n_intervals[1] - n_intervals[0]
         e_batch = get_edge_parts(batch, self.P).flatten()
         e_intervals = self.edge_offsets[:, e_batch]
         e_part_sizes = e_intervals[1] - e_intervals[0]
@@ -201,6 +206,12 @@ class CollatorPivots(Collator):
         self.pivot_mask[:] = True
         self.pivot_mask[to_remove] = False
         logger.debug(f"Redundant pivots: {to_remove.size(0)}")
+
+        batch_x_shape = list(self.data.x.shape)
+        batch_x_shape[0] = num_nodes
+        batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
+        batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
+        batch_x[num_main_nodes:] = self.data_pvt.x
 
         # the main edge_index
         old_nids = n_intervals[0]
@@ -252,11 +263,11 @@ class CollatorPivots(Collator):
         del intra_src, intra_dst, inter_src, inter_dst, inter_src_t, inter_dst_t
         del gathered_src, gathered_dst
 
-        batch_x_shape = list(self.data.x.shape)
-        batch_x_shape[0] = num_nodes
-        batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
-        batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
-        batch_x[num_main_nodes:] = self.data_pvt.x
+        #  batch_x_shape = list(self.data.x.shape)
+        #  batch_x_shape[0] = num_nodes
+        #  batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
+        #  batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
+        #  batch_x[num_main_nodes:] = self.data_pvt.x
         batch_y_shape = list(self.data.y.shape)
         batch_y_shape[0] = num_nodes
         batch_y = torch.zeros(batch_y_shape, dtype=self.data.y.dtype)

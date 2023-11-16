@@ -117,8 +117,9 @@ class PartitionDataLoader(object):
         num_par = conf.get('num_workers', 0)
         if num_par > 0:
             datapipe = make_dp_worker(
-                datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,)
-                #  affinity=range(self.cpu_i, self.cpu_i+num_par))
+                datapipe, self.ctx, worker_name='collate_worker', num_par=num_par,
+                #  affinity=range(self.cpu_i, self.cpu_i+num_par),
+            )
         self.cpu_i += num_par
 
         self.method = method
@@ -150,12 +151,12 @@ class HierarchicalDataLoader(object):
         fanout = list(map(int, conf_l2['fanout'].split(',')))
         sample_fn = PygNeighborSampler(fanout, filter_per_worker=False)
         num_par = conf_l2.get('num_workers',  0)
-        pf_steps = conf_l2.get('prefetch_steps', max(100-num_par*2, 0))
+        num_prefetch = conf_l2.get('num_prefetch', 1)
         datapipe = datapipe.flatmap(
             partial(even_split_fn, size=batch_size), flatten_col=1,
-        ).prefetch(buffer_size=pf_steps)
-        datapipe = datapipe.pmap(fn=sample_fn, num_par=num_par, mp_ctx=self.ctx,)
-        datapipe = datapipe.prefetch(
+        ) # .prefetch(buffer_size=num_prefetch)
+        datapipe = datapipe.pmap(sample_fn, num_par, num_prefetch=num_prefetch, mp_ctx=self.ctx)
+        datapipe = datapipe.prefetch(buffer_size=num_par).prefetch(
             fn=partial(gather_feature, filter_fn=filter_and_pin),
         ).prefetch_cuda()
         self.cpu_i += num_par

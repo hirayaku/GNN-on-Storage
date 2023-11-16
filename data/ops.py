@@ -43,6 +43,7 @@ def ranges_gather(
         starts: torch.Tensor,
         lengths: torch.Tensor,
         out: Optional[torch.Tensor]=None,
+        num_par: int=8,
     ) -> torch.Tensor:
     '''
     Gather slices src[starts[i] : starts[i] + lengths[i]] for i = 0, ..., N-1
@@ -57,7 +58,7 @@ def ranges_gather(
         out_shape[0] = out_size
         out = torch.empty(out_shape, dtype=src.dtype, device=src.device)
     assert out.size(0) >= out_size, "Tensor `out` can't fit"
-    with utils.parallelism(4):
+    with utils.parallelism(num_par):
         return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
 
 def ranges_add(

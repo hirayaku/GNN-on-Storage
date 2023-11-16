@@ -1,4 +1,4 @@
-from .base_pipes import IterDataPipe, make_functional
+from .base_pipes import IterData, IterDataPipe, make_functional
 from . import custom_pipes, parallel_pipes
 
 # the following is not necessary

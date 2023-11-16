@@ -36,7 +36,7 @@
                 "fanout": "12,12,12",
                 "batch_size": 1024,
                 "num_workers": 12,
-                "prefetch_steps": 100,
+                "num_prefetch": 100,
             }
         ],
         "eval": {

@@ -138,6 +138,8 @@ def train_with(conf: dict, keep_eval=True):
             test_loss, test_acc, *_ = eval_batch(
                 model, test_loader, device=device, description='test'
             )
+            test_loader.shutdown(); test_loader = None
+            eval_dataset = None
             recorder.add(iters=ckpt['epoch'], data={'test': { 'loss': test_loss, 'acc': test_acc, }})
 
         main_logger.info(f"{round_acc(recorder.current_acc())}")

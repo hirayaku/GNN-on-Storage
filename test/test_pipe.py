@@ -158,21 +158,22 @@ class TestPipe(unittest.TestCase):
 
     def test_hbsample(self):
         dataloader = HierarchicalDataLoader(
-            dataset={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
+            dataset_conf={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
             split='train',
             conf=[
                 {
                     "sampler": "cluster",
-                    "partition": "fennel-lb",
-                    "P": 64,
-                    "batch_size": 64//4,
+                    "partition": "fennel-wlb",
+                    "P": 1024,
+                    "batch_size": 1024//8,
                     "pivots": True,
-                    "num_workers": 8,
+                    "num_workers": 16,
                 }, {
                     "sampler": "ns",
                     "batch_size": 1000,
                     "fanout": "15,10,5",
-                    "num_workers": 16,
+                    "num_workers": 8,
+                    "num_prefetch": 120,
                 },
             ],
         )

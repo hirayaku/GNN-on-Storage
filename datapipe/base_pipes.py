@@ -6,14 +6,10 @@ T = TypeVar('T')
 T_co = TypeVar('T_co', covariant=True)
 
 class IterData:
-    __slots__ = '_val'
-    def __init__(self, val):
-        self._val = val
-    @property
-    def value(self):
-        val = self._val
-        self._val = None
-        return val
+    __slots__ = 'val', 'sync'
+    def __init__(self, val, sync:bool=False):
+        self.val = val
+        self.sync = sync
 
 class IterDataPipe(IterableDataset[T_co]):
     '''

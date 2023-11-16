@@ -9,7 +9,7 @@
         "root": "/mnt/md0/hb_datasets/ogbn_papers100M",
     },
     "model": {
-        "arch": "sage",
+        "arch": "gat",
         "num_hidden": 256,
         "num_layers": 3,
         "dropout": 0.5,
@@ -17,23 +17,27 @@
         "runs": 3,
         "epochs": 30,
         "log_every" : 100,
-        "eval_every": 2,
+        "train_runahead": 5,
+        "ckpt": "oursx2",
     },
     "sample": {
         "train": [ {
                 "sampler": "cluster",
                 "partition": "fennel-wlb",
-                "P": 64,
-                "batch_size": 8,
+                "P": 1024,
+                "batch_size": 128,
                 "pivots": true,
-                "num_repeats": 1,
+                "num_repeats": 2,
                 "num_workers": 0,
             }, {
                 "sampler": "ns",
                 "fanout": "15,10,5",
                 "batch_size": 1000,
+                // for num_repeats = 1
+                // "num_workers": 8,
+                // "num_prefetch": 120,
                 "num_workers": 12,
-                "prefetch_steps": 200,
+                "num_prefetch": 250, // gat x2
             }
         ],
         "eval": {

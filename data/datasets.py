@@ -187,7 +187,7 @@ def load_papers100m_directed(rootdir):
             'format': 'coo',
             'edge_index': [data.edge_index[0], data.edge_index[1]], # data.edge_index.numpy(),
         } ],
-        'node_feat': data.x.numpy(),
+        #  'node_feat': data.x.numpy(),
         'edge_feat': None,
         'num_nodes': data.num_nodes,
         'labels': data.y.numpy(),

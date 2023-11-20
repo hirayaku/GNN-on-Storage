@@ -1,0 +1,39 @@
+{
+    "mode": "local",
+    "env": {
+        "verbose": true,
+        "outdir": "./logdir/acc",
+    },
+    "dataset": {
+        "name": "mag240m-c",
+        "root": "/data/scratch/tianhaoh/datasets/gnnos/mag240m_c",
+    },
+    "model": {
+        "arch": "sage",
+        "num_hidden": 256,
+        "num_layers": 3,
+        "dropout": 0.5,
+        "lr": 1e-3,
+        "runs": 3,
+        "epochs": 30,
+        "eval_every": 1,
+        "eval_test": false,
+        "train_runahead": 5,
+    },
+    "sample": {
+        "train": [{
+            "sampler": "ns",
+            "fanout": "15,10,5",
+            "batch_size": 1024,
+            "num_workers": 32,
+            "drop_last": true,
+        }],
+        "eval": {
+            "sampler": "ns",
+            "fanout": "20,20,20",
+            "batch_size": 200,
+            "num_workers": 32,
+            "persist": true,
+        },
+    }
+}

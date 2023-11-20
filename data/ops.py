@@ -3,6 +3,9 @@ from typing import Optional, Tuple, Union
 from data.io import TensorMeta, Dtype, MmapTensor
 import utils
 
+import logging
+logger = logging.getLogger(__name__)
+
 def scatter(
         index: torch.Tensor,
         src: torch.Tensor,
@@ -59,7 +62,12 @@ def ranges_gather(
         out = torch.empty(out_shape, dtype=src.dtype, device=src.device)
     assert out.size(0) >= out_size, "Tensor `out` can't fit"
     with utils.parallelism(num_par):
-        return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
+        if hasattr(src, '_meta') and not src._meta.temporary:
+            logger.debug(f"Gather from {src._meta}")
+            filename = src._meta.path
+            return torch.ops.xTensor.ranges_gather_io(out, filename, starts, lengths)
+        else:
+            return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
 
 def ranges_add(
         targets: torch.Tensor,

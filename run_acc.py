@@ -60,7 +60,7 @@ def train_with(conf: dict, keep_eval=True, train_par:int=1):
             main_logger.info("Using the conventional DataLoader")
             #  mp.set_sharing_strategy('file_descriptor')
             dataset = NodePropPredDataset(
-                dataset_conf['root'], mmap=(False,True), random=True, formats='csc'
+                dataset_conf['root'], mmap=True, formats='csc', # random=True,
             )
             dataset[0].share_memory_()
             train_loader = NodeDataLoader(dataset, 'train', train_conf)

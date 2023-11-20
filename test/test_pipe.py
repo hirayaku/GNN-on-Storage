@@ -89,15 +89,15 @@ class TestPipe(unittest.TestCase):
     # FIXED the datapipe doesn't release memory in time
     def test_psample(self):
         dataloader = PartitionDataLoader(
-            dataset={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
+            dataset_conf={'root': '/data/scratch/tianhaoh/datasets/gnnos/mag240m_c'},
             split='train',
             conf={
                 "sampler": "cluster",
-                "partition": "fennel-lb",
-                "P": 64,
-                "batch_size": 8,
+                "partition": "rand",
+                "P": 1024,
+                "batch_size": 1024//16,
                 "pivots": True,
-                "num_workers": 8,
+                "num_workers": 0,
             },
         )
         for e in range(1):
@@ -158,7 +158,8 @@ class TestPipe(unittest.TestCase):
 
     def test_hbsample(self):
         dataloader = HierarchicalDataLoader(
-            dataset_conf={'root': '/mnt/md0/hb_datasets/ogbn_papers100M'},
+            #  dataset_conf={'root': '/mnt/md0/hb_datasets/mag240m_c'},
+            dataset_conf={'root': '/data/scratch/tianhaoh/datasets/gnnos/mag240m_c'},
             split='train',
             conf=[
                 {
@@ -167,13 +168,13 @@ class TestPipe(unittest.TestCase):
                     "P": 1024,
                     "batch_size": 1024//8,
                     "pivots": True,
-                    "num_workers": 16,
+                    "num_workers": 0,
                 }, {
                     "sampler": "ns",
                     "batch_size": 1000,
                     "fanout": "15,10,5",
-                    "num_workers": 8,
-                    "num_prefetch": 120,
+                    "num_workers": 16,
+                    "num_prefetch": 80,
                 },
             ],
         )

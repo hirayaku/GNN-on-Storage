@@ -38,7 +38,7 @@ def train_with(conf: dict, keep_eval=True):
 
     dataset_conf, params = conf['dataset'], conf['model']
     dataset = NodePropPredDataset(
-        dataset_conf['root'], mmap=(False, True), formats='csc'
+        dataset_conf['root'], mmap=True, formats='csc'
     )
     out_feats = dataset.num_classes
     in_feats = dataset[0].x.shape[1]

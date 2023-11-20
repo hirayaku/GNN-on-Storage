@@ -7,6 +7,7 @@ from utils import sort, parallelism
 from data.graphloader import ChunkedNodePropPredDataset
 from data.io import ShmTensor, TensorMeta
 from data.ops import scatter_append, ranges_gather, ranges_add, coo_ranges_merge
+import threading
 import logging
 logger = logging.getLogger()
 
@@ -164,6 +165,11 @@ class CollatorPivots(Collator):
             batch_count += size
         return self.pivot_buf[:batch_count]
 
+    def gather_feature(self, n_intervals, n_part_sizes, num_main_nodes):
+        batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=self.batch_x)
+        batch_x[num_main_nodes:] = self.data_pvt.x
+        logger.debug("Gather batch_x")
+
     def collate(self, batch:torch.Tensor):
         '''
         Collate selected node partitions and edge partitions into a macro-batch
@@ -209,9 +215,13 @@ class CollatorPivots(Collator):
 
         batch_x_shape = list(self.data.x.shape)
         batch_x_shape[0] = num_nodes
-        batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
-        batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
-        batch_x[num_main_nodes:] = self.data_pvt.x
+        self.batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
+        #  batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
+        #  batch_x[num_main_nodes:] = self.data_pvt.x
+        gatherer = threading.Thread(
+            target=self.gather_feature,
+            args=(n_intervals, n_part_sizes, num_main_nodes)
+        )
 
         # the main edge_index
         old_nids = n_intervals[0]
@@ -251,6 +261,7 @@ class CollatorPivots(Collator):
         intra_offsets = e_part_sizes_intra.cumsum(0) - e_part_sizes_intra
         logger.debug(f"Intra Adj constructed: m={intra_src.size(0)}")
 
+        gatherer.start()
         ptr, ids = coo_ranges_merge(num_nodes,
             [ (inter_src, inter_dst), (inter_src_t, inter_dst_t), (intra_src, intra_dst), 
               (gathered_src, gathered_dst)],
@@ -268,6 +279,8 @@ class CollatorPivots(Collator):
         #  batch_x = ShmTensor(TensorMeta(batch_x_shape, dtype=self.data.x.dtype))
         #  batch_x = ranges_gather(self.data.x, n_intervals[0], n_part_sizes, out=batch_x)
         #  batch_x[num_main_nodes:] = self.data_pvt.x
+        gatherer.join()
+        batch_x = self.batch_x; self.batch_x = None
         batch_y_shape = list(self.data.y.shape)
         batch_y_shape[0] = num_nodes
         batch_y = torch.zeros(batch_y_shape, dtype=self.data.y.dtype)

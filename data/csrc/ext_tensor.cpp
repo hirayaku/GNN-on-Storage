@@ -207,7 +207,11 @@ TORCH_LIBRARY(xTensor, m) {
     );
     m.def(
         "ranges_gather(Tensor out, Tensor src, Tensor starts, Tensor sizes) -> Tensor",
-        &ranges_gather
+        py::overload_cast<Tensor&, const Tensor &, const Tensor&, const Tensor&>(&ranges_gather)
+    );
+    m.def(
+        "ranges_gather_io(Tensor out, str filename, Tensor starts, Tensor sizes) -> Tensor",
+        py::overload_cast<Tensor&, const std::string&, const Tensor&, const Tensor&>(&ranges_gather)
     );
     m.def(
         "ranges_add(Tensor target, Tensor starts, Tensor sizes, Tensor values) -> Tensor",

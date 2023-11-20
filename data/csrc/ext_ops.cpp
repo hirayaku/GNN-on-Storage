@@ -153,6 +153,49 @@ Tensor &ranges_gather(
     return out;
 }
 
+Tensor &ranges_gather(
+    Tensor &out, const std::string &filename, const Tensor &starts, const Tensor &lengths
+) {
+    TORCH_CHECK(starts.scalar_type() == at::kLong, "index should have dtype long/int64");
+    TORCH_CHECK(lengths.scalar_type() == at::kLong, "sizes should have dtype long/int64");
+    // TORCH_CHECK(out.scalar_type() == src.scalar_type());
+    // TORCH_CHECK(out.stride(0) == src.stride(0));
+
+    int fd = open(filename.data(), O_RDONLY);
+    TORCH_CHECK(fd > 0, "Fail to open ", filename)
+
+    auto stride = out.stride(0);
+    const auto *starts_p = starts.data_ptr<long>();
+    const auto *lengths_p = lengths.data_ptr<long>();
+    std::vector<long> offsets(lengths.size(0), 0);
+    for (size_t i = 1; i < lengths.size(0); ++i) {
+        offsets[i] += offsets[i-1] + lengths_p[i-1];
+    }
+    TORCH_CHECK(offsets[lengths.size(0)-1] <= out.size(0));
+
+    AT_DISPATCH_ALL_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::Bool, out.scalar_type(), "ranges_gather_dim0", [&]() {
+        auto *out_p = out.data_ptr<scalar_t>();
+        // std::cout << "(" << out.size(0) << ", " << stride << ")\n";
+        // std::cout << "sizeof(scalar_t):" << sizeof(scalar_t) << "\n";
+
+        dynamic_parallel_for(0, starts.size(0), [&](int i) {
+            long nstart = starts_p[i] * stride;
+            ssize_t nscalar = lengths_p[i] * stride;
+            // std::cout << "[" << starts_p[i] << "+:" << lengths_p[i] << ")\n";
+            ssize_t nbytes = pread(
+                fd, out_p + offsets[i] * stride,
+                nscalar * sizeof(scalar_t),
+                nstart * sizeof(scalar_t)
+            );
+            TORCH_CHECK(nbytes == nscalar * sizeof(scalar_t), "Read less than expected: ", nbytes);
+        }, 1);
+    });
+
+    TORCH_CHECK(close(fd) >= 0, "Fail to close ", filename);
+    return out;
+}
+
 Tensor &ranges_add(
     Tensor &target, const Tensor &starts, const Tensor &lengths, const Tensor &values
 ) {

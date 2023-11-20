@@ -14,6 +14,7 @@ Tensor &scatter_copy(Tensor &out, const Tensor &index, const Tensor &src);
 
 // gather intervals from src tensor to out tensor
 Tensor &ranges_gather(Tensor &out, const Tensor &src, const Tensor &, const Tensor &);
+Tensor &ranges_gather(Tensor &out, const std::string &filename, const Tensor &, const Tensor &);
 Tensor &ranges_add(Tensor &target, const Tensor &, const Tensor &, const Tensor &);
 
 // merge the input list of edges in COO formats (assuming edges are sorted by dst)

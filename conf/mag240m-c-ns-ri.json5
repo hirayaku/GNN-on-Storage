@@ -5,8 +5,8 @@
         "outdir": "./logdir/acc",
     },
     "dataset": {
-        "name": "ogbn-papers100M",
-        "root": "/mnt/md0/hb_datasets/ogbn_papers100M",
+        "name": "mag240m-c",
+        "root": "/mnt/md0/hb_datasets/mag240m_c",
     },
     "model": {
         "arch": "sage-ri",
@@ -21,7 +21,7 @@
         "epochs": 30,
         "log_every" : 100,
         "eval_every": 1,
-        "ckpt": "ns",
+        "ckpt": "ns-ri",
         "train_runahead": 5,
     },
     "sample": {
@@ -35,8 +35,8 @@
         "eval": {
             "sampler": "ns",
             "fanout": "20,20,20",
-            "batch_size": 500,
-            "num_workers": 8,
+            "batch_size": 200,
+            "num_workers": 12,
         },
     }
 }

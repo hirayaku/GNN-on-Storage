@@ -13,14 +13,14 @@
         "num_hidden": 1024,
         "num_layers": 3,
         "dropout": 0.1,
-        "lr": 1e-3,
+        "lr": 5e-4,
         "lr_schedule": "plateau",
         "lr_step": 1000,
         "lr_decay": 0.8,
         "runs": 1,
-        "epochs": 30,
+        "epochs": 25,
         "log_every" : 100,
-        "ckpt": "ours",
+        "ckpt": "oursx2",
         "train_runahead": 5,
     },
     "sample": {
@@ -30,20 +30,21 @@
                 "P": 1024,
                 "batch_size": 128,
                 "pivots": true,
-                "num_repeats": 1,
+                "num_repeats": 2,
             }, {
                 "sampler": "ns",
                 "fanout": "12,12,12",
                 "batch_size": 1024,
                 "num_workers": 12,
-                "num_prefetch": 100,
+                // "num_prefetch": 100, // config for x1
+                "num_prefetch": 200, // config for x2
             }
         ],
         "eval": {
             "sampler": "ns",
             "fanout": "20,20,20",
             "batch_size": 500,
-            "num_workers": 8,
+            "num_workers": 12,
         },
     }
 }

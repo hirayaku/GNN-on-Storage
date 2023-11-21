@@ -18,13 +18,14 @@
         "epochs": 30,
         "eval_every": 30,
         "eval_test": false,
+        "train_runahead": 5,
     },
     "sample": {
         "train": [ {
                 "sampler": "cluster",
                 "partition": "fennel-wlb",
                 "P": 1024,
-                "batch_size": 56,
+                "batch_size": 64,
                 "pivots": true,
                 "num_repeats": 1,
                 "num_workers": 0,
@@ -33,7 +34,7 @@
                 "fanout": "15,10,5",
                 "batch_size": 1000,
                 "num_workers": 12,
-                "prefetch_steps": 20,
+                "num_prefetch": 50,
             }
         ],
         "eval": {

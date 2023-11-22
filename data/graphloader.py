@@ -278,7 +278,7 @@ class NodePropPredDataset(object):
         if idx > 0:
             raise IndexError('This dataset has only one graph')
         return self.data
-    
+
     def __len__(self):
         return 1
 
@@ -288,25 +288,27 @@ class ChunkedNodePropPredDataset(NodePropPredDataset):
 
     # overwrite _load_* methods
     def _load_graph(self):
-        if 'graph' in self.data_dict:
-            num_nodes = self.data_dict['num_nodes']
-            self.data.num_nodes = num_nodes
-            for graph in self.data_dict['graph']:
-                assert graph['format'] == 'coo'
-                src = self.tensor_from_meta(graph['edge_index'][0], self.graph_mode)
-                dst = self.tensor_from_meta(graph['edge_index'][1], self.graph_mode)
-                off = self.tensor_from_meta(graph['edge_index'][2])
-                label = graph.get('label', 'edge_index')
-                self.data[label] = (src, dst, off)
-                madvise(src.data_ptr(), src.numel() * src.element_size(), MADV_OPTIONS.MADV_SEQUENTIAL)
-                madvise(dst.data_ptr(), dst.numel() * dst.element_size(), MADV_OPTIONS.MADV_SEQUENTIAL)
+        num_nodes = self.data_dict['num_nodes']
+        self.data.num_nodes = num_nodes
+        for graph in self.data_dict['graph']:
+            assert graph['format'] == 'coo'
+            src = self.tensor_from_meta(graph['edge_index'][0], self.graph_mode)
+            dst = self.tensor_from_meta(graph['edge_index'][1], self.graph_mode)
+            off = self.tensor_from_meta(graph['edge_index'][2])
+            label = graph.get('label', 'edge_index')
+            self.data[label] = (src, dst, off)
+            if self.graph_mode[0] == TensorType.MmapTensor:
+                madvise(src.data_ptr(), src.numel() * src.element_size(),
+                        MADV_OPTIONS.MADV_SEQUENTIAL)
+                madvise(dst.data_ptr(), dst.numel() * dst.element_size(),
+                        MADV_OPTIONS.MADV_SEQUENTIAL)
 
     def _load_node_feat(self):
         if self.data_dict.get('node_feat', None) is None:
             return
         node_feat = self.tensor_from_meta(self.data_dict['node_feat'], mode=self.feat_mode)
         self.data.put_tensor(node_feat, attr_name='x', index=None)
-        if self.feat_mode == 'mmap':
+        if self.feat_mode[0] == TensorType.MmapTensor:
             # optimize sequential access on feature data
             node_feat = self.data.x
             madvise(node_feat.data_ptr(), node_feat.numel() * node_feat.element_size(),

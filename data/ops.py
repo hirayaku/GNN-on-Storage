@@ -46,7 +46,6 @@ def ranges_gather(
         starts: torch.Tensor,
         lengths: torch.Tensor,
         out: Optional[torch.Tensor]=None,
-        num_par: int=8,
     ) -> torch.Tensor:
     '''
     Gather slices src[starts[i] : starts[i] + lengths[i]] for i = 0, ..., N-1
@@ -61,13 +60,12 @@ def ranges_gather(
         out_shape[0] = out_size
         out = torch.empty(out_shape, dtype=src.dtype, device=src.device)
     assert out.size(0) >= out_size, "Tensor `out` can't fit"
-    with utils.parallelism(num_par):
-        if hasattr(src, '_meta') and not src._meta.temporary:
-            logger.debug(f"Gather from {src._meta}")
-            filename = src._meta.path
-            return torch.ops.xTensor.ranges_gather_io(out, filename, starts, lengths)
-        else:
-            return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
+    if hasattr(src, '_meta') and not src._meta.temporary:
+        #  logger.debug(f"Gather from {src._meta}")
+        filename = src._meta.path
+        return torch.ops.xTensor.ranges_gather_io(out, filename, starts, lengths)
+    else:
+        return torch.ops.xTensor.ranges_gather(out, src, starts, lengths)
 
 def ranges_add(
         targets: torch.Tensor,

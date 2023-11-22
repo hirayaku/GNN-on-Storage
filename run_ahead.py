@@ -9,6 +9,7 @@ main_logger.addHandler(stream_handler)
 main_logger.setLevel(logging.INFO)
 
 import torch
+import torch.multiprocessing as mp
 from torch_geometric import seed_everything
 from torch_geometric.loader import NeighborLoader
 from data.graphloader import NodePropPredDataset
@@ -159,11 +160,12 @@ if __name__ == '__main__':
         conf = json5.load(fp)
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
 
-    import torch.multiprocessing as mp
-    recorder = train_with(conf, keep_eval=args.keep_eval)
-    env = conf.get('env', dict())
-    if 'outdir' in env:
-        recorder.save(env['outdir'])
+    with utils.parallelism(1/4):
+        print("num_threads:", torch.get_num_threads())
+        recorder = train_with(conf, keep_eval=args.keep_eval)
+        env = conf.get('env', dict())
+        if 'outdir' in env:
+            recorder.save(env['outdir'])
 
     # print(f"""----Data statistics------
     # #Nodes {n_nodes}

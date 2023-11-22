@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -126,6 +127,12 @@ Tensor &ranges_gather(
         offsets[i] += offsets[i-1] + lengths_p[i-1];
     }
 
+    int num_par_io = 0;
+    const char *num_io_workers = std::getenv("NUM_IO_WORKERS");
+    if (num_io_workers != nullptr) {
+        num_par_io = std::atoi(num_io_workers);
+    }
+
     AT_DISPATCH_ALL_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::Bool, src.scalar_type(), "ranges_gather_dim0", [&]() {
         const auto *src_p = src.data_ptr<scalar_t>();
@@ -148,7 +155,7 @@ Tensor &ranges_gather(
             if (prefault_pte)
                 batch_populate_pte((void*)(src_p + start*stride), lengths_p[i]*stride);
             std::copy(src_p + start*stride, src_p + end*stride, out_p + offsets[i]*stride);
-        }, 1);
+        }, 1, num_par_io);
     });
     return out;
 }
@@ -173,6 +180,12 @@ Tensor &ranges_gather(
     }
     TORCH_CHECK(offsets[lengths.size(0)-1] <= out.size(0));
 
+    int num_par_io = 0;
+    const char *num_io_workers = std::getenv("NUM_IO_WORKERS");
+    if (num_io_workers != nullptr) {
+        num_par_io = std::atoi(num_io_workers);
+    }
+
     AT_DISPATCH_ALL_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::Bool, out.scalar_type(), "ranges_gather_dim0", [&]() {
         auto *out_p = out.data_ptr<scalar_t>();
@@ -189,7 +202,7 @@ Tensor &ranges_gather(
                 nstart * sizeof(scalar_t)
             );
             TORCH_CHECK(nbytes == nscalar * sizeof(scalar_t), "Read less than expected: ", nbytes);
-        }, 1);
+        }, 1, num_par_io);
     });
 
     TORCH_CHECK(close(fd) >= 0, "Fail to close ", filename);

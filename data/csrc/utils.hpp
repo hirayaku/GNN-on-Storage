@@ -78,11 +78,21 @@ static int omp_thread_count() {
 }
 
 template <class F>
-void dynamic_parallel_for(long start, long end, const F &f, int block_size=64) {
+void dynamic_parallel_for(long start, long end, const F &f, int block_size=64, int num_par=0) {
   #ifdef NDEBUG
-    #pragma omp parallel for schedule(dynamic, block_size)
-    for (long i = start; i < end; ++i) {
-        f(i);
+    if (num_par == 0) {
+        #pragma omp parallel for schedule(dynamic, block_size)
+        for (long i = start; i < end; ++i) {
+            f(i);
+        }
+    } else {
+        #pragma omp parallel num_threads(num_par)
+        {
+            #pragma omp for schedule(dynamic, block_size)
+            for (long i = start; i < end; ++i) {
+                f(i);
+            }
+        }
     }
   #else
     for (long i = start; i < end; ++i) {

@@ -103,7 +103,8 @@ class PartitionDataLoader(object):
         datapipe = ObjectAsPipe(ChunkedNodePropPredDataset, partition_dir(root, method, P))
         if conf.get('pivots', False):
             pivot_dp = ObjectAsPipe(ChunkedNodePropPredDataset, pivots_dir(root, method, P),
-                                    mmap={'graph': True, 'feat': False})
+                                    mmap=False)
+                                    #  mmap={'graph': True, 'feat': False})
             datapipe = datapipe.zip(pivot_dp)
             datapipe = datapipe.map(partial(CollatorPivots, split=split), args=(0,1))
         else:

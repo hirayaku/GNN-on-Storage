@@ -115,7 +115,7 @@ class ParallelMapperDataPipe(IterDataPipe):
     def _thread_worker(self):
         for data in self.source_dp:
             self.source_count += 1
-            self.source_queue.put(data)
+            self.source_queue.put(data); data = None
         self.source_queue.put(StopIteration(f"{self.__class__}: source_queue"))
 
     def _create_thread_worker(self):

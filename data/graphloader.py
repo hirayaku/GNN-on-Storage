@@ -248,10 +248,14 @@ class NodePropPredDataset(object):
             )
 
     def _load_labels(self):
+        if self.data_dict.get('labels', None) is None:
+            return
         labels = self.tensor_from_meta(self.data_dict['labels'], mode=self.feat_mode)
         self.data.put_tensor(labels, attr_name='y', index=None)
 
     def _load_node_feat(self):
+        if self.data_dict.get('node_feat', None) is None:
+            return
         node_feat = self.tensor_from_meta(self.data_dict['node_feat'], mode=self.feat_mode)
         self.data.put_tensor(node_feat, attr_name='x', index=None)
  

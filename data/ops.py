@@ -1,10 +1,13 @@
 import torch
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, Any, List
+from dataclasses import dataclass, fields
 from data.io import TensorMeta, Dtype, MmapTensor
 import utils
 
 import logging
 logger = logging.getLogger(__name__)
+
+Tensor = torch.Tensor
 
 def scatter(
         index: torch.Tensor,
@@ -83,6 +86,21 @@ def ranges_add(
     assert (starts + lengths <= targets.size(0)).all(), "out of range"
     return torch.ops.xTensor.ranges_add(targets, starts, lengths, values)
 
+def ranges_slice(
+        targets: torch.Tensor,
+        starts: torch.Tensor,
+        lengths: torch.Tensor,
+) -> list[torch.Tensor]:
+    '''
+    Extract the ranges of tensor into a list of tensors
+    '''
+    assert starts.size(0) == lengths.size(0)
+    assert (starts < targets.size(0)).all(), "out of range"
+    assert (lengths >= 0).all(), "invalid length"
+    assert (starts + lengths <= targets.size(0)).all(), "out of range"
+    return torch.ops.xTensor.ranges_slice(targets, starts, lengths)
+
+
 def index_select(
         src: torch.Tensor,
         index: torch.Tensor,
@@ -110,23 +128,28 @@ def index_select(
     out[start:steps] = src[index_buf]
     return out
 
-def coo_list_merge(
+def coo_merge(
         num_nodes: int,
-        coo_tensors: list[Tuple[torch.Tensor, torch.Tensor]],
+        src: List[Tensor],
+        dst: List[Tensor],
+        edata: Dict[str, List[Tensor]],
+        to_csc: bool=True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
     '''
     Merge coo fragments into a unifying coo.
     NOTE: node IDs in the input coo tensors should be in the range of [0, num_nodes).
     Otherwise undefined behavior will happen (e.g. segfaults)
     '''
-    return torch.ops.xTensor.coo_list_merge(num_nodes, coo_tensors)
+    if to_csc:
+        src, dst = dst, src
+    return torch.ops.xTensor.coo_merge(num_nodes, src, dst, edata)
 
 def coo_ranges_merge(
         num_nodes: int,
-        coo_tensors: list[Tuple[torch.Tensor, torch.Tensor]],
-        starts: list[torch.Tensor],
-        lengths: list[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        coo_tensors: List[Tuple[Tensor,Tensor,Optional[Dict[str,Tensor]]]],
+        starts: List[Tensor],
+        lengths: List[Tensor],
+    ) -> Tuple[Tensor,Tensor,Optional[Dict[str,Tensor]]]:
     '''
     Merge coo fragments into a unifying coo without explictly constructing a list of coo's.
     NOTE: node IDs in the specified input coo tensors should be in the range of [0, num_nodes).
@@ -138,6 +161,9 @@ def coo_ranges_merge(
         coo_tensors = [coo_tensors]
         starts = [starts]
         lengths = [lengths]
+    for i in range(len(coo_tensors)):
+        if len(coo_tensors[i]) == 2:
+            coo_tensors[i] = (*coo_tensors[i], None)
     assert len(coo_tensors) == len(starts)
     assert len(starts) == len(lengths)
     return torch.ops.xTensor.coo_ranges_merge(num_nodes, coo_tensors, starts, lengths)
@@ -153,3 +179,4 @@ def edge_cuts(edge_index, n_assigns):
     index_select(n_assigns, index=edge_index[1], out=dst_assigns)
     src_assigns -= dst_assigns
     return (src_assigns != 0).sum().item()
+

@@ -150,7 +150,7 @@ def train_with(conf: dict, keep_eval=True):
     return recorder
 
 if __name__ == '__main__':
-    import argparse
+    import os, argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", type=str, default='conf/papers-hb.json5')
     parser.add_argument("--keep-eval", action="store_true",
@@ -160,12 +160,13 @@ if __name__ == '__main__':
         conf = json5.load(fp)
     main_logger.info(f"Using the config below: {json5.dumps(conf, indent=2)}")
 
-    with utils.parallelism(1/4):
-        print("num_threads:", torch.get_num_threads())
-        recorder = train_with(conf, keep_eval=args.keep_eval)
-        env = conf.get('env', dict())
-        if 'outdir' in env:
-            recorder.save(env['outdir'])
+    #  with utils.parallelism(1/2):
+    print("num_threads:", torch.get_num_threads())
+    print("num_io_threads:", os.environ.get('NUM_IO_WORKERS', torch.get_num_threads()))
+    recorder = train_with(conf, keep_eval=args.keep_eval)
+    env = conf.get('env', dict())
+    if 'outdir' in env:
+        recorder.save(env['outdir'])
 
     # print(f"""----Data statistics------
     # #Nodes {n_nodes}

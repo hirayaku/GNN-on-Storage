@@ -97,7 +97,7 @@ Tensor partition_weighted(
  */
 Tensor partition_stratified_balanced_weighted(
     Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor node_order,
-    double gamma, Tensor alphas, double balance_slack,
+    double gamma, Tensor alphas, double slack, double slack2,
     Tensor stratify_labels, Tensor balance_labels,
     OptTensor init_partition = torch::nullopt,
     torch::optional<double> scan_thres = torch::nullopt

@@ -164,7 +164,7 @@ Tensor partition_weighted(
 
 Tensor partition_stratified_balanced_weighted(
     Tensor ptr, Tensor idx, OptTensor weights, int64_t k, OptTensor node_order,
-    double gamma, Tensor alphas, double balance_slack,
+    double gamma, Tensor alphas, double balance_slack, double balance_slack2,
     Tensor stratify_labels, Tensor balance_labels,
     OptTensor init_partition, torch::optional<double> scan_thres
 ) {
@@ -192,7 +192,7 @@ Tensor partition_stratified_balanced_weighted(
     // per-label cap for #nodes in each partition
     const std::vector<int> blabel2cap = tensor_to_vector<int>(
         balance_labels.bincount({}, BL).to(torch::kFloat)
-                      .div_(k).multiply_(balance_slack)
+                      .div_(k).multiply_(balance_slack2)
                       .ceil_().to(torch::kInt)
     );
 

@@ -39,9 +39,11 @@ TORCH_LIBRARY(Fennel, m)
     );
 
     m.def(
-        "partition_combined(Tensor rowptr, Tensor col, Tensor? weights, int k, Tensor? order,"
-        "float gamma, Tensor alphas, float slack, Tensor strata_labels, Tensor balance_labels,"
-        "Tensor? init, float? scan_thres) -> Tensor",
+        "partition_combined("
+        "Tensor rowptr, Tensor col, Tensor? weights, int k, Tensor? order,"
+        "float gamma, Tensor alphas, float slack, float slack2,"
+        "Tensor strata_labels, Tensor balance_labels,Tensor? init, float? scan_thres"
+        ") -> Tensor",
         fennel::partition_stratified_balanced_weighted
     );
 }

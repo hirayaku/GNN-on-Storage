@@ -4,7 +4,9 @@
 #include <torch/extension.h>
 
 using Tensor = torch::Tensor;
-using EdgeType = std::tuple<Tensor, Tensor>;
+using OptTensor = torch::optional<Tensor>;
+using DataDict = torch::Dict<std::string, Tensor>;
+using EdgeType = std::tuple<Tensor, Tensor, OptTensor>;
 
 // get the destination index of the scatter-append operation
 Tensor &scatter_index(Tensor &out, const Tensor &input, const Tensor &intervals);
@@ -16,16 +18,17 @@ Tensor &scatter_copy(Tensor &out, const Tensor &index, const Tensor &src);
 Tensor &ranges_gather(Tensor &out, const Tensor &src, const Tensor &, const Tensor &);
 Tensor &ranges_gather(Tensor &out, const std::string &filename, const Tensor &, const Tensor &);
 Tensor &ranges_add(Tensor &target, const Tensor &, const Tensor &, const Tensor &);
+std::vector<Tensor> ranges_slice(Tensor &target, const Tensor &, const Tensor &);
 
 // merge the input list of edges in COO formats (assuming edges are sorted by dst)
 // doesn't relabel nodes; just merge the COOs into a (n,n) adj matrix
-// @return tuple of <colptr, row>
-std::tuple<Tensor, Tensor> coo_list_merge(
+// @return tuple of <colptr, row, edata>
+EdgeType coo_list_merge(
     long num_nodes, const std::vector<EdgeType> &edges
 );
 
 // @return tuple of <colptr, row>
-std::tuple<Tensor, Tensor> coo_ranges_merge(
+EdgeType coo_ranges_merge(
     long num_nodes,
     const std::vector<EdgeType> &coo_list,
     const std::vector<Tensor> &starts,

@@ -262,7 +262,7 @@ class CollatorPivots(Collator):
         logger.debug(f"Intra Adj constructed: m={intra_src.size(0)}")
 
         gatherer.start()
-        ptr, ids = coo_ranges_merge(num_nodes,
+        ptr, ids, _ = coo_ranges_merge(num_nodes,
             [ (inter_src, inter_dst), (inter_src_t, inter_dst_t), (intra_src, intra_dst), 
               (gathered_src, gathered_dst)],
             [torch.tensor([0]), torch.tensor([0]), intra_offsets, edge_offsets],

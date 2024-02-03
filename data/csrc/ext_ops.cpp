@@ -228,7 +228,23 @@ Tensor &ranges_add(
     return target;
 }
 
-std::tuple<Tensor, Tensor> coo_list_merge(
+std::vector<Tensor> ranges_slice(
+    Tensor &target, const Tensor &starts, const Tensor &lengths
+) {
+    TORCH_CHECK(starts.scalar_type() == at::kLong, "index should have dtype long/int64");
+    TORCH_CHECK(lengths.scalar_type() == at::kLong, "sizes should have dtype long/int64");
+    std::vector<Tensor> slices(starts.size(0));
+    using index_t = long;
+    const auto *starts_p = starts.data_ptr<index_t>();
+    const auto *lengths_p = lengths.data_ptr<index_t>();
+    dynamic_parallel_for(0, starts.size(0), [&](int i) {
+        auto slice = target.slice(0, starts_p[i], starts_p[i]+lengths_p[i]);
+        std::swap(slices[i], slice);
+    });
+    return slices;
+}
+
+EdgeType coo_list_merge(
     long num_nodes, const std::vector<EdgeType> &undirected
 ) {
     Tensor deg = torch::zeros({num_nodes}, torch::dtype(torch::kInt32));
@@ -311,11 +327,10 @@ std::tuple<Tensor, Tensor> coo_list_merge(
         }, std::max((int)undirected.size()/(2*num_par), 1)  // block_size = 1
     );
 
-    return {rowptr, src};
+    return {rowptr, src, torch::nullopt};
 }
 
-
-std::tuple<Tensor, Tensor> coo_ranges_merge(
+EdgeType coo_ranges_merge(
     long num_nodes,
     const std::vector<EdgeType> &coo_list,
     const std::vector<Tensor> &starts,
@@ -325,33 +340,38 @@ std::tuple<Tensor, Tensor> coo_ranges_merge(
     for (const auto t : starts) num_tensors += t.size(0);
 
     using index_t = long;
-    std::vector<EdgeType> consolidated(num_tensors); // consolidated.reserve(num_tensors);
+    std::vector<EdgeType> consolidated(num_tensors);
     size_t tensor_idx = 0;
     for (size_t i = 0; i < coo_list.size(); ++i) {
         const auto &src = std::get<0>(coo_list[i]);
         const auto &dst = std::get<1>(coo_list[i]);
-        const auto *src_p = src.data_ptr<index_t>();
-        const auto *dst_p = dst.data_ptr<index_t>();
+        // const auto &edata = std::get<2>(coo_list[i]);
         const auto &coo_starts = starts[i];
         const auto &coo_sizes = sizes[i];
         const auto *starts_p = coo_starts.data_ptr<long>();
         const auto *sizes_p = coo_sizes.data_ptr<long>();
-        // for (size_t j = 0; j < coo_starts.size(0); ++j) {
-        //     consolidated.push_back({
-        //         src.slice(0, starts_p[j], starts_p[j]+sizes_p[j]),
-        //         dst.slice(0, starts_p[j], starts_p[j]+sizes_p[j])
-        //     });
-        // }
         dynamic_parallel_for(0, coo_starts.size(0), [&](int j) {
+            auto start_pos = starts_p[j];
+            auto end_pos = start_pos + sizes_p[j];
+            /*
+            torch::optional<DataDict> frag_edata;
+            if (edata.has_value()) {
+                DataDict frag_edata_dict;
+                const auto &edata_dict = edata.value();
+                for (const auto &item : edata_dict) {
+                    frag_edata_dict.insert(
+                        item.key(), item.value().slice(0, start_pos, end_pos)
+                    );
+                }
+                frag_edata = frag_edata_dict;
+            }
+            */
             EdgeType frag {
-                src.slice(0, starts_p[j], starts_p[j]+sizes_p[j]),
-                dst.slice(0, starts_p[j], starts_p[j]+sizes_p[j])
+                src.slice(0, start_pos, end_pos),
+                dst.slice(0, start_pos, end_pos),
+                torch::nullopt
             };
             std::swap(consolidated[tensor_idx + j], frag);
-            if (has_madv_populate && sizes_p[j] > 4096) {
-                batch_populate_pte((void*)(src_p + starts_p[j]), sizes_p[j] * sizeof(index_t));
-                batch_populate_pte((void*)(dst_p + starts_p[j]), sizes_p[j] * sizeof(index_t));
-            }
         });
         tensor_idx += coo_starts.size(0);
     }

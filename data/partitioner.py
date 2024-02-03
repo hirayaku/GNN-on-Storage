@@ -262,16 +262,19 @@ class FennelStrataPartitioner(FennelPartitioner):
         # m_label.scatter_add_(0, index=stratify_labels.long(), src=degree)
         # self.alpha = m_label * self.psize**(self.gamma-1) / label_hist**self.gamma
         self.alpha = self.m / NL * self.psize**(self.gamma-1) / label_hist**self.gamma
+        #  self.alpha = self.m * self.psize**(self.gamma-1) / (label_hist * self.n**(self.gamma-1))
         # reset outlier alpha values
         self.alpha[self.alpha.isnan()] = 0
         self.alpha[self.alpha.isinf()] = 0
         self.alpha *= self.scale_alpha
+        self.slack2 = 2
         logger.debug(self.scale_alpha, old_alpha, self.alpha)
 
     def partition(self, init_partition=None) -> torch.IntTensor:
         self.assigns = torch.ops.Fennel.partition_combined(
             self.rowptr, self.col, self.weights, self.psize, self.node_order,
-            self.gamma, self.alpha*self.scale_alpha, self.slack,
-            self.labels, self.balance_labels, init_partition, 1/4,
+            self.gamma, self.alpha*self.scale_alpha, self.slack, self.slack2,
+            self.labels, self.balance_labels, init_partition, 1/8,
         )
         return self.assigns
+

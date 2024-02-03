@@ -55,18 +55,19 @@ class PygNeighborSampler:
     def __init__(
         self,
         fanout,
-        replace=False,
-        directed=True,
-        return_eid=False,
         filter_data_fn=None,
         filter_per_worker=True,
         unbatch=False,
+        # options for the underlying sampling kernel
+        is_csc=True,
+        replace=False,
+        directed=True,
         **overwrite_kw
     ):
         self.fanout = fanout
+        self.is_csc = is_csc
         self.replace = replace
         self.directed = directed
-        self.return_eid = return_eid
         self.filter_data = filter_data_fn
         self.filter_per_worker = filter_per_worker
         self.unbatch = unbatch
@@ -88,33 +89,36 @@ class PygNeighborSampler:
         args = (data, input_id, node, row, col, edge, n_nodes, n_edges)
         if self.filter_per_worker:
             # slice node and edge attributes
-            # data = self.filter_data(data, node, row, col, edge, perm=None)
-            # data.batch = None
-            # data.input_id = nodes
-            # data.batch_size = nodes.size(0)
-            # data.num_sampled_nodes = n_nodes
-            # data.num_sampled_edges = n_edges
-            # return data
             return gather_feature(args, self.filter_data)
         else:
             return args
 
     def _pyg_lib_sample(self, data, nodes, **kwargs) -> Data:
-        colptr, row, _ = data.adj_t.csr()
+        colptr, row, e_w = data.adj_t.csr()
         out = torch.ops.pyg.neighbor_sample(
-            colptr, row, nodes.to(colptr.dtype),
-            self.fanout, None, None, True, # csc
-            self.replace, self.directed, False, # not disjoint
-            'uniform',  # temporal strategy, no effect
-            self.return_eid,
+            colptr, row, nodes.to(colptr.dtype), self.fanout,
+            csc=self.is_csc,
+            replace=self.replace,
+            directed=self.directed,
             **kwargs,
             **self.kw,
         )
+        #  out = pyg_lib.sampler.neighbor_sample(
+        #      colptr, row, nodes.to(colptr.dtype), self.fanout,
+        #      edge_weight=e_w,
+        #      csc=self.is_csc,
+        #      replace=self.replace,
+        #      directed=self.directed,
+        #      **kwargs,
+        #      **self.kw,
+        #  )
         #  row, col, node, edge, num_sampled_nodes, num_sampled_edges = out
         return out
 
     def _torch_sparse_sample(self, data, nodes, **kwargs) -> Data:
-        colptr, row, _ = data.adj_t.csr()
+        colptr, row, e_w = data.adj_t.csr()
+        if e_w is not None:
+            warnings.warn("Neighbor sampling kernel in torch-sparse doesn't support weighted sampling")
         # colptr, row, perm = data.csc_data
         out = torch.ops.torch_sparse.neighbor_sample(
             colptr, row, nodes.to(colptr.dtype),

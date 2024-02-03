@@ -261,7 +261,7 @@ if __name__ == "__main__":
                         default='ogbn-papers100M', help="dataset name")
     parser.add_argument('--root', type=str, default=os.environ.get('DATASETS', None),
                         help="location of transformed datasets")
-    parser.add_argument('--part', type=str, default='fennel-lb',
+    parser.add_argument('--part', type=str, default='fennel-wlb',
                         help="graph partitioner")
     parser.add_argument('--pn', type=int, default=1024,
                         help="the partition number")
@@ -363,6 +363,7 @@ if __name__ == "__main__":
         remapped_partitions = PartitionSequence(torch.arange(chunked.num_nodes), node_parts)
         train_sizes = [int(train_mask[part].sum()) for part in remapped_partitions]
         logger.info(f"Training nodes per partition: \n{train_sizes}")
+        logger.info(f"Partition #cuts={edge_cuts(chunked_data.edge_index, n_assigns)}")
 
         logger.info("Checking node feat")
         check_ndata(data.x, chunked_data.x, node_partitions)

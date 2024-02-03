@@ -18,6 +18,10 @@ class Recorder(object):
         self.md5 = hashlib.md5(str(info).encode('utf-8')).hexdigest()
         self._run = 0
 
+    @property
+    def num_runs(self):
+        return len(self.log)
+
     def set_run(self, run):
         self._run = run
         if run not in self.log:

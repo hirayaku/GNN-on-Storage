@@ -251,15 +251,15 @@ class CudaPrefetcherDataPipe(IterDataPipe):
 
     def _preload(self):
         try:
-            self.next_batch = next(self._source_iter)
+            next_batch = next(self._source_iter)
         except StopIteration:
             self.next_batch = None
             return
 
         with torch.cuda.stream(self.stream):
-            self.next_batch = self.next_batch.cuda(non_blocking=True)
+            self.next_batch = next_batch.cuda(non_blocking=True)
             if self.fn is not None:
-                self.fn(self.next_batch)
+                self.next_batch = self.fn(self.next_batch)
 
     def __iter__(self):
         self._source_iter = iter(self.source_dp)

@@ -20,7 +20,7 @@ def load_flickr(rootdir):
     data = dataset[0]
     num_nodes = data.x.shape[0]
     meta_info = {
-        'dir_name': 'reddit',
+        'dir_name': 'flickr',
         'num_nodes': num_nodes,
         'num_tasks': 1,
         'task_type': 'multiclass classification',
@@ -111,7 +111,7 @@ def load_arxiv_r(rootdir):
     )
     data = dataset[0]
     meta_info = {
-        'dir_name': 'ogbn_arxiv_r',
+        'dir_name': 'ogbn_arxiv_r10',
         'num_nodes': data.num_nodes,
         'num_tasks': dataset.num_tasks,
         'task_type': 'multiclass classification',
@@ -132,8 +132,8 @@ def load_arxiv_r(rootdir):
     idx = dataset.get_idx_split()
     np.random.seed(1)
     rand_idx = np.random.permutation(data.num_nodes)
-    num_train = int(data.num_nodes * 0.2)
-    num_valid = int(data.num_nodes * 0.4)
+    num_train = int(data.num_nodes * 0.1)
+    num_valid = int(data.num_nodes * 0.1)
     idx = {
         'train': rand_idx[:num_train],
         'valid': rand_idx[num_train:num_train+num_valid],
@@ -409,6 +409,7 @@ def load(name, root):
     load_methods = {
         'ogbn-arxiv': load_arxiv,
         'ogbn-arxiv-r': load_arxiv_r,
+        'flickr': load_flickr,
         'reddit': load_reddit,
         'ogbn-products': load_products,
         'ogbn-papers100M-di': load_papers100m_directed,
